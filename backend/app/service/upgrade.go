@@ -180,7 +180,6 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 		}
 
 		global.LOG.Info("upgrade successful!")
-		go writeLogs(req.Version)
 		checkPointOfWal()
 		if err := settingRepo.Update("SystemVersion", req.Version); err != nil {
 			global.LOG.Errorf("Update system version failed: %v", err)
