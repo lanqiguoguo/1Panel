@@ -1,4 +1,4 @@
-import { getLicenseStatus, getSettingInfo } from '@/api/modules/setting';
+import { getSettingInfo } from '@/api/modules/setting';
 import { useTheme } from '@/hooks/use-theme';
 import { GlobalStore } from '@/store';
 const globalStore = GlobalStore();
@@ -64,62 +64,18 @@ const loadDataFromDB = async () => {
 };
 
 export async function loadProductProFromDB() {
-    const res = await getLicenseStatus();
-    if (!res.data) {
-        resetXSetting();
-        globalStore.isProductPro = false;
-    } else {
-        globalStore.isProductPro =
-            res.data.status === 'Enable' || res.data.status === 'OnRetry' || res.data.status === 'Lost';
-        if (globalStore.isProductPro) {
-            globalStore.productProExpires = Number(res.data.productPro);
-            globalStore.isTrial = res.data.trial;
-        }
-    }
+    globalStore.isProductPro = false;
+    globalStore.productProExpires = 0;
+    globalStore.isTrial = false;
+    resetXSetting();
     switchTheme();
     initFavicon();
     loadDataFromDB();
 }
 
 export async function getXpackSettingForTheme() {
-    const res = await getLicenseStatus();
-    if (!res.data) {
-        globalStore.isProductPro = false;
-        resetXSetting();
-        switchTheme();
-        initFavicon();
-        return;
-    }
-    globalStore.isProductPro =
-        res.data.status === 'Enable' || res.data.status === 'OnRetry' || res.data.status === 'Lost';
-    if (globalStore.isProductPro) {
-        globalStore.productProExpires = Number(res.data.productPro);
-        globalStore.isTrial = res.data.trial;
-    }
-    if (!globalStore.isProductPro) {
-        globalStore.isProductPro = false;
-        resetXSetting();
-        switchTheme();
-        initFavicon();
-        return;
-    }
-
-    let searchXSetting;
-    const xpackModules = import.meta.glob('../xpack/api/modules/setting.ts', { eager: true });
-    if (xpackModules['../xpack/api/modules/setting.ts']) {
-        searchXSetting = xpackModules['../xpack/api/modules/setting.ts']['searchXSetting'] || {};
-        const res2 = await searchXSetting();
-        if (res2) {
-            globalStore.themeConfig.title = res2.data?.title;
-            globalStore.themeConfig.logo = res2.data?.logo;
-            globalStore.themeConfig.logoWithText = res2.data?.logoWithText;
-            globalStore.themeConfig.favicon = res2.data?.favicon;
-            globalStore.themeConfig.themeColor = res2.data?.themeColor;
-            globalStore.themeConfig.theme = res2.data?.theme || 'auto';
-        } else {
-            resetXSetting();
-        }
-    }
+    globalStore.isProductPro = false;
+    resetXSetting();
     switchTheme();
     initFavicon();
 }

@@ -377,12 +377,6 @@
                             ></el-input-number>
                             <span class="input-help">{{ $t('alert.alertCountHelper') }}</span>
                         </el-form-item>
-                        <el-form-item v-if="dialogData.rowData!.hasAlert && !isProductPro">
-                            <span>{{ $t('alert.licenseHelper') }}</span>
-                            <el-button link type="primary" @click="toUpload">
-                                {{ $t('license.levelUpPro') }}
-                            </el-button>
-                        </el-form-item>
                     </div>
 
                     <el-form-item :label="$t('cronjob.retainCopies')" prop="retainCopies">
@@ -426,7 +420,6 @@
                 </el-button>
             </span>
         </template>
-        <LicenseImport ref="licenseRef" />
     </el-drawer>
 </template>
 
@@ -450,7 +443,6 @@ import { ListAppInstalled } from '@/api/modules/app';
 import { loadDefaultSpec, specOptions, transObjToSpec, transSpecToObj, weekOptions } from './../helper';
 import { storeToRefs } from 'pinia';
 import { GlobalStore } from '@/store';
-import LicenseImport from '@/components/license-import/index.vue';
 import { Codemirror } from 'vue-codemirror';
 import { javascript } from '@codemirror/legacy-modes/mode/javascript';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -473,7 +465,6 @@ const dialogData = ref<DialogProps>({
 });
 
 const globalStore = GlobalStore();
-const licenseRef = ref();
 const { isProductPro } = storeToRefs(globalStore);
 
 const acceptParams = (params: DialogProps): void => {
@@ -871,10 +862,6 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
         emit('search');
         drawerVisible.value = false;
     });
-};
-
-const toUpload = () => {
-    licenseRef.value.acceptParams();
 };
 
 defineExpose({
