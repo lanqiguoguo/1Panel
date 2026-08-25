@@ -2466,6 +2466,34 @@ const message = {
         importMcpJsonError: 'mcpServers 结构不正确',
         bindDomainHelper: '绑定网站之后会修改所有已安装 MCP Server 的访问地址，并关闭端口的外部访问',
     },
+    xpack: {
+        waf: {
+            whiteList: '白名单',
+            ipGroupHelper: '仅白名单分组中的 IP 可访问',
+            websiteHelper: '网站防火墙可保护网站免受恶意请求攻击',
+            deny: '拒绝',
+            allow: '放行',
+            captcha: '验证码校验',
+            fiveSeconds: '五秒盾',
+            forbidden: '禁止访问页面',
+            noRes: '无响应',
+            badReq: '错误请求',
+            serverErr: '服务器错误',
+            equal: '等于',
+            notEqual: '不等于',
+            contain: '包含',
+            regex: '正则匹配',
+        },
+        theme: {
+            customColor: '自定义颜色',
+            setDefault: '设为默认',
+            setDefaultHelper: '将当前颜色设置为默认主题色',
+            setHelper: '设置主题颜色',
+        },
+        tamper: {
+            addRule: '添加防篡改规则',
+        },
+    },
 };
 export default {
     ...fit2cloudZhLocale,

@@ -2,16 +2,19 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
@@ -27,7 +30,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	http2 "github.com/1Panel-dev/1Panel/backend/utils/http"
 	httpUtil "github.com/1Panel-dev/1Panel/backend/utils/http"
-	"github.com/1Panel-dev/1Panel/backend/utils/xpack"
 	"gopkg.in/yaml.v3"
 )
 
@@ -858,7 +860,16 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		oldAppIds = append(oldAppIds, old.ID)
 	}
 
-	transport := xpack.LoadRequestTransport()
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: (&net.Dialer{
+			Timeout:   60 * time.Second,
+			KeepAlive: 60 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
+	}
 	baseRemoteUrl := fmt.Sprintf("%s/%s/1panel", global.CONF.System.AppRepo, global.CONF.System.Mode)
 	appsMap := getApps(oldApps, list.Apps)
 

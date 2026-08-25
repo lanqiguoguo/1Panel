@@ -358,27 +358,6 @@
                         </el-form-item>
                     </div>
 
-                    <div v-if="!globalStore.isIntl">
-                        <el-form-item prop="hasAlert">
-                            <el-checkbox v-model="dialogData.rowData!.hasAlert" :label="$t('alert.isAlert')" />
-                            <span class="input-help">{{ $t('alert.cronJobHelper') }}</span>
-                        </el-form-item>
-                        <el-form-item
-                            prop="alertCount"
-                            v-if="dialogData.rowData!.hasAlert && isProductPro"
-                            :label="$t('alert.alertCount')"
-                        >
-                            <el-input-number
-                                style="width: 200px"
-                                :min="1"
-                                step-strictly
-                                :step="1"
-                                v-model.number="dialogData.rowData!.alertCount"
-                            ></el-input-number>
-                            <span class="input-help">{{ $t('alert.alertCountHelper') }}</span>
-                        </el-form-item>
-                    </div>
-
                     <el-form-item :label="$t('cronjob.retainCopies')" prop="retainCopies">
                         <el-input-number
                             style="width: 200px"
@@ -441,8 +420,6 @@ import { listContainer } from '@/api/modules/container';
 import { Database } from '@/api/interface/database';
 import { ListAppInstalled } from '@/api/modules/app';
 import { loadDefaultSpec, specOptions, transObjToSpec, transSpecToObj, weekOptions } from './../helper';
-import { storeToRefs } from 'pinia';
-import { GlobalStore } from '@/store';
 import { Codemirror } from 'vue-codemirror';
 import { javascript } from '@codemirror/legacy-modes/mode/javascript';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -463,9 +440,6 @@ const drawerVisible = ref(false);
 const dialogData = ref<DialogProps>({
     title: '',
 });
-
-const globalStore = GlobalStore();
-const { isProductPro } = storeToRefs(globalStore);
 
 const acceptParams = (params: DialogProps): void => {
     dialogData.value = params;
@@ -493,8 +467,6 @@ const acceptParams = (params: DialogProps): void => {
     if (dialogData.value.rowData.dbName) {
         dialogData.value.rowData.dbNameList = dialogData.value.rowData.dbName.split(',');
     }
-    dialogData.value.rowData.hasAlert = dialogData.value.rowData!.alertCount > 0;
-    dialogData.value.rowData!.alertCount = dialogData.value.rowData!.alertCount || 3;
     dialogData.value.rowData!.command = dialogData.value.rowData!.command || 'sh';
     dialogData.value.rowData!.isCustom =
         dialogData.value.rowData!.command !== 'sh' &&
@@ -632,18 +604,6 @@ const verifySpec = (rule: any, value: any, callback: any) => {
     callback();
 };
 
-function checkSendCount(rule: any, value: any, callback: any) {
-    if (value === '') {
-        callback();
-    }
-    const regex = /^(?:[1-9]|[12][0-9]|30)$/;
-    if (!regex.test(value)) {
-        return callback(new Error(i18n.global.t('commons.rule.numberRange', [1, 30])));
-    }
-
-    callback();
-}
-
 const rules = reactive({
     name: [Rules.requiredInput, Rules.noSpace],
     type: [Rules.requiredSelect],
@@ -662,7 +622,6 @@ const rules = reactive({
     backupAccounts: [Rules.requiredSelect],
     defaultDownload: [Rules.requiredSelect],
     retainCopies: [Rules.number],
-    alertCount: [Rules.integerNumber, { validator: checkSendCount, trigger: 'blur' }],
 });
 
 type FormInstance = InstanceType<typeof ElForm>;
@@ -841,15 +800,6 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
         if (dialogData.value?.rowData?.exclusionRules) {
             dialogData.value.rowData.exclusionRules = dialogData.value.rowData.exclusionRules.replaceAll('\n', ',');
         }
-        dialogData.value.rowData.alertCount =
-            dialogData.value.rowData!.hasAlert && isProductPro.value ? dialogData.value.rowData.alertCount : 0;
-        dialogData.value.rowData.alertTitle =
-            dialogData.value.rowData!.hasAlert && isProductPro.value
-                ? i18n.global.t('cronjob.alertTitle', [
-                      i18n.global.t('cronjob.' + dialogData.value.rowData.type),
-                      dialogData.value.rowData.name,
-                  ])
-                : '';
         if (!dialogData.value.rowData) return;
         if (dialogData.value.title === 'create') {
             await addCronjob(dialogData.value.rowData);

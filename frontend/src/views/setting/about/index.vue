@@ -60,13 +60,13 @@ const toDoc = () => {
     window.open(docsUrl.value, '_blank', 'noopener,noreferrer');
 };
 const toGithub = () => {
-    window.open('https://github.com/1Panel-dev/1Panel', '_blank', 'noopener,noreferrer');
+    window.open('https://github.com/lanqiguoguo/1Panel', '_blank', 'noopener,noreferrer');
 };
 const toIssue = () => {
-    window.open('https://github.com/1Panel-dev/1Panel/issues', '_blank', 'noopener,noreferrer');
+    window.open('https://github.com/lanqiguoguo/1Panel/issues', '_blank', 'noopener,noreferrer');
 };
 const toGithubStar = () => {
-    window.open('https://github.com/1Panel-dev/1Panel', '_blank', 'noopener,noreferrer');
+    window.open('https://github.com/lanqiguoguo/1Panel', '_blank', 'noopener,noreferrer');
 };
 
 onMounted(() => {

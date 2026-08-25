@@ -76,47 +76,6 @@
                         </template>
                     </el-table-column>
                     <el-table-column
-                        v-if="isProductPro"
-                        :label="$t('commons.table.status')"
-                        :min-width="110"
-                        prop="status"
-                        sortable
-                    >
-                        <template #default="{ row }">
-                            <el-button
-                                v-if="row.status === 'Enable'"
-                                @click="onChangeStatus(row.id, 'disable')"
-                                link
-                                icon="VideoPlay"
-                                type="success"
-                            >
-                                {{ $t('commons.status.enabled') }}
-                            </el-button>
-                            <el-button
-                                v-if="row.status === 'Disable'"
-                                icon="VideoPause"
-                                link
-                                type="danger"
-                                @click="onChangeStatus(row.id, 'enable')"
-                            >
-                                {{ $t('commons.status.disabled') }}
-                            </el-button>
-                            <span v-if="row.status === ''">-</span>
-                        </template>
-                    </el-table-column>
-                    <el-table-column
-                        v-if="isProductPro"
-                        :label="$t('cronjob.cronSpec')"
-                        show-overflow-tooltip
-                        :min-width="120"
-                    >
-                        <template #default="{ row }">
-                            <span>
-                                {{ row.spec !== '' ? transSpecToStr(row.spec) : '-' }}
-                            </span>
-                        </template>
-                    </el-table-column>
-                    <el-table-column
                         :label="$t('toolbox.clam.infectedDir')"
                         :min-width="120"
                         prop="path"
@@ -180,14 +139,13 @@
 import { onMounted, reactive, ref } from 'vue';
 import i18n from '@/lang';
 import { MsgSuccess } from '@/utils/message';
-import { deleteClam, handleClamScan, searchClam, updateClam, updateClamStatus } from '@/api/modules/toolbox';
+import { deleteClam, handleClamScan, searchClam, updateClam } from '@/api/modules/toolbox';
 import OperateDialog from '@/views/toolbox/clam/operate/index.vue';
 import LogDialog from '@/views/toolbox/clam/record/index.vue';
 import ClamStatus from '@/views/toolbox/clam/status/index.vue';
 import SettingDialog from '@/views/toolbox/clam/setting/index.vue';
 import { Toolbox } from '@/api/interface/toolbox';
 import router from '@/routers';
-import { transSpecToStr } from '../../cronjob/helper';
 import { GlobalStore } from '@/store';
 import { storeToRefs } from 'pinia';
 
@@ -195,7 +153,7 @@ const loading = ref();
 const selects = ref<any>([]);
 
 const globalStore = GlobalStore();
-const { isProductPro, docsUrl } = storeToRefs(globalStore);
+const { docsUrl } = storeToRefs(globalStore);
 const data = ref();
 const paginationConfig = reactive({
     cacheSizeKey: 'clam-page-size',
@@ -329,18 +287,6 @@ const onSubmitDelete = async () => {
         .catch(() => {
             loading.value = false;
         });
-};
-
-const onChangeStatus = async (id: number, status: string) => {
-    ElMessageBox.confirm(i18n.global.t('toolbox.clam.' + status + 'Msg'), i18n.global.t('cronjob.changeStatus'), {
-        confirmButtonText: i18n.global.t('commons.button.confirm'),
-        cancelButtonText: i18n.global.t('commons.button.cancel'),
-    }).then(async () => {
-        let itemStatus = status === 'enable' ? 'Enable' : 'Disable';
-        await updateClamStatus(id, itemStatus);
-        MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
-        search();
-    });
 };
 
 const buttons = [

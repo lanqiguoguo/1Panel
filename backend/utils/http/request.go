@@ -2,17 +2,27 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/global"
-	"github.com/1Panel-dev/1Panel/backend/utils/xpack"
 )
 
 func HandleGet(url, method string, timeout int) (int, []byte, error) {
-	transport := xpack.LoadRequestTransport()
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: (&net.Dialer{
+			Timeout:   60 * time.Second,
+			KeepAlive: 60 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
+	}
 	return HandleGetWithTransport(url, method, transport, timeout)
 }
 

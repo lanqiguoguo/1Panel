@@ -62,19 +62,10 @@ export namespace Setting {
         apiKey: string;
         ipWhiteList: string;
         apiKeyValidityTime: number;
-        licenseVerify: string;
     }
     export interface SettingUpdate {
         key: string;
         value: string;
-    }
-    export interface ProxyUpdate {
-        proxyUrl: string;
-        proxyType: string;
-        proxyPort: string;
-        proxyUser: string;
-        proxyPasswd: string;
-        proxyPasswdKeep: string;
     }
     export interface SSLUpdate {
         ssl: string;
@@ -175,23 +166,6 @@ export namespace Setting {
         releaseNote: string;
     }
 
-    export interface License {
-        licenseName: string;
-        assigneeName: string;
-        productPro: string;
-        versionConstraint: string;
-        trial: boolean;
-        offline: boolean;
-        status: string;
-        message: string;
-        smsUsed: number;
-        smsTotal: number;
-    }
-    export interface LicenseStatus {
-        productPro: string;
-        trial: boolean;
-        status: string;
-    }
     export interface ApiConfig {
         apiInterfaceStatus: string;
         apiKey: string;

@@ -7,7 +7,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/app/repo"
 	"github.com/1Panel-dev/1Panel/backend/constant"
@@ -15,7 +14,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
-	"github.com/1Panel-dev/1Panel/backend/utils/xpack"
 )
 
 func Init() {
@@ -83,15 +81,6 @@ func Init() {
 		}
 		global.CONF.System.ApiKeyValidityTime = apiKeyValidityTimeSetting.Value
 	}
-
-	if global.CONF.System.LicenseVerify == "" {
-		licenseVerify, err := settingRepo.Get(settingRepo.WithByKey("LicenseVerify"))
-		if err != nil {
-			global.LOG.Errorf("load service license verify from setting failed, err: %v", err)
-		}
-		global.CONF.System.LicenseVerify = licenseVerify.Value
-	}
-	handleLicenseVerify(global.CONF.System.LicenseVerify, settingRepo)
 
 	handleUserInfo(global.CONF.System.ChangeUserInfo, settingRepo)
 
@@ -180,9 +169,6 @@ func handleCronjobStatus() {
 			continue
 		}
 
-		var cronjob *model.Cronjob
-		_ = global.DB.Where("id = ?", record.CronjobID).First(&cronjob).Error
-		handleCronJobAlert(cronjob)
 	}
 }
 
@@ -214,12 +200,6 @@ func loadLocalDir() {
 		return
 	}
 	global.LOG.Errorf("error type dir: %T", varMap["dir"])
-}
-
-func handleLicenseVerify(licenseVerify string, settingRepo repo.ISettingRepo) {
-	if err := settingRepo.Update("LicenseVerify", licenseVerify); err != nil {
-		global.LOG.Fatalf("init license verify before start failed, err: %v", err)
-	}
 }
 
 func handleUserInfo(tags string, settingRepo repo.ISettingRepo) {
@@ -267,22 +247,5 @@ func initDir() {
 			global.LOG.Errorf("mkdir %s failed, err: %v", composePath, err)
 			return
 		}
-	}
-}
-
-func handleCronJobAlert(cronjob *model.Cronjob) {
-	if cronjob.Type == "snapshot" {
-		return
-	}
-	pushAlert := dto.PushAlert{
-		TaskName:  cronjob.Name,
-		AlertType: cronjob.Type,
-		EntryID:   cronjob.ID,
-		Param:     cronjob.Type,
-	}
-	err := xpack.PushAlert(pushAlert)
-	if err != nil {
-		global.LOG.Errorf("cronjob alert push failed, err: %v", err)
-		return
 	}
 }

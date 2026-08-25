@@ -33,11 +33,7 @@ export interface GlobalState {
     showEntranceWarn: boolean;
     defaultNetwork: string;
 
-    isProductPro: boolean;
     isIntl: boolean;
-    isTrial: boolean;
-    productProExpires: number;
-    licenseVerify: string;
 
     errStatus: string;
 }

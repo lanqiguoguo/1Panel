@@ -37,7 +37,8 @@ import ErrCode from '@/components/error-message/error_code.vue';
 import ErrFound from '@/components/error-message/404.vue';
 import { ref, onMounted } from 'vue';
 import { GlobalStore } from '@/store';
-import { getXpackSettingForTheme } from '@/utils/xpack';
+import { useTheme } from '@/hooks/use-theme';
+const { switchTheme } = useTheme();
 const globalStore = GlobalStore();
 
 const screenWidth = ref(null);
@@ -56,7 +57,7 @@ const getStatus = async () => {
     if (code != '') {
         globalStore.entrance = code;
     }
-    await getXpackSettingForTheme();
+    switchTheme();
     let info = globalStore.errStatus;
     if (info?.startsWith('err-') || info?.startsWith('code-')) {
         errStatus.value = info;

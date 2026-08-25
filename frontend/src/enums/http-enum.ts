@@ -11,7 +11,6 @@ export enum ResultEnum {
     NOTFOUND = 404,
     ERRAUTH = 406,
     ERRGLOBALLOADDING = 407,
-    ERRXPACK = 410,
     TIMEOUT = 20000,
     TYPE = 'success',
 }

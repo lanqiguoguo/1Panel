@@ -2630,6 +2630,34 @@ const message = {
         bindDomainHelper:
             'After binding the website, it will modify the access address of all installed MCP Servers and close external access to the ports',
     },
+    xpack: {
+        waf: {
+            whiteList: 'Whitelist',
+            ipGroupHelper: 'Only IPs in the whitelist group can access',
+            websiteHelper: 'Website firewall protects your site from malicious requests',
+            deny: 'Deny',
+            allow: 'Allow',
+            captcha: 'Captcha Verification',
+            fiveSeconds: 'Five-Second Shield',
+            forbidden: 'Forbidden Page',
+            noRes: 'No Response',
+            badReq: 'Bad Request',
+            serverErr: 'Server Error',
+            equal: 'Equals',
+            notEqual: 'Not Equals',
+            contain: 'Contains',
+            regex: 'Regex Match',
+        },
+        theme: {
+            customColor: 'Custom Color',
+            setDefault: 'Set as Default',
+            setDefaultHelper: 'Set current color as default theme color',
+            setHelper: 'Set theme color',
+        },
+        tamper: {
+            addRule: 'Add tamper-proof rule',
+        },
+    },
 };
 
 export default {

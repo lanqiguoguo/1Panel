@@ -9,11 +9,6 @@ import '@/styles/style.css';
 import 'highlight.js/styles/atom-one-dark.css';
 import 'highlight.js/lib/common';
 
-const styleModule = import.meta.glob('xpack/styles/index.scss');
-for (const path in styleModule) {
-    styleModule[path]?.();
-}
-
 import router from '@/routers/index';
 import i18n from '@/lang/index';
 import pinia from '@/store/index';

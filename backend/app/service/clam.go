@@ -7,19 +7,16 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
-	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/systemctl"
-	"github.com/1Panel-dev/1Panel/backend/utils/xpack"
 	"github.com/jinzhu/copier"
 	"github.com/robfig/cron/v3"
 
@@ -43,7 +40,6 @@ type IClamService interface {
 	SearchWithPage(search dto.SearchClamWithPage) (int64, interface{}, error)
 	Create(req dto.ClamCreate) error
 	Update(req dto.ClamUpdate) error
-	UpdateStatus(id uint, status string) error
 	Delete(req dto.ClamDelete) error
 	HandleOnce(req dto.OperateByID) error
 	LoadFile(req dto.ClamFileReq) (string, error)
@@ -168,16 +164,6 @@ func (c *ClamService) SearchWithPage(req dto.SearchClamWithPage) (int64, interfa
 			}
 			datas[i].LastHandleDate = t1.Format(constant.DateTimeLayout)
 		}
-		alertBase := dto.AlertBase{
-			AlertType: "clams",
-			EntryID:   datas[i].ID,
-		}
-		alertCount := xpack.GetAlert(alertBase)
-		if alertCount != 0 {
-			datas[i].AlertCount = alertCount
-		} else {
-			datas[i].AlertCount = 0
-		}
 	}
 	return total, datas, err
 }
@@ -193,30 +179,10 @@ func (c *ClamService) Create(req dto.ClamCreate) error {
 	if clam.InfectedStrategy == "none" || clam.InfectedStrategy == "remove" {
 		clam.InfectedDir = ""
 	}
-	if len(req.Spec) != 0 {
-		entryID, err := xpack.StartClam(clam, false)
-		if err != nil {
-			return err
-		}
-		clam.EntryID = entryID
-		clam.Status = constant.StatusEnable
-	}
 	if err := clamRepo.Create(&clam); err != nil {
 		return err
 	}
 
-	if req.AlertCount != 0 {
-		createAlert := dto.CreateOrUpdateAlert{
-			AlertTitle: req.AlertTitle,
-			AlertCount: req.AlertCount,
-			AlertType:  "clams",
-			EntryID:    clam.ID,
-		}
-		err := xpack.CreateAlert(createAlert)
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -228,31 +194,7 @@ func (c *ClamService) Update(req dto.ClamUpdate) error {
 	if req.InfectedStrategy == "none" || req.InfectedStrategy == "remove" {
 		req.InfectedDir = ""
 	}
-	var clamItem model.Clam
-	if err := copier.Copy(&clamItem, &req); err != nil {
-		return errors.WithMessage(constant.ErrStructTransform, err.Error())
-	}
-	clamItem.EntryID = clam.EntryID
 	upMap := map[string]interface{}{}
-	if len(clam.Spec) != 0 && clam.EntryID != 0 {
-		global.Cron.Remove(cron.EntryID(clamItem.EntryID))
-		upMap["entry_id"] = 0
-	}
-	if len(req.Spec) == 0 {
-		upMap["status"] = ""
-		upMap["entry_id"] = 0
-	}
-	if len(req.Spec) != 0 && clam.Status != constant.StatusDisable {
-		newEntryID, err := xpack.StartClam(clamItem, true)
-		if err != nil {
-			return err
-		}
-		upMap["entry_id"] = newEntryID
-	}
-	if len(clam.Spec) == 0 && len(req.Spec) != 0 {
-		upMap["status"] = constant.StatusEnable
-	}
-
 	upMap["name"] = req.Name
 	upMap["path"] = req.Path
 	upMap["infected_dir"] = req.InfectedDir
@@ -262,39 +204,8 @@ func (c *ClamService) Update(req dto.ClamUpdate) error {
 	if err := clamRepo.Update(req.ID, upMap); err != nil {
 		return err
 	}
-	updateAlert := dto.CreateOrUpdateAlert{
-		AlertTitle: req.AlertTitle,
-		AlertType:  "clams",
-		AlertCount: req.AlertCount,
-		EntryID:    clam.ID,
-	}
-	err := xpack.UpdateAlert(updateAlert)
-	if err != nil {
-		return err
-	}
 	return nil
-}
 
-func (c *ClamService) UpdateStatus(id uint, status string) error {
-	clam, _ := clamRepo.Get(commonRepo.WithByID(id))
-	if clam.ID == 0 {
-		return constant.ErrRecordNotFound
-	}
-	var (
-		entryID int
-		err     error
-	)
-	if status == constant.StatusEnable {
-		entryID, err = xpack.StartClam(clam, true)
-		if err != nil {
-			return err
-		}
-	} else {
-		global.Cron.Remove(cron.EntryID(clam.EntryID))
-		global.LOG.Infof("stop cronjob entryID: %v", clam.EntryID)
-	}
-
-	return clamRepo.Update(clam.ID, map[string]interface{}{"status": status, "entry_id": entryID})
 }
 
 func (c *ClamService) Delete(req dto.ClamDelete) error {
@@ -310,14 +221,6 @@ func (c *ClamService) Delete(req dto.ClamDelete) error {
 			_ = os.RemoveAll(path.Join(clam.InfectedDir, "1panel-infected", clam.Name))
 		}
 		if err := clamRepo.Delete(commonRepo.WithByID(id)); err != nil {
-			return err
-		}
-		alertBase := dto.AlertBase{
-			AlertType: "clams",
-			EntryID:   clam.ID,
-		}
-		err := xpack.DeleteAlert(alertBase)
-		if err != nil {
 			return err
 		}
 	}
@@ -360,7 +263,6 @@ func (c *ClamService) HandleOnce(req dto.OperateByID) error {
 		}
 		global.LOG.Debugf("clamdscan --fdpass %s %s -l %s", strategy, clam.Path, logFile)
 		stdout, err := cmd.Execf("clamdscan --fdpass %s %s -l %s", strategy, clam.Path, logFile)
-		handleAlert(stdout, clam.Name, clam.ID)
 		if err != nil {
 			global.LOG.Errorf("clamdscan failed, stdout: %v, err: %v", stdout, err)
 		}
@@ -601,28 +503,4 @@ func (c *ClamService) loadLogPath(name string) string {
 		}
 	}
 	return ""
-}
-
-func handleAlert(stdout, clamName string, clamId uint) {
-	if strings.Contains(stdout, "- SCAN SUMMARY -") {
-		lines := strings.Split(stdout, "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "Infected files: ") {
-				infectedFiles, _ := strconv.Atoi(strings.TrimPrefix(line, "Infected files: "))
-				if infectedFiles > 0 {
-					pushAlert := dto.PushAlert{
-						TaskName:  clamName,
-						AlertType: "clams",
-						EntryID:   clamId,
-						Param:     strconv.Itoa(infectedFiles),
-					}
-					err := xpack.PushAlert(pushAlert)
-					if err != nil {
-						global.LOG.Errorf("clamdscan push failed, err: %v", err)
-					}
-					break
-				}
-			}
-		}
-	}
 }

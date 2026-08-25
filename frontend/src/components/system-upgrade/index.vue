@@ -2,10 +2,6 @@
     <div>
         <div class="flex w-full flex-col gap-2 md:flex-row items-center">
             <div class="flex flex-wrap items-center" v-if="props.footer">
-                <el-link type="primary" :underline="false" @click="toForum">
-                    <span class="font-normal">{{ $t('setting.forum') }}</span>
-                </el-link>
-                <el-divider direction="vertical" />
                 <el-link type="primary" :underline="false" @click="toDoc">
                     <span class="font-normal">{{ $t('setting.doc2') }}</span>
                 </el-link>
@@ -16,9 +12,6 @@
                 <el-divider v-if="!mobile" direction="vertical" />
             </div>
             <div class="flex flex-wrap items-center">
-                <el-link :underline="false" class="-ml-2" type="primary" @click="toLxware">
-                    {{ $t(!isProductPro ? 'license.community' : 'license.pro') }}
-                </el-link>
                 <el-link :underline="false" class="version" type="primary" @click="copyText(version)">
                     {{ version }}
                 </el-link>
@@ -100,7 +93,6 @@ const mobile = computed(() => {
 });
 
 const version = ref<string>('');
-const isProductPro = ref();
 const loading = ref(false);
 const drawerVisible = ref(false);
 const upgradeInfo = ref();
@@ -122,27 +114,12 @@ const handleClose = () => {
     drawerVisible.value = false;
 };
 
-const toLxware = () => {
-    if (!globalStore.isIntl) {
-        window.open('https://www.lxware.cn/1panel' + '', '_blank', 'noopener,noreferrer');
-    } else {
-        window.open('https://1panel.pro/pricing' + '', '_blank', 'noopener,noreferrer');
-    }
-};
-
 const toDoc = () => {
     window.open(docsUrl.value, '_blank', 'noopener,noreferrer');
 };
 
-const toForum = () => {
-    let url = globalStore.isIntl
-        ? 'https://github.com/1Panel-dev/1Panel/discussions'
-        : 'https://bbs.fit2cloud.com/c/1p/7';
-    window.open(url, '_blank');
-};
-
 const toGithub = () => {
-    window.open('https://github.com/1Panel-dev/1Panel', '_blank', 'noopener,noreferrer');
+    window.open('https://github.com/lanqiguoguo/1Panel', '_blank', 'noopener,noreferrer');
 };
 
 const onLoadUpgradeInfo = async () => {
@@ -196,7 +173,6 @@ const onUpgrade = async () => {
 };
 
 onMounted(() => {
-    isProductPro.value = globalStore.isProductPro;
     search();
 });
 </script>

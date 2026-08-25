@@ -22,7 +22,6 @@ import { GlobalStore, MenuStore, TabsStore } from '@/store';
 import { DeviceType } from '@/enums/app';
 import { getSystemAvailable } from '@/api/modules/setting';
 import { useRoute, useRouter } from 'vue-router';
-import { loadProductProFromDB } from '@/utils/xpack';
 import { useTheme } from '@/hooks/use-theme';
 const { switchTheme } = useTheme();
 useResize();
@@ -99,7 +98,6 @@ onMounted(() => {
     }
 
     loadStatus();
-    loadProductProFromDB();
     globalStore.isFullScreen = false;
     const mqList = window.matchMedia('(prefers-color-scheme: dark)');
     if (mqList.addEventListener) {

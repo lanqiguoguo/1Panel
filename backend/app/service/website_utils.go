@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/1Panel-dev/1Panel/backend/utils/xpack"
-
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/i18n"
@@ -418,7 +416,6 @@ func delNginxConfig(website model.Website, force bool) error {
 	}
 	sitePath := path.Join(constant.AppInstallDir, constant.AppOpenresty, nginxInstall.Name, "www", "sites", website.Alias)
 	if fileOp.Stat(sitePath) {
-		xpack.RemoveTamper(website.Alias)
 		_ = fileOp.DeleteDir(sitePath)
 	}
 

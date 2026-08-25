@@ -52,28 +52,6 @@ func (b *BaseApi) UpdateClam(c *gin.Context) {
 }
 
 // @Tags Clam
-// @Summary Update clam status
-// @Accept json
-// @Param request body dto.ClamUpdateStatus true "request"
-// @Success 200
-// @Security ApiKeyAuth
-// @Security Timestamp
-// @Router /toolbox/clam/status/update [post]
-// @x-panel-log {"bodyKeys":["id","status"],"paramKeys":[],"BeforeFunctions":[{"input_column":"id","input_value":"id","isList":false,"db":"clams","output_column":"name","output_value":"name"}],"formatZH":"修改扫描规则 [name] 状态为 [status]","formatEN":"change the status of clam [name] to [status]."}
-func (b *BaseApi) UpdateClamStatus(c *gin.Context) {
-	var req dto.ClamUpdateStatus
-	if err := helper.CheckBindAndValidate(&req, c); err != nil {
-		return
-	}
-
-	if err := clamService.UpdateStatus(req.ID, req.Status); err != nil {
-		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
-		return
-	}
-	helper.SuccessWithData(c, nil)
-}
-
-// @Tags Clam
 // @Summary Page clam
 // @Accept json
 // @Param request body dto.SearchClamWithPage true "request"

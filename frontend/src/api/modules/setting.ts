@@ -6,25 +6,6 @@ import { Backup } from '../interface/backup';
 import { Setting } from '../interface/setting';
 import { TimeoutEnum } from '@/enums/http-enum';
 
-export const UploadFileData = (params: FormData) => {
-    return http.upload('/licenses/upload', params);
-};
-
-export const getLicense = () => {
-    return http.get<Setting.License>(`/licenses/get`);
-};
-export const getLicenseStatus = () => {
-    return http.get<Setting.LicenseStatus>(`/licenses/get/status`);
-};
-
-export const syncLicense = () => {
-    return http.post(`/licenses/sync`);
-};
-
-export const unbindLicense = () => {
-    return http.post(`/licenses/unbind`);
-};
-
 export const getSettingInfo = () => {
     return http.post<Setting.SettingInfo>(`/settings/search`);
 };
@@ -38,15 +19,6 @@ export const updateSetting = (param: Setting.SettingUpdate) => {
 
 export const updateMenu = (param: Setting.SettingUpdate) => {
     return http.post(`/settings/menu/update`, param);
-};
-
-export const updateProxy = (params: Setting.ProxyUpdate) => {
-    let request = deepCopy(params) as Setting.ProxyUpdate;
-    if (request.proxyPasswd) {
-        request.proxyPasswd = Base64.encode(request.proxyPasswd);
-    }
-    request.proxyType = request.proxyType === 'close' ? '' : request.proxyType;
-    return http.post(`/settings/proxy/update`, request);
 };
 
 export const updatePassword = (param: Setting.PasswordUpdate) => {

@@ -414,7 +414,6 @@ const loadDataFromDB = async () => {
     i18n.locale.value = res.data.language;
     i18n.warnHtmlMessage = false;
     globalStore.entrance = res.data.securityEntrance;
-    globalStore.licenseVerify = res.data.licenseVerify;
     globalStore.setDefaultNetwork(res.data.defaultNetwork);
     globalStore.setOpenMenuTabs(res.data.menuTabs === 'enable');
     globalStore.updateLanguage(res.data.language);
