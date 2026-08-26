@@ -43,7 +43,7 @@ jobs:
       - name: Build backend
         run: |
           sed -i 's/^  mode: dev$/  mode: stable/' cmd/server/conf/app.yaml
-          make clean_assets build_backend_on_linux
+          make build_backend_on_linux
 
       - name: Fetch GeoIP database from `packages` release
         env:
