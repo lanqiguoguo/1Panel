@@ -80,7 +80,7 @@
                             ></svg-icon>
 
                             <template v-if="!row.isCreate">
-                                <el-link :underline="false" @click="open(row)">
+                                <el-link underline="never" @click="open(row)">
                                     {{ row.name }}
                                 </el-link>
                             </template>

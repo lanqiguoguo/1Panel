@@ -2,28 +2,28 @@
     <div>
         <div class="flex w-full flex-col gap-2 md:flex-row items-center">
             <div class="flex flex-wrap items-center" v-if="props.footer">
-                <el-link type="primary" :underline="false" @click="toDoc">
+                <el-link type="primary" underline="never" @click="toDoc">
                     <span class="font-normal">{{ $t('setting.doc2') }}</span>
                 </el-link>
                 <el-divider direction="vertical" />
-                <el-link type="primary" :underline="false" @click="toGithub">
+                <el-link type="primary" underline="never" @click="toGithub">
                     <span class="font-normal">{{ $t('setting.project') }}</span>
                 </el-link>
                 <el-divider v-if="!mobile" direction="vertical" />
             </div>
             <div class="flex flex-wrap items-center">
-                <el-link :underline="false" class="version" type="primary" @click="copyText(version)">
+                <el-link underline="never" class="version" type="primary" @click="copyText(version)">
                     {{ version }}
                 </el-link>
                 <el-badge is-dot class="-mt-0.5" v-if="version !== 'Waiting' && globalStore.hasNewVersion">
-                    <el-link class="ml-2" :underline="false" type="primary" @click="onLoadUpgradeInfo">
+                    <el-link class="ml-2" underline="never" type="primary" @click="onLoadUpgradeInfo">
                         {{ $t('commons.operate.update') }}
                     </el-link>
                 </el-badge>
                 <el-link
                     v-if="version !== 'Waiting' && !globalStore.hasNewVersion"
                     type="primary"
-                    :underline="false"
+                    underline="never"
                     class="ml-2"
                     @click="onLoadUpgradeInfo"
                 >
