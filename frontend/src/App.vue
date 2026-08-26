@@ -5,7 +5,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed, ref, nextTick, provide } from 'vue';
+import { reactive, computed, ref, nextTick, provide, watch } from 'vue';
 import { GlobalStore } from '@/store';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import zhTw from 'element-plus/es/locale/lang/zh-tw';
@@ -16,9 +16,25 @@ import ptBR from 'element-plus/es/locale/lang/pt-br';
 import ru from 'element-plus/es/locale/lang/ru';
 import ko from 'element-plus/es/locale/lang/ko';
 import { useTheme } from '@/hooks/use-theme';
-useTheme();
 
 const globalStore = GlobalStore();
+
+// 刷新/首次加载时恢复持久化的主题（auto 跟随系统）；此前仅登录页与手动切换会应用，
+// 直接刷新任意页面会导致暗色丢失
+const { switchTheme } = useTheme();
+switchTheme();
+// 刷新时恢复面板标题（此前仅登录流程会设置，直接刷新会一直显示 loading...）
+document.title = globalStore.themeConfig.panelName || '1Panel';
+watch(
+    () => globalStore.themeConfig.theme,
+    () => switchTheme(),
+);
+watch(
+    () => globalStore.themeConfig.panelName,
+    (v) => {
+        if (v) document.title = v;
+    },
+);
 const config = reactive({
     autoInsertSpace: false,
 });
