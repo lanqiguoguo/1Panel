@@ -295,7 +295,7 @@ function set_port() {
     if [[ -n "$PANEL_PORT" ]]; then return; fi
     local default_port=$((RANDOM % 55535 + 10000))
     while true; do
-        read -r -p "$(text TXT_SET_PANEL_PORT "set panel port (default $default_port): ")" PANEL_PORT
+        read -r -p "$(text TXT_SET_PANEL_PORT "set panel port (default is") $default_port): " PANEL_PORT
         if [[ -z "$PANEL_PORT" ]]; then PANEL_PORT=$default_port; fi
         if ! [[ "$PANEL_PORT" =~ ^[1-9][0-9]{0,4}$ && "$PANEL_PORT" -le 65535 ]]; then
             log_err "$(text TXT_INPUT_PORT_NUMBER "invalid port number")"
@@ -316,7 +316,7 @@ function set_entrance() {
     local default_entrance
     default_entrance=$(head -c 16 /dev/urandom | md5sum | head -c 10)
     while true; do
-        read -r -p "$(text TXT_SET_PANEL_ENTRANCE "set security entrance (default $default_entrance): ")" PANEL_ENTRANCE
+        read -r -p "$(text TXT_SET_PANEL_ENTRANCE "set security entrance (default is") $default_entrance): " PANEL_ENTRANCE
         if [[ -z "$PANEL_ENTRANCE" ]]; then PANEL_ENTRANCE=$default_entrance; fi
         if ! [[ "$PANEL_ENTRANCE" =~ ^[a-zA-Z0-9_]{3,30}$ ]]; then
             log_err "$(text TXT_INPUT_ENTRANCE_RULE "invalid entrance format")"
@@ -332,7 +332,7 @@ function set_username() {
     local default_username
     default_username=$(head -c 16 /dev/urandom | md5sum | head -c 10)
     while true; do
-        read -r -p "$(text TXT_SET_PANEL_USER "set admin username (default $default_username): ")" PANEL_USERNAME
+        read -r -p "$(text TXT_SET_PANEL_USER "set admin username (default is") $default_username): " PANEL_USERNAME
         if [[ -z "$PANEL_USERNAME" ]]; then PANEL_USERNAME=$default_username; fi
         if ! [[ "$PANEL_USERNAME" =~ ^[a-zA-Z0-9_]{3,30}$ ]]; then
             log_err "$(text TXT_INPUT_USERNAME_RULE "invalid username format")"
@@ -348,7 +348,7 @@ function set_password() {
     local default_password
     default_password=$(head -c 16 /dev/urandom | md5sum | head -c 10)
     while true; do
-        read -r -s -p "$(text TXT_SET_PANEL_PASSWORD "set admin password (press enter for random): ")" PANEL_PASSWORD
+        read -r -s -p "$(text TXT_SET_PANEL_PASSWORD "set admin password (default is") $default_password): " PANEL_PASSWORD
         echo
         if [[ -z "$PANEL_PASSWORD" ]]; then PANEL_PASSWORD=$default_password; fi
         if ! [[ "$PANEL_PASSWORD" =~ ^[a-zA-Z0-9_!@#$%*,.?]{8,30}$ ]]; then
@@ -370,9 +370,26 @@ function install_docker() {
         fi
         if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
             log_info "installing docker via get.docker.com ..."
-            curl -fsSL https://get.docker.com | sh 2>&1 | tee -a "$LOG_FILE"
+            local proxy_args=()
+            [[ -n "$PROXY_URL" ]] && proxy_args=(-x "$PROXY_URL")
+            if ! curl -fsSL --connect-timeout 15 "${proxy_args[@]}" https://get.docker.com -o /tmp/get-docker.sh; then
+                log_err "failed to download the docker install script${PROXY_URL:+ through $PROXY_URL}"
+                log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
+                return
+            fi
+            # export standard vars so the script's internal apt/yum/curl calls
+            # inherit the same route as everything else in this installer
+            if [[ -n "$PROXY_URL" ]]; then
+                http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" \
+                    HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" \
+                    sh /tmp/get-docker.sh 2>&1 | tee -a "$LOG_FILE"
+            else
+                sh /tmp/get-docker.sh 2>&1 | tee -a "$LOG_FILE"
+            fi
+            rm -f /tmp/get-docker.sh
             if ! command -v docker >/dev/null 2>&1; then
-                log_warn "docker install failed, you can install it manually later"
+                log_warn "docker install failed${PROXY_URL:+ (was routed through $PROXY_URL)}"
+                log_warn "docker skipped; install it manually and rerun app-store features afterwards"
                 return
             fi
         else
