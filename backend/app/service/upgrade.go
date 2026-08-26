@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,8 +35,40 @@ func NewIUpgradeService() IUpgradeService {
 }
 
 func (u *UpgradeService) SearchUpgrade() (*dto.UpgradeInfo, error) {
-	// internal fork: online upgrade check is disabled, always report up-to-date
-	return &dto.UpgradeInfo{}, nil
+	var upgrade dto.UpgradeInfo
+	currentVersion, err := settingRepo.Get(settingRepo.WithByKey("SystemVersion"))
+	if err != nil {
+		return nil, err
+	}
+	DeveloperMode, err := settingRepo.Get(settingRepo.WithByKey("DeveloperMode"))
+	if err != nil {
+		return nil, err
+	}
+
+	upgrade.TestVersion, upgrade.NewVersion, upgrade.LatestVersion = u.loadVersionByMode(DeveloperMode.Value, currentVersion.Value)
+	var itemVersion string
+	if len(upgrade.LatestVersion) != 0 {
+		itemVersion = upgrade.LatestVersion
+	}
+	if len(upgrade.NewVersion) != 0 {
+		itemVersion = upgrade.NewVersion
+	}
+	if (global.CONF.System.Mode == "dev" || DeveloperMode.Value == "enable") && len(upgrade.TestVersion) != 0 {
+		itemVersion = upgrade.TestVersion
+	}
+	if len(itemVersion) == 0 {
+		return &upgrade, nil
+	}
+	mode := global.CONF.System.Mode
+	if strings.Contains(itemVersion, "beta") {
+		mode = "beta"
+	}
+	notes, err := u.loadReleaseNotes(fmt.Sprintf("%s/%s/%s/release/1panel-%s-release-notes", global.CONF.System.RepoUrl, mode, itemVersion, itemVersion))
+	if err != nil {
+		return nil, fmt.Errorf("load releases-notes of version %s failed, err: %v", itemVersion, err)
+	}
+	upgrade.ReleaseNote = notes
+	return &upgrade, nil
 }
 
 func (u *UpgradeService) LoadNotes(req dto.Upgrade) (string, error) {
@@ -71,8 +104,11 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 	if strings.Contains(req.Version, "beta") {
 		mode = "beta"
 	}
-	downloadPath := fmt.Sprintf("%s/%s/%s/release", global.CONF.System.RepoUrl, mode, req.Version)
 	fileName := fmt.Sprintf("1panel-%s-%s-%s.tar.gz", req.Version, "linux", itemArch)
+	downloadURL := fmt.Sprintf("%s/%s/%s/release/%s", global.CONF.System.RepoUrl, mode, req.Version, fileName)
+	if global.CONF.System.PackageUrl != "" {
+		downloadURL = fmt.Sprintf("%s/%s", global.CONF.System.PackageUrl, fileName)
+	}
 	serviceHandle, _ := systemctl.DefaultHandler("1panel")
 	currentServiceName := serviceHandle.GetServiceName()
 	if err := settingRepo.Update("SystemStatus", "Upgrading"); err != nil {
@@ -90,7 +126,7 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 		defer global.Cron.Start()
 
 		if err := fileOp.DownloadFileWithProxy(
-			fmt.Sprintf("%s/%s", downloadPath, fileName),
+			downloadURL,
 			path.Join(rootDir, fileName),
 		); err != nil {
 			global.LOG.Errorf("Failed to download upgrade package: %v", err)
@@ -132,9 +168,8 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 			}
 		}
 
-		if _, err := cmd.Execf("sed -i -e 's#BASE_DIR=.*#BASE_DIR=%s#g' /usr/local/bin/1pctl",
-			global.CONF.System.BaseDir); err != nil {
-			global.LOG.Errorf("Update base directory failed: %v", err)
+		if err := u.migrate1pctlParams(path.Join(originalDir, "1pctl"), path.Join(binDir, "1pctl"), req.Version); err != nil {
+			global.LOG.Errorf("Migrate 1pctl params failed: %v", err)
 			u.handleRollback(originalDir, 2)
 			return
 		}
@@ -160,6 +195,62 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 			return
 		}
 	}()
+	return nil
+}
+
+// migrate1pctlParams rewrites the freshly installed 1pctl so local
+// installation parameters survive an upgrade; only ORIGINAL_VERSION comes
+// from req.Version. Non-dev mode reads port/credentials/entrance/language
+// from these keys (see init/viper), so losing them would lock users out.
+func (u *UpgradeService) migrate1pctlParams(backupPath, targetPath string, newVersion string) error {
+	backupData, err := os.ReadFile(backupPath)
+	if err != nil {
+		return fmt.Errorf("read backup 1pctl failed: %w", err)
+	}
+	params := map[string]string{}
+	for _, line := range strings.Split(string(backupData), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || value == "" {
+			continue
+		}
+		switch key {
+		case "BASE_DIR", "ORIGINAL_PORT", "ORIGINAL_USERNAME", "ORIGINAL_PASSWORD", "ORIGINAL_ENTRANCE", "LANGUAGE", "CHANGE_USER_INFO":
+			params[key] = value
+		}
+	}
+	if global.CONF.System.BaseDir != "" {
+		params["BASE_DIR"] = global.CONF.System.BaseDir
+	}
+	params["ORIGINAL_VERSION"] = newVersion
+
+	targetData, err := os.ReadFile(targetPath)
+	if err != nil {
+		return fmt.Errorf("read target 1pctl failed: %w", err)
+	}
+	lines := strings.Split(string(targetData), "\n")
+	for i, line := range lines {
+		key, _, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		if value, ok := params[key]; ok {
+			lines[i] = key + "=" + value
+			delete(params, key)
+		}
+	}
+	insertAt := len(lines)
+	if insertAt > 0 && lines[insertAt-1] == "" {
+		insertAt--
+	}
+	appended := make([]string, 0, len(params))
+	for key, value := range params {
+		appended = append(appended, key+"="+value)
+	}
+	sort.Strings(appended)
+	lines = append(lines[:insertAt], append(appended, lines[insertAt:]...)...)
+	if err := os.WriteFile(targetPath, []byte(strings.Join(lines, "\n")), 0755); err != nil {
+		return fmt.Errorf("write target 1pctl failed: %w", err)
+	}
 	return nil
 }
 
@@ -279,7 +370,7 @@ func (u *UpgradeService) loadVersion(isLatest bool, currentVersion, mode string)
 		global.LOG.Errorf("load latest version from oss failed, err: %v", err)
 		return ""
 	}
-	version := string(latestVersionRes)
+	version := strings.TrimSpace(string(latestVersionRes))
 	if strings.Contains(version, "<") {
 		global.LOG.Errorf("load latest version from oss failed, err: %v", version)
 		return ""
@@ -306,18 +397,19 @@ func (u *UpgradeService) loadVersion(isLatest bool, currentVersion, mode string)
 	}
 	if num >= 10 {
 		if version, ok := versionMap[currentVersion[0:5]]; ok {
-			return u.checkVersion(version, currentVersion)
+			return u.checkVersion(strings.TrimSpace(version), currentVersion)
 		}
 		return ""
 	}
 	if version, ok := versionMap[currentVersion[0:4]]; ok {
-		return u.checkVersion(version, currentVersion)
+		return u.checkVersion(strings.TrimSpace(version), currentVersion)
 	}
 	return ""
 }
 
 func (u *UpgradeService) checkVersion(v2, v1 string) string {
 	addSuffix := false
+	v2 = strings.TrimSpace(v2)
 	if !strings.Contains(v1, "-") {
 		v1 = v1 + "-lts"
 	}

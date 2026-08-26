@@ -42,10 +42,10 @@ backend/xpack
 *_xpack.go
 .history/
 dist/
-1pctl
-1panel.service
-install.sh
+/1pctl
+/1panel.service
 quick_start.sh
 cmd/server/fileList.txt
 .fileList.txt
 1Panel.code-workspace
+.zcode/

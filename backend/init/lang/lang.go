@@ -127,6 +127,9 @@ func downloadLangFromRemote(fileOp files.FileOp) {
 func downloadGeoFromRemote(fileOp files.FileOp, targetPath string) {
 	_ = os.MkdirAll(path.Dir(targetPath), os.ModePerm)
 	pathItem := fmt.Sprintf("%s/geo/GeoIP.mmdb", global.CONF.System.RepoUrl)
+	if global.CONF.System.PackageUrl != "" {
+		pathItem = fmt.Sprintf("%s/GeoIP.mmdb", global.CONF.System.PackageUrl)
+	}
 	if err := fileOp.DownloadFile(pathItem, targetPath); err != nil {
 		global.LOG.Errorf("download geo ip failed, err: %v", err)
 		return

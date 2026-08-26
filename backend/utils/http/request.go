@@ -23,10 +23,13 @@ func SetProxyURL(u *url.URL) {
 }
 
 // NewTransport 返回统一的出站 Transport：
-// 代理优先级为面板设置 > 环境变量，启用证书校验。
+// 代理优先级为面板设置 > 环境变量，环回地址始终直连，启用证书校验。
 func NewTransport() *http.Transport {
 	return &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
+			if host := req.URL.Hostname(); host == "localhost" || host == "127.0.0.1" || host == "::1" {
+				return nil, nil
+			}
 			if u := configuredProxy.Load(); u != nil {
 				return u, nil
 			}

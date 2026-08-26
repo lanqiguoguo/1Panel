@@ -1,0 +1,118 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*-lts"
+      - "v*-lts.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate version tag
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [[ ! "$VERSION" =~ ^v[0-9]+(\.[0-9]+)+-lts([-._][0-9A-Za-z]+)*$ ]]; then
+            echo "::error::tag $VERSION does not match the v1.10.x-lts scheme"
+            exit 1
+          fi
+
+      - name: Build frontend
+        run: make build_frontend
+
+      - name: Build backend
+        run: |
+          sed -i 's/^  mode: dev$/  mode: stable/' cmd/server/conf/app.yaml
+          make clean_assets build_backend_on_linux
+
+      - name: Fetch GeoIP database from `packages` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release download packages --repo "$GITHUB_REPOSITORY" \
+              --pattern "GeoIP.mmdb" --output GeoIP.mmdb; then
+            echo "::error::GeoIP.mmdb is not on the \`packages\` release yet."
+            echo "::error::Seed it once with: gh release upload packages GeoIP.mmdb --repo $GITHUB_REPOSITORY"
+            exit 1
+          fi
+
+      - name: Assemble package
+        run: |
+          VERSION="${VERSION}"
+          PKG_DIR="1panel-${VERSION}-linux-amd64"
+          mkdir -p "$PKG_DIR"
+          cp build/1panel "$PKG_DIR/1panel"
+          cp ci/resources/1pctl "$PKG_DIR/1pctl"
+          sed -i "s#^ORIGINAL_VERSION=.*#ORIGINAL_VERSION=${VERSION}#" "$PKG_DIR/1pctl"
+          chmod +x "$PKG_DIR/1panel" "$PKG_DIR/1pctl"
+          cp -r ci/resources/lang "$PKG_DIR/lang"
+          cp -r ci/resources/initscript "$PKG_DIR/initscript"
+          cp GeoIP.mmdb "$PKG_DIR/GeoIP.mmdb"
+          tar -czf "${PKG_DIR}.tar.gz" "$PKG_DIR"
+          sha256sum "${PKG_DIR}.tar.gz" > "${PKG_DIR}.tar.gz.sha256.txt"
+
+      - name: Upload to rolling release `packages`
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view packages --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create packages --repo "$GITHUB_REPOSITORY" \
+              --title "packages" --notes "rolling tag for panel upgrade packages"
+          gh release upload packages \
+            "1panel-${VERSION}-linux-amd64.tar.gz" \
+            "1panel-${VERSION}-linux-amd64.tar.gz.sha256.txt" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Update channel manifests (stable + dev mirror)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${VERSION}"
+          PREFIX="$(echo "$VERSION" | cut -d. -f1-2)"
+
+          NOTES_FILE="ci/release-notes.md"
+          if [[ ! -f "$NOTES_FILE" ]]; then
+            echo "- release $VERSION" > "$NOTES_FILE"
+          fi
+          NOTES="$(cat "$NOTES_FILE")"
+
+          for CH in stable dev beta; do
+            mkdir -p "$CH/$VERSION/release"
+            printf '%s' "$VERSION" > "$CH/latest"
+            printf '{"%s": "%s"}' "$PREFIX" "$VERSION" > "$CH/latest.current"
+            printf '%s' "$NOTES" > "$CH/$VERSION/release/1panel-$VERSION-release-notes"
+          done
+
+          rm -f language/lang.tar.gz
+          mkdir -p language
+          tar -czf language/lang.tar.gz -C ci/resources lang
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add stable dev beta language
+          if git diff --cached --quiet; then
+            echo "channel manifests unchanged"
+          else
+            git commit -m "ci: release $VERSION"
+            git push origin HEAD:main
+          fi

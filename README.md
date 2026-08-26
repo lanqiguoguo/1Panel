@@ -1,78 +1,60 @@
-<p align="center"><a href="https://1panel.pro"><img src="https://resource.1panel.pro/img/1panel-logo.png" alt="1Panel" width="300" /></a></p>
+<p align="center"><b>1Panel</b></p>
 <p align="center"><b>Simplify Linux Server Management</b></p>
-<p align="center">
-  <a href="https://trendshift.io/repositories/2462" target="_blank"><img src="https://trendshift.io/api/badge/repositories/2462" alt="1Panel-dev%2F1Panel | Trendshift" style="width: 240px; height: auto;" /></a>
-</p>
-<p align="center">
-  <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://shields.io/github/license/1Panel-dev/1Panel?color=%231890FF" alt="License: GPL v3"></a>
-  <a href="https://app.codacy.com/gh/1Panel-dev/1Panel?utm_source=github.com&utm_medium=referral&utm_content=1Panel-dev/1Panel&utm_campaign=Badge_Grade_Dashboard"><img src="https://app.codacy.com/project/badge/Grade/da67574fd82b473992781d1386b937ef" alt="Codacy"></a>
-  <a href="https://discord.gg/bUpUqWqdRr" target="_blank">
-        <img src="https://img.shields.io/discord/1318846410149335080?logo=discord&labelColor=%20%235462eb&logoColor=%20%23f5f5f5&color=%20%235462eb"
-            alt="chat on Discord"></a>
-  <a href="https://github.com/1Panel-dev/1Panel/releases"><img src="https://img.shields.io/github/v/release/1Panel-dev/1Panel" alt="GitHub release"></a>
-  <a href="https://github.com/1Panel-dev/1Panel"><img src="https://img.shields.io/github/stars/1Panel-dev/1Panel?color=%231890FF&style=flat-square" alt="Stars"></a><br>
-</p>
-<p align="center">
-  <a href="/README.md"><img alt="English" src="https://img.shields.io/badge/English-d9d9d9"></a>
-  <a href="/docs/README.zh-Hans.md"><img alt="中文(简体)" src="https://img.shields.io/badge/中文(简体)-d9d9d9"></a>
-  <a href="/docs/README.ja.md"><img alt="日本語" src="https://img.shields.io/badge/日本語-d9d9d9"></a>
-  <a href="/docs/README.pt-br.md"><img alt="Português (Brasil)" src="https://img.shields.io/badge/Português (Brasil)-d9d9d9"></a>
-  <a href="/docs/README.ar.md"><img alt="العربية" src="https://img.shields.io/badge/العربية-d9d9d9"></a>
-  <a href="/docs/README.de.md"><img alt="Deutsch" src="https://img.shields.io/badge/Deutsch-d9d9d9"></a>
-  <a href="/docs/README.es.md"><img alt="Español" src="https://img.shields.io/badge/Español-d9d9d9"></a><br>
-  <a href="/docs/README.fr.md"><img alt="français" src="https://img.shields.io/badge/français-d9d9d9"></a>
-  <a href="/docs/README.ko.md"><img alt="한국어" src="https://img.shields.io/badge/한국어-d9d9d9"></a>
-  <a href="/docs/README.id.md"><img alt="Bahasa Indonesia" src="https://img.shields.io/badge/Bahasa Indonesia-d9d9d9"></a>
-  <a href="/docs/README.zh-Hant.md"><img alt="中文(繁體)" src="https://img.shields.io/badge/中文(繁體)-d9d9d9"></a>
-  <a href="/docs/README.tr.md"><img alt="Türkçe" src="https://img.shields.io/badge/Türkçe-d9d9d9"></a>
-  <a href="/docs/README.ru.md"><img alt="Русский" src="https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-d9d9d9"></a>
-  <a href="/docs/README.ms.md"><img alt="Bahasa Melayu" src="https://img.shields.io/badge/Bahasa Melayu-d9d9d9"></a>
-</p>
 
 ------------------------------
 
-1Panel provides an intuitive web interface and MCP Server to manage websites, files, containers, databases, and LLMs on a Linux server.
+Internal fork of [1Panel-dev/1Panel](https://github.com/1Panel-dev/1Panel) (v1 line).
 
-- **Efficient Management**: Through a user-friendly web graphical interface, 1Panel enables users to effortlessly manage their Linux servers. Key features include host monitoring, file management, database administration, container management, LLMs management.
-- **Rapid Website Deployment**: With deep integration of the popular open-source website building software WordPress, 1Panel streamlines the process of domain binding and SSL certificate configuration, all achievable with just one click.
-- **Application Store**: 1Panel curates a wide range of high-quality open-source tools and applications, facilitating easy installation and updates for its users.
-- **Security and Reliability**: By leveraging containerization and secure application deployment practices, 1Panel minimizes vulnerability exposure. It further enhances security through integrated firewall management and log auditing capabilities.
-- **One-Click Backup & Restore**: Data protection is made simple with 1Panel's one-click backup and restore functionality, supporting various cloud storage solutions to ensure data integrity and availability.
-- **MCP Server**: [1Panel MCP Server](https://github.com/1Panel-dev/mcp-1panel) allow user to execute server operations via natural language.
+Differences from upstream:
+
+- **Self-hosted release channel**: panel online upgrades are served from this repository — version manifests and release notes via raw (`stable/`、`dev/`, mirrored), packages attached to the rolling GitHub Release tag `packages`. No dependency on `resource.1panel.pro`.
+- **Self-hosted app store**: app store source lives at [lanqiguoguo/appstore](https://github.com/lanqiguoguo/appstore).
+- **Pro/xpack features removed**: WAF-related professional add-ons are stripped; packaging pulls nothing from official repos or fit2cloud.
+- Versioning: `v1.10.{x}-lts`, monotonically increasing, independent from upstream tags.
 
 ## Quick Start
 
-Execute the script below and follow the prompts to install 1Panel:
+Install the latest stable version:
 
 ```bash
-curl -sSL https://resource.1panel.pro/quick_start.sh -o quick_start.sh && bash quick_start.sh
+curl -sSL https://raw.githubusercontent.com/lanqiguoguo/1Panel/main/install.sh -o install.sh && sudo bash install.sh
 ```
 
-Please refer to our [documentation](https://docs.1panel.pro/quick_start/) for more details.
+Or install a specific version:
 
-中国用户请使用此 [安装脚本](https://1panel.cn/docs/v2/installation/online_installation/)，默认安装 V2 版本，应用数量相较国际版本更丰富。
+```bash
+sudo bash install.sh v1.10.35-lts
+```
 
-## Screenshot
+Non-interactive install (all prompts can be pre-set via environment):
 
-![UI Display](https://resource.1panel.pro/img/1panel.png)
+```bash
+sudo PANEL_BASE_DIR=/opt PANEL_PORT=9999 PANEL_USERNAME=admin PANEL_PASSWORD='Admin@2026' \
+    PANEL_ENTRANCE=entrance bash install.sh
+```
 
-## Star History
+Uninstall:
 
-[![Star History Chart](https://api.star-history.com/svg?repos=1Panel-dev/1Panel&type=Date)](https://star-history.com/#1Panel-dev/1Panel&Date)
+```bash
+sudo bash install.sh -u
+```
 
-## Pro Edition
+### Online Upgrade
 
-Compared to the OSS Edition, 1Panel Pro Edition provides users with a wealth of enhanced features and technical support services. Enhanced features include WAF enhancement, Website monitoring, Mobile APP, custom logo and theme, etc. 
+Once installed, check and apply upgrades inside the panel (footer or `Settings -> About`).
+Upgrades download the new build from this repository's release channel and keep your local
+settings (port, credentials, entrance) intact.
 
-[Click to see Pro Edition details](https://1panel.pro/pricing).
+## Development
+
+- Local development runs with embedded `mode: dev`; released builds switch to `stable` during CI.
+- Publishing a release = pushing a tag matching `v1.10.*-lts`; GitHub Actions builds, assembles
+  the package and refreshes both channel trees automatically.
+- Packaging assets (1pctl template, init scripts, lang files, GeoIP database) live under `ci/resources/`.
 
 ## Security Information
 
 If you discover any security issues, please refer to [SECURITY.md](/SECURITY.md).
-
-## GitAds Sponsored
-
-[![Sponsored by GitAds](https://gitads.dev/v1/ad-serve?source=1panel-dev/1panel@github)](https://gitads.dev/v1/ad-track?source=1panel-dev/1panel@github)
 
 ## License
 
@@ -81,7 +63,3 @@ Licensed under The GNU General Public License version 3 (GPLv3)  (the "License")
 <https://www.gnu.org/licenses/gpl-3.0.html>
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
-
-<!-- GitAds-Verify: 9M8AMBB11GYJ3RUNXGB5R1MR71KPATU9 -->
-
-

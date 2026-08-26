@@ -2,7 +2,8 @@ system:
   db_file: 1Panel.db
   base_dir: /opt
   mode: dev
-  repo_url: https://resource.1panel.pro
+  repo_url: https://raw.githubusercontent.com/lanqiguoguo/1Panel/main
+  package_url: https://github.com/lanqiguoguo/1Panel/releases/download/packages
   app_repo: https://raw.githubusercontent.com/lanqiguoguo/appstore/main
   is_demo: false
   is_intl: true
