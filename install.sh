@@ -66,12 +66,22 @@ function set_param() {
 }
 
 function fetch() {
-    # fetch URL OUTPUT_FILE
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 --connect-timeout 15 "$1" -o "$2"
-    else
-        wget -q -T 15 -t 3 "$1" -O "$2"
-    fi
+    # fetch URL OUTPUT_FILE [MAX_SECS] — resumable, time-bounded, shows progress
+    local url=$1 out=$2 max_time=${3:-120} attempt
+    for attempt in 1 2 3; do
+        if command -v curl >/dev/null 2>&1; then
+            # shellcheck disable=SC2086
+            if curl -fL --progress-bar --connect-timeout 15 --max-time "$max_time" -C - "$url" -o "$out"; then
+                return 0
+            fi
+        else
+            if wget -c -T 15 -t 1 --timeout=60 "$url" -O "$out"; then
+                return 0
+            fi
+        fi
+        [[ $attempt -lt 3 ]] && { echo "  retrying ($attempt/3)..."; sleep 2; }
+    done
+    return 1
 }
 
 TEXT_LOADED=false
@@ -105,7 +115,7 @@ function resolve_version() {
         log_info "resolving latest stable version..."
         local latest_file
         latest_file=$(mktemp)
-        if ! fetch "$RAW_BASE/stable/latest" "$latest_file" || [[ ! -s "$latest_file" ]]; then
+        if ! fetch "$RAW_BASE/stable/latest" "$latest_file" 60 || [[ ! -s "$latest_file" ]]; then
             rm -f "$latest_file"
             log_err "failed to load $RAW_BASE/stable/latest"
             exit 1
@@ -134,8 +144,10 @@ function fetch_package() {
     local url="$PKG_BASE/$file_name"
     EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
     log_info "downloading $url ..."
-    if ! fetch "$url" "$EXTRACT_ROOT/$file_name"; then
+    if ! fetch "$url" "$EXTRACT_ROOT/$file_name" 1800; then
         log_err "download failed, check that version $VERSION ($ARCH) exists on the release channel"
+        log_err "if this machine needs a proxy for GitHub, keep http_proxy/https_proxy in your"
+        log_err "shell and run: sudo -E bash install.sh   (plain sudo strips proxy env vars)"
         exit 1
     fi
     tar -xzf "$EXTRACT_ROOT/$file_name" -C "$EXTRACT_ROOT" || { log_err "extract failed"; exit 1; }
