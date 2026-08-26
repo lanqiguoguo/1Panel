@@ -26,6 +26,19 @@ Or install a specific version:
 sudo bash install.sh v1.10.35-lts
 ```
 
+If GitHub is slow or unreachable from your network, pass an explicit proxy
+(this survives `sudo`, unlike exported environment variables):
+
+```bash
+sudo bash install.sh --proxy http://127.0.0.1:7890
+```
+
+Fully offline install from a manually downloaded package:
+
+```bash
+sudo bash install.sh --pkg ./1panel-v1.10.35-lts-linux-amd64.tar.gz
+```
+
 Non-interactive install (all prompts can be pre-set via environment):
 
 ```bash

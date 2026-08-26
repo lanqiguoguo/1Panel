@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 1Panel installer for the lanqiguoguo fork.
+# 1Panel installer for the lanqiguoguo fork.   revision: 2026-08-26-proxy-flag
 # Everything is served from this repository's own release channel:
 #   - version manifest : https://raw.githubusercontent.com/lanqiguoguo/1Panel/main/stable/latest
 #   - upgrade packages : https://github.com/lanqiguoguo/1Panel/releases/download/packages
@@ -8,10 +8,16 @@
 # Usage:
 #   bash install.sh                  install the latest stable version
 #   bash install.sh v1.10.35-lts     install a specific version
+#   bash install.sh --proxy http://127.0.0.1:7890
+#                                    route downloads through an explicit proxy
+#                                    (survives sudo, unlike environment variables)
+#   bash install.sh --pkg ./1panel-v1.10.35-lts-linux-amd64.tar.gz
+#                                    install from a local package, no download
 #   bash install.sh -u               uninstall the panel
 #
 # Non-interactive install: pre-set PANEL_BASE_DIR, PANEL_PORT, PANEL_USERNAME,
-# PANEL_PASSWORD, PANEL_ENTRANCE or PANEL_LANG to skip the matching prompt.
+# PANEL_PASSWORD, PANEL_ENTRANCE, PANEL_LANG or PANEL_PROXY to skip the
+# matching prompt/option.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,6 +41,8 @@ SERVICE_MANAGER=""
 SELECTED_LANG="en"
 LOCAL_IP=""
 PUBLIC_IP=""
+PROXY_URL="${PANEL_PROXY:-}"
+LOCAL_PKG=""
 
 function log_msg() {
     local color=$1 message=$2 timestamp
@@ -50,6 +58,9 @@ function usage() {
     echo "Usage: bash install.sh [OPTIONS] [VERSION]"
     echo ""
     echo "  VERSION          install a specific version, e.g. v1.10.35-lts (default: latest stable)"
+    echo "  --proxy URL      route downloads through an explicit proxy, e.g. http://127.0.0.1:7890"
+    echo "                   (PANEL_PROXY env does the same; survives sudo unlike exported vars)"
+    echo "  --pkg FILE       install from a local package tar.gz instead of downloading"
     echo "  -u, --uninstall  uninstall the panel"
     echo "  -h, --help       show this help"
 }
@@ -66,22 +77,41 @@ function set_param() {
 }
 
 function fetch() {
-    # fetch URL OUTPUT_FILE [MAX_SECS] — resumable, time-bounded, shows progress
+    # fetch URL OUTPUT_FILE [MAX_SECS] — resumable, time-bounded, shows progress.
+    # Routes through PROXY_URL when set (explicit -x overrides any env proxy).
     local url=$1 out=$2 max_time=${3:-120} attempt
+    local proxy_args=()
+    [[ -n "$PROXY_URL" ]] && proxy_args=(-x "$PROXY_URL")
     for attempt in 1 2 3; do
         if command -v curl >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            if curl -fL --progress-bar --connect-timeout 15 --max-time "$max_time" -C - "$url" -o "$out"; then
+            if curl -fL --progress-bar --connect-timeout 15 --max-time "$max_time" "${proxy_args[@]}" -C - "$url" -o "$out"; then
                 return 0
             fi
         else
-            if wget -c -T 15 -t 1 --timeout=60 "$url" -O "$out"; then
-                return 0
+            local wget_ok=0
+            if [[ -n "$PROXY_URL" ]]; then
+                wget -c -T 60 -t 1 -e use_proxy=yes -e "http_proxy=$PROXY_URL" -e "https_proxy=$PROXY_URL" "$url" -O "$out" && wget_ok=1
+            else
+                wget -c -T 60 -t 1 "$url" -O "$out" && wget_ok=1
             fi
+            [[ $wget_ok -eq 1 ]] && return 0
         fi
         [[ $attempt -lt 3 ]] && { echo "  retrying ($attempt/3)..."; sleep 2; }
     done
     return 1
+}
+
+# probe_url URL — preflight connectivity on the active route, prints HTTP code
+function probe_url() {
+    local code
+    if command -v curl >/dev/null 2>&1; then
+        local proxy_args=()
+        [[ -n "$PROXY_URL" ]] && proxy_args=(-x "$PROXY_URL")
+        code=$(curl -sIL -m 8 "${proxy_args[@]}" -o /dev/null -w '%{http_code}' "$1")
+    else
+        code=$(wget -q -T 8 --spider "$1" && echo 200 || echo 000)
+    fi
+    echo "$code"
 }
 
 TEXT_LOADED=false
@@ -139,30 +169,79 @@ function detect_arch() {
     esac
 }
 
-function fetch_package() {
-    local file_name="1panel-${VERSION}-linux-${ARCH}.tar.gz"
-    local url="$PKG_BASE/$file_name"
-    EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
-    local active_proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-${all_proxy:-}}}}}"
-    if [[ -n "$active_proxy" ]]; then
-        log_info "using proxy from environment: $active_proxy"
-    else
-        log_info "no proxy in environment; GitHub may be slow/blocked without one"
-        log_info "(export https_proxy=... and run 'bash install.sh' as root, or 'sudo -E bash install.sh')"
-    fi
-    log_info "downloading $url ..."
-    if ! fetch "$url" "$EXTRACT_ROOT/$file_name" 1800; then
-        log_err "download failed, check that version $VERSION ($ARCH) exists on the release channel"
-        log_err "if this machine needs a proxy for GitHub, keep http_proxy/https_proxy in your"
-        log_err "shell and run: sudo -E bash install.sh   (plain sudo strips proxy env vars)"
-        exit 1
-    fi
-    tar -xzf "$EXTRACT_ROOT/$file_name" -C "$EXTRACT_ROOT" || { log_err "extract failed"; exit 1; }
-    EXTRACT_DIR="$EXTRACT_ROOT/${file_name%.tar.gz}"
+# prepare_extracted_pkg TARBALL_PATH — extract into a fresh temp dir and verify layout
+function prepare_extracted_pkg() {
+    local tarball=$1 base
+    base=$(basename "$tarball")
+    base=${base%.tar.gz}
+    tar -xzf "$tarball" -C "$EXTRACT_ROOT" || { log_err "extract failed"; exit 1; }
+    EXTRACT_DIR="$EXTRACT_ROOT/$base"
     if [[ ! -x "$EXTRACT_DIR/1panel" || ! -f "$EXTRACT_DIR/1pctl" || ! -d "$EXTRACT_DIR/initscript" || ! -d "$EXTRACT_DIR/lang" ]]; then
         log_err "package layout unexpected, required files missing in $EXTRACT_DIR"
         exit 1
     fi
+}
+
+function load_local_pkg() {
+    if [[ ! -f "$LOCAL_PKG" ]]; then
+        log_err "package file not found: $LOCAL_PKG"
+        exit 1
+    fi
+    local base
+    base=$(basename "$LOCAL_PKG")
+    if [[ "$base" =~ ^1panel-(v[0-9]+(\.[0-9]+)+-[a-z0-9]+([-._][0-9A-Za-z]+)*)-linux-[a-z0-9]+\.tar\.gz$ ]]; then
+        VERSION="${BASH_REMATCH[1]}"
+    else
+        log_err "cannot derive version from file name (expected 1panel-<version>-linux-<arch>.tar.gz): $base"
+        exit 1
+    fi
+    log_info "installing version $VERSION from local package"
+    EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
+    prepare_extracted_pkg "$LOCAL_PKG"
+}
+
+# Downloads land in a fixed directory so an interrupted run can be resumed
+# by simply running the installer again.
+DOWNLOAD_DIR="/tmp/1panel-download"
+
+function fetch_package() {
+    local file_name="1panel-${VERSION}-linux-${ARCH}.tar.gz"
+    local url="$PKG_BASE/$file_name"
+    if [[ -n "$PROXY_URL" ]]; then
+        log_info "using explicit proxy: $PROXY_URL"
+    else
+        log_info "no --proxy given; downloads follow http(s)_proxy env vars when present"
+    fi
+    local code
+    code=$(probe_url "$url")
+    case "$code" in
+        200) ;;
+        unknown)
+            log_warn "connectivity preflight unavailable, proceeding anyway"
+            ;;
+        *)
+            if [[ -n "$PROXY_URL" ]]; then
+                log_err "preflight through proxy $PROXY_URL failed (HTTP $code);"
+                log_err "check that the proxy is reachable from this machine"
+            else
+                log_err "direct connectivity to the release channel failed (HTTP $code)."
+                log_err "GitHub release assets are commonly unreachable without a proxy; retry with:"
+                log_err "  sudo bash install.sh --proxy http://<proxy-host>:<port>"
+                log_err "or install offline from a manually downloaded copy:"
+                log_err "  sudo bash install.sh --pkg ./$file_name"
+            fi
+            exit 1
+            ;;
+    esac
+    mkdir -p "$DOWNLOAD_DIR"
+    log_info "downloading $url ..."
+    if ! fetch "$url" "$DOWNLOAD_DIR/$file_name" 1800; then
+        log_err "download failed or timed out; partial file kept at $DOWNLOAD_DIR/$file_name,"
+        log_err "re-running the installer will resume from there"
+        exit 1
+    fi
+    EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
+    prepare_extracted_pkg "$DOWNLOAD_DIR/$file_name"
 }
 
 # Load one of the bundled lang files so prompts are localized like upstream.
@@ -383,8 +462,16 @@ function wait_active() {
         fi
         sleep 2
     done
-    log_err "panel service did not become active, check 'systemctl status 1panel' and journalctl"
-    exit 1
+    # last resort: the process may be alive even when the init system's status
+    # query misreports (openrc not booted, minimal images); check pgrep directly
+    if pgrep -x 1panel >/dev/null 2>&1; then
+        log_warn "service status query failed but the panel process is running"
+        return 0
+    fi
+    log_warn "panel service did not report active within $((max_attempts * 2))s"
+    log_warn "installation files are in place; diagnose with 'systemctl status 1panel' or '/etc/init.d/1paneld status'"
+    log_warn "if the panel never comes up: bash install.sh -u cleans everything for a retry"
+    return 1
 }
 
 function get_ips() {
@@ -411,9 +498,13 @@ function show_result() {
 function do_install() {
     check_root
     check_not_installed
-    resolve_version
-    detect_arch
-    fetch_package
+    if [[ -n "$LOCAL_PKG" ]]; then
+        load_local_pkg
+    else
+        resolve_version
+        detect_arch
+        fetch_package
+    fi
     choose_lang
     set_dir
     set_port
@@ -425,11 +516,14 @@ function do_install() {
     log_info "$(text TXT_CONFIGURE_PANEL_SERVICE "configuring panel service...")"
     install_panel_files
     install_service
-    wait_active
-    get_ips
-    show_result
-    rm -rf "$EXTRACT_ROOT"
-    log_ok "1Panel $VERSION installed successfully"
+    if wait_active; then
+        get_ips
+        show_result
+        rm -rf "$EXTRACT_ROOT" "$DOWNLOAD_DIR"
+        log_ok "1Panel $VERSION installed successfully"
+    else
+        log_warn "1Panel $VERSION installed, but service startup needs a manual check (see warnings above)"
+    fi
 }
 
 function do_uninstall() {
@@ -480,17 +574,44 @@ function main() {
                 usage
                 exit 0
                 ;;
+            --proxy)
+                if [[ -z "${2:-}" ]]; then
+                    echo "--proxy requires a URL"
+                    usage
+                    exit 1
+                fi
+                PROXY_URL="$2"
+                shift 2
+                ;;
+            --pkg)
+                if [[ -z "${2:-}" ]]; then
+                    echo "--pkg requires a file path"
+                    usage
+                    exit 1
+                fi
+                LOCAL_PKG="$2"
+                shift 2
+                ;;
             -*)
                 echo "unknown option: $1"
                 usage
                 exit 1
                 ;;
             *)
+                if [[ -n "$REQUESTED_VERSION" ]]; then
+                    echo "unexpected extra argument: $1"
+                    usage
+                    exit 1
+                fi
                 REQUESTED_VERSION="$1"
                 shift
                 ;;
         esac
     done
+    if [[ -n "$PROXY_URL" && ! "$PROXY_URL" =~ ^(https?|socks5h?):// ]]; then
+        echo "invalid proxy URL (expected http:// https:// socks5:// socks5h://): $PROXY_URL"
+        exit 1
+    fi
     do_install
 }
 
