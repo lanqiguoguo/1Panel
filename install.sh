@@ -68,12 +68,13 @@ function usage() {
 # set_param FILE KEY VALUE — rewrite "KEY=..." in place without any regex
 # escaping of VALUE (passwords may contain sed metacharacters).
 function set_param() {
-    local file=$1 key=$2 value=$3 tmp
+    local file=$1 key=$2 value=$3 tmp mode
     tmp="${file}.tmp"
+    mode=$(stat -c %a "$file")
     awk -v prefix="$key=" -v value="$value" '
         index($0, prefix) == 1 { print prefix value; next }
         { print }
-    ' "$file" > "$tmp" && mv "$tmp" "$file"
+    ' "$file" > "$tmp" && chmod "$mode" "$tmp" && mv "$tmp" "$file"
 }
 
 function fetch() {
@@ -427,10 +428,14 @@ function install_panel_files() {
     set_param /usr/local/bin/1pctl ORIGINAL_USERNAME "$PANEL_USERNAME"
     set_param /usr/local/bin/1pctl ORIGINAL_PASSWORD "$PANEL_PASSWORD"
     set_param /usr/local/bin/1pctl LANGUAGE "$SELECTED_LANG"
+    chmod +x /usr/local/bin/1pctl /usr/local/bin/1panel
 
     mkdir -p "$RUN_BASE_DIR/geo/"
     cp -f ./GeoIP.mmdb "$RUN_BASE_DIR/geo/"
     cp -rf ./lang /usr/local/bin/
+    # the panel creates these on first boot; pre-create so 1pctl works
+    # immediately after install (sqlite reports CANTOPEN as "out of memory")
+    mkdir -p "$RUN_BASE_DIR/db" "$RUN_BASE_DIR/log" "$RUN_BASE_DIR/tmp" "$RUN_BASE_DIR/cache" "$RUN_BASE_DIR/backup"
 }
 
 function install_service() {
