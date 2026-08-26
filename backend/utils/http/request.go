@@ -2,19 +2,21 @@ package http
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/global"
 )
 
-func HandleGet(url, method string, timeout int) (int, []byte, error) {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+// NewTransport 返回统一的出站 Transport：
+// 走标准代理环境变量（HTTP_PROXY/HTTPS_PROXY/NO_PROXY），启用证书校验。
+func NewTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   60 * time.Second,
 			KeepAlive: 60 * time.Second,
@@ -23,7 +25,37 @@ func HandleGet(url, method string, timeout int) (int, []byte, error) {
 		ResponseHeaderTimeout: 10 * time.Second,
 		IdleConnTimeout:       15 * time.Second,
 	}
-	return HandleGetWithTransport(url, method, transport, timeout)
+}
+
+// ValidatePublicURL 校验目标 URL 可被服务端安全请求：
+// 仅允许 http/https，且 host 解析结果不得为环回/私有/链路本地/保留地址，防 SSRF。
+func ValidatePublicURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("only http/https schemes are allowed")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("empty host in url")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return err
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+			return errors.New("request to internal or reserved address is forbidden")
+		}
+	}
+	return nil
+}
+
+func HandleGet(url, method string, timeout int) (int, []byte, error) {
+	return HandleGetWithTransport(url, method, NewTransport(), timeout)
 }
 
 func HandleGetWithTransport(url, method string, transport *http.Transport, timeout int) (int, []byte, error) {

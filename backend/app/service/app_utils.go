@@ -821,6 +821,9 @@ func downloadApp(app model.App, appDetail model.AppDetail, appInstall *model.App
 		}
 	}()
 
+	if err = httpUtil.ValidatePublicURL(appDetail.DownloadUrl); err != nil {
+		return
+	}
 	if err = fileOp.DownloadFileWithProxy(appDetail.DownloadUrl, filePath); err != nil {
 		global.LOG.Errorf("download app[%s] error %v", app.Name, err)
 		return

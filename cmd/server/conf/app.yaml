@@ -3,7 +3,7 @@ system:
   base_dir: /opt
   mode: dev
   repo_url: https://resource.1panel.pro
-  app_repo: https://apps.1panel.pro
+  app_repo: https://raw.githubusercontent.com/lanqiguoguo/appstore/main
   is_demo: false
   is_intl: true
   port: 9999

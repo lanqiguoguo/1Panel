@@ -2,19 +2,16 @@ package service
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
@@ -247,6 +244,9 @@ func (a AppService) GetAppDetail(appID uint, version, appType string) (response.
 	if appDetailDTO.DockerCompose == "" {
 		filename := filepath.Base(appDetailDTO.DownloadUrl)
 		dockerComposeUrl := fmt.Sprintf("%s%s", strings.TrimSuffix(appDetailDTO.DownloadUrl, filename), "docker-compose.yml")
+		if err := httpUtil.ValidatePublicURL(dockerComposeUrl); err != nil {
+			return appDetailDTO, err
+		}
 		statusCode, composeRes, err := httpUtil.HandleGet(dockerComposeUrl, http.MethodGet, constant.TimeOut20s)
 		if err != nil {
 			return appDetailDTO, buserr.WithDetail("ErrGetCompose", err.Error(), err)
@@ -718,6 +718,9 @@ func (a AppService) GetAppUpdate() (*response.AppUpdateRes, error) {
 	}
 
 	versionUrl := fmt.Sprintf("%s/%s/1panel.json.version.txt", global.CONF.System.AppRepo, global.CONF.System.Mode)
+	if err := http2.ValidatePublicURL(versionUrl); err != nil {
+		return nil, err
+	}
 	_, versionRes, err := http2.HandleGet(versionUrl, http.MethodGet, constant.TimeOut20s)
 	if err != nil {
 		return nil, err
@@ -764,6 +767,9 @@ func (a AppService) GetAppUpdate() (*response.AppUpdateRes, error) {
 
 func getAppFromRepo(downloadPath string) error {
 	downloadUrl := downloadPath
+	if err := http2.ValidatePublicURL(downloadUrl); err != nil {
+		return err
+	}
 	global.LOG.Infof("[AppStore] download file from %s", downloadUrl)
 	fileOp := files.NewFileOp()
 	packagePath := filepath.Join(constant.ResourceDir, filepath.Base(downloadUrl))
@@ -860,16 +866,7 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		oldAppIds = append(oldAppIds, old.ID)
 	}
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialContext: (&net.Dialer{
-			Timeout:   60 * time.Second,
-			KeepAlive: 60 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		IdleConnTimeout:       15 * time.Second,
-	}
+	transport := http2.NewTransport()
 	baseRemoteUrl := fmt.Sprintf("%s/%s/1panel", global.CONF.System.AppRepo, global.CONF.System.Mode)
 	appsMap := getApps(oldApps, list.Apps)
 
@@ -883,6 +880,9 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 			continue
 		}
 
+		if err = http2.ValidatePublicURL(l.Icon); err != nil {
+			return err
+		}
 		_, iconRes, err := httpUtil.HandleGetWithTransport(l.Icon, http.MethodGet, transport, constant.TimeOut20s)
 		if err != nil {
 			return err
@@ -916,6 +916,9 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 			}
 			if _, ok := InitTypes[app.Type]; ok {
 				dockerComposeUrl := fmt.Sprintf("%s/%s", versionUrl, "docker-compose.yml")
+				if err = http2.ValidatePublicURL(dockerComposeUrl); err != nil {
+					return err
+				}
 				_, composeRes, err := httpUtil.HandleGetWithTransport(dockerComposeUrl, http.MethodGet, transport, constant.TimeOut20s)
 				if err != nil {
 					return err
@@ -926,7 +929,11 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 			}
 
 			detail.Params = string(paramByte)
-			detail.DownloadUrl = fmt.Sprintf("%s/%s", versionUrl, app.Key+"-"+version+".tar.gz")
+			if v.DownloadUrl != "" {
+				detail.DownloadUrl = v.DownloadUrl
+			} else {
+				detail.DownloadUrl = fmt.Sprintf("%s/%s", versionUrl, app.Key+"-"+version+".tar.gz")
+			}
 			detail.DownloadCallBackUrl = v.DownloadCallBackUrl
 			detail.Update = true
 			detail.LastModified = v.LastModified
