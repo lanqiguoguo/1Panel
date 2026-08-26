@@ -591,6 +591,7 @@ onMounted(() => {
         color: #000 !important;
     }
 }
+
 .cursor-pointer {
     outline: none;
 }
@@ -620,6 +621,24 @@ onMounted(() => {
     .el-button--primary {
         border-color: #005eeb !important;
         background-color: #005eeb !important;
+    }
+}
+</style>
+
+<style lang="scss">
+/* 暗色主题下的登录表单视觉（非 scoped：需以 html.dark 为祖先条件） */
+html.dark .login-form {
+    .login-title,
+    .login-form-header .title {
+        color: #cfd3dc;
+    }
+
+    .el-input__inner {
+        color: #e5eaf3 !important;
+    }
+
+    .no-border .el-input__wrapper {
+        border-bottom-color: #434552;
     }
 }
 </style>

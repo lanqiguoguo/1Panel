@@ -46,6 +46,21 @@ onMounted(() => {
 }
 
 .login-background {
+    // 亮色基线：还原被暗色主题翻转的变量
+    --el-text-color-primary: #1f2329;
+    --el-text-color-regular: #646a73;
+    --el-text-color-placeholder: #8f959e;
+    --el-text-color-disabled: #c0c4cc;
+    --el-fill-color-blank: #ffffff;
+    --el-fill-color-light: #f5f7fa;
+    --el-fill-color-lighter: #fafafa;
+    --el-border-color: #dcdfe6;
+    --el-border-color-light: #e4e7ed;
+    --el-border-color-lighter: #ebeef5;
+    --el-border-color-darker: #d9d9d9;
+    --el-bg-color: #ffffff;
+    --el-bg-color-overlay: #ffffff;
+
     height: 100vh;
     background: url(@/assets/images/1panel-login-bg.png) no-repeat,
         radial-gradient(153.25% 257.2% at 118.99% 181.67%, rgba(50, 132, 255, 0.2) 0%, rgba(82, 120, 255, 0) 100%)
@@ -121,5 +136,21 @@ onMounted(() => {
             width: 100%;
         }
     }
+
+    // 暗色主题下的登录页视觉见文件底部非 scoped 样式块
+}
+</style>
+
+<style lang="scss">
+/* 暗色主题下的登录页视觉（非 scoped：需以 html.dark 为祖先条件） */
+html.dark .login-background {
+    background: linear-gradient(0deg, rgba(10, 16, 38, 0.55), rgba(10, 16, 38, 0.55)),
+        url(@/assets/images/1panel-login-bg.png) no-repeat,
+        radial-gradient(153.25% 257.2% at 118.99% 181.67%, rgba(50, 132, 255, 0.25) 0%, rgba(82, 120, 255, 0) 100%),
+        #16191d;
+}
+html.dark .login-background .login-container {
+    background-color: rgba(36, 38, 51, 0.85);
+    box-shadow: 2px 4px 22px rgba(0, 0, 0, 0.45);
 }
 </style>
