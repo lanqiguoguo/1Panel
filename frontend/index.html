@@ -5,6 +5,29 @@
         <meta name="robots" content="noindex,nofollow" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
         <title>loading...</title>
+        <style>
+            /* 首屏 CSS 加载前先给暗色一个深色底，配合下方内联脚本消除刷新闪白 */
+            html.dark {
+                background-color: #16191d;
+            }
+        </style>
+        <script>
+            // 渲染前同步恢复主题，避免暗色模式刷新时闪白屏
+            (function () {
+                try {
+                    var cfg = JSON.parse(localStorage.getItem('GlobalState') || '{}');
+                    var theme = (cfg.themeConfig || {}).theme || 'auto';
+                    var dark =
+                        theme === 'dark' ||
+                        (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                    document.documentElement.className = dark ? 'dark' : 'light';
+                    var panelName = (cfg.themeConfig || {}).panelName;
+                    if (panelName) {
+                        document.title = panelName;
+                    }
+                } catch (e) {}
+            })();
+        </script>
     </head>
     <body>
         <div id="app">
