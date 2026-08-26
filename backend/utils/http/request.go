@@ -7,16 +7,31 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/global"
 )
 
+// configuredProxy 为面板设置里配置的出站代理；nil 表示未启用，
+// 此时回落到标准代理环境变量（HTTP_PROXY/HTTPS_PROXY/NO_PROXY）。
+var configuredProxy atomic.Pointer[url.URL]
+
+// SetProxyURL 由设置服务在启动加载与保存代理配置时调用。
+func SetProxyURL(u *url.URL) {
+	configuredProxy.Store(u)
+}
+
 // NewTransport 返回统一的出站 Transport：
-// 走标准代理环境变量（HTTP_PROXY/HTTPS_PROXY/NO_PROXY），启用证书校验。
+// 代理优先级为面板设置 > 环境变量，启用证书校验。
 func NewTransport() *http.Transport {
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			if u := configuredProxy.Load(); u != nil {
+				return u, nil
+			}
+			return http.ProxyFromEnvironment(req)
+		},
 		DialContext: (&net.Dialer{
 			Timeout:   60 * time.Second,
 			KeepAlive: 60 * time.Second,

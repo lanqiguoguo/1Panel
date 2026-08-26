@@ -137,6 +137,16 @@
                         </el-input>
                     </el-form-item>
 
+                    <el-form-item :label="$t('setting.proxy')" prop="proxy">
+                        <el-input disabled v-model="form.proxySummary">
+                            <template #append>
+                                <el-button @click="onChangeProxy" icon="Setting">
+                                    {{ $t('commons.button.set') }}
+                                </el-button>
+                            </template>
+                        </el-input>
+                    </el-form-item>
+
                     <el-form-item :label="$t('setting.apiInterface')" prop="apiInterface">
                         <el-switch
                             @change="onChangeApiInterfaceStatus"
@@ -179,6 +189,7 @@
         <ApiInterface ref="apiInterfaceRef" @search="search()" />
         <Timeout ref="timeoutRef" @search="search()" />
         <Network ref="networkRef" @search="search()" />
+        <ProxyCard ref="proxyRef" @search="search()" />
     </div>
 </template>
 
@@ -197,6 +208,7 @@ import PanelName from '@/views/setting/panel/name/index.vue';
 import SystemIP from '@/views/setting/panel/systemip/index.vue';
 import Network from '@/views/setting/panel/default-network/index.vue';
 import ApiInterface from '@/views/setting/panel/api-interface/index.vue';
+import ProxyCard from '@/views/setting/panel/proxy/index.vue';
 
 const loading = ref(false);
 const i18n = useI18n();
@@ -230,6 +242,13 @@ const form = reactive({
     apiKey: '',
     ipWhiteList: '',
     apiKeyValidityTime: 120,
+
+    proxyType: '',
+    proxyUrl: '',
+    proxyPort: '',
+    proxyUser: '',
+    proxyPasswdKeep: 'false',
+    proxySummary: '',
 });
 
 const show = ref();
@@ -241,6 +260,7 @@ const systemIPRef = ref();
 const timeoutRef = ref();
 const networkRef = ref();
 const apiInterfaceRef = ref();
+const proxyRef = ref();
 const unset = ref(i18n.t('setting.unSetting'));
 
 const languageOptions = ref([
@@ -280,7 +300,27 @@ const search = async () => {
     form.ipWhiteList = res.data.ipWhiteList;
     form.apiKeyValidityTime = res.data.apiKeyValidityTime;
 
+    form.proxyType = res.data.proxyType;
+    form.proxyUrl = res.data.proxyUrl;
+    form.proxyPort = res.data.proxyPort;
+    form.proxyUser = res.data.proxyUser;
+    form.proxyPasswdKeep = res.data.proxyPasswdKeep;
+    form.proxySummary =
+        res.data.proxyType === ''
+            ? i18n.t('setting.proxyDisable')
+            : res.data.proxyType + '://' + res.data.proxyUrl + (res.data.proxyPort ? ':' + res.data.proxyPort : '');
+
     form.theme = globalStore.themeConfig.theme || res.data.theme || 'light';
+};
+
+const onChangeProxy = () => {
+    proxyRef.value.acceptParams({
+        proxyType: form.proxyType,
+        proxyUrl: form.proxyUrl,
+        proxyPort: form.proxyPort,
+        proxyUser: form.proxyUser,
+        proxyPasswdKeep: form.proxyPasswdKeep,
+    });
 };
 
 const onChangePassword = () => {

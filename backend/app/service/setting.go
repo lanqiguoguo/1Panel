@@ -36,6 +36,7 @@ type ISettingService interface {
 	LoadInterfaceAddr() ([]string, error)
 	Update(key, value string) error
 	UpdateProxy(req dto.ProxyUpdate) error
+	TestProxy(req dto.ProxyUpdate) (string, error)
 	UpdatePassword(c *gin.Context, old, new string) error
 	UpdatePort(port uint) error
 	UpdateBindInfo(req dto.BindInfo) error
@@ -175,6 +176,29 @@ func (u *SettingService) UpdateBindInfo(req dto.BindInfo) error {
 }
 
 func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
+	req.ProxyType = strings.ToLower(strings.TrimSpace(req.ProxyType))
+	switch req.ProxyType {
+	case "":
+		// 不启用：清空全部代理配置，恢复直连（出站回落环境变量）
+		req.ProxyUrl, req.ProxyPort, req.ProxyUser, req.ProxyPasswd, req.ProxyPasswdKeep = "", "", "", "", ""
+	case "http", "https", "socks5":
+	default:
+		return fmt.Errorf("unsupported proxy type %s", req.ProxyType)
+	}
+	req.ProxyUrl = strings.TrimSpace(req.ProxyUrl)
+	req.ProxyPort = strings.TrimSpace(req.ProxyPort)
+	if req.ProxyType != "" {
+		if req.ProxyUrl == "" {
+			return fmt.Errorf("proxy address is required")
+		}
+		if req.ProxyPort != "" {
+			port, err := strconv.Atoi(req.ProxyPort)
+			if err != nil || port < 1 || port > 65535 {
+				return fmt.Errorf("invalid proxy port %s", req.ProxyPort)
+			}
+		}
+	}
+
 	if err := settingRepo.Update("ProxyUrl", req.ProxyUrl); err != nil {
 		return err
 	}
@@ -194,6 +218,7 @@ func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
 	if err := settingRepo.Update("ProxyPasswdKeep", req.ProxyPasswdKeep); err != nil {
 		return err
 	}
+	RefreshProxy()
 	return nil
 }
 

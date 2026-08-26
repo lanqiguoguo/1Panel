@@ -74,6 +74,14 @@ export const loadBaseDir = () => {
     return http.get<string>(`/settings/basedir`);
 };
 
+// proxy
+export const updateProxy = (param: Setting.ProxyUpdate) => {
+    return http.post(`/settings/proxy/update`, param);
+};
+export const testProxy = (param: Setting.ProxyUpdate) => {
+    return http.post<string>(`/settings/proxy/test`, param, TimeoutEnum.T_40S);
+};
+
 // backup
 export const handleBackup = (params: Backup.Backup) => {
     return http.post(`/settings/backup/backup`, params, TimeoutEnum.T_1H);

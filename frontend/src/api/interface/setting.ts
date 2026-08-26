@@ -63,6 +63,14 @@ export namespace Setting {
         ipWhiteList: string;
         apiKeyValidityTime: number;
     }
+    export interface ProxyUpdate {
+        proxyType: string;
+        proxyUrl: string;
+        proxyPort: string;
+        proxyUser: string;
+        proxyPasswd: string;
+        proxyPasswdKeep: string;
+    }
     export interface SettingUpdate {
         key: string;
         value: string;

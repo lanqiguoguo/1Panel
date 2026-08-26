@@ -105,6 +105,35 @@ func (b *BaseApi) UpdateProxy(c *gin.Context) {
 }
 
 // @Tags System Setting
+// @Summary Test proxy connection with the given form values
+// @Accept json
+// @Param request body dto.ProxyUpdate true "request"
+// @Success 200 {object} string
+// @Security ApiKeyAuth
+// @Security Timestamp
+// @Router /settings/proxy/test [post]
+func (b *BaseApi) TestProxy(c *gin.Context) {
+	var req dto.ProxyUpdate
+	if err := helper.CheckBindAndValidate(&req, c); err != nil {
+		return
+	}
+	if len(req.ProxyPasswd) != 0 && len(req.ProxyType) != 0 {
+		pass, err := base64.StdEncoding.DecodeString(req.ProxyPasswd)
+		if err != nil {
+			helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, err)
+			return
+		}
+		req.ProxyPasswd = string(pass)
+	}
+	msg, err := settingService.TestProxy(req)
+	if err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+		return
+	}
+	helper.SuccessWithData(c, msg)
+}
+
+// @Tags System Setting
 // @Summary Update system setting
 // @Accept json
 // @Param request body dto.SettingUpdate true "request"

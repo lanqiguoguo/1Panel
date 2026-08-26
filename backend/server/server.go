@@ -30,6 +30,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/init/router"
 	"github.com/1Panel-dev/1Panel/backend/init/validator"
 	"github.com/1Panel-dev/1Panel/backend/init/viper"
+	"github.com/1Panel-dev/1Panel/backend/app/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +42,7 @@ func Start() {
 	db.Init()
 	migration.Init()
 	app.Init()
+	service.InitProxyConfig()
 	lang.Init()
 	validator.Init()
 	gob.Register(psession.SessionUser{})
