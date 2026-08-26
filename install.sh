@@ -143,6 +143,13 @@ function fetch_package() {
     local file_name="1panel-${VERSION}-linux-${ARCH}.tar.gz"
     local url="$PKG_BASE/$file_name"
     EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
+    local active_proxy="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-${all_proxy:-}}}}}"
+    if [[ -n "$active_proxy" ]]; then
+        log_info "using proxy from environment: $active_proxy"
+    else
+        log_info "no proxy in environment; GitHub may be slow/blocked without one"
+        log_info "(export https_proxy=... and run 'bash install.sh' as root, or 'sudo -E bash install.sh')"
+    fi
     log_info "downloading $url ..."
     if ! fetch "$url" "$EXTRACT_ROOT/$file_name" 1800; then
         log_err "download failed, check that version $VERSION ($ARCH) exists on the release channel"
