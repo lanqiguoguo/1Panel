@@ -30,6 +30,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
+	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -688,8 +689,8 @@ func (u *ContainerService) ContainerLogs(wsConn *websocket.Conn, containerType, 
 	commandName := "docker"
 	commandArg := []string{"logs", container}
 	if containerType == "compose" {
-		commandName = "docker-compose"
-		commandArg = []string{"-f", container, "logs"}
+		commandName = compose.CommandBase()
+		commandArg = append(compose.CommandArgs(), "-f", container, "logs")
 	}
 	if tail != "0" {
 		commandArg = append(commandArg, "--tail")
@@ -718,12 +719,10 @@ func (u *ContainerService) ContainerLogs(wsConn *websocket.Conn, containerType, 
 	cmd := exec.Command(commandName, commandArg...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
 	exitCh := make(chan struct{})
@@ -771,8 +770,8 @@ func (u *ContainerService) DownloadContainerLogs(containerType, container, since
 	commandName := "docker"
 	commandArg := []string{"logs", container}
 	if containerType == "compose" {
-		commandName = "docker-compose"
-		commandArg = []string{"-f", container, "logs"}
+		commandName = compose.CommandBase()
+		commandArg = append(compose.CommandArgs(), "-f", container, "logs")
 	}
 	if tail != "0" {
 		commandArg = append(commandArg, "--tail")
@@ -786,12 +785,10 @@ func (u *ContainerService) DownloadContainerLogs(containerType, container, since
 	cmd := exec.Command(commandName, commandArg...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
 

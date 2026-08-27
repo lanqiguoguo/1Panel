@@ -196,7 +196,7 @@ func (u *ContainerService) TestCompose(req dto.ComposeCreate) (bool, error) {
 	if err := newComposeEnv(req.Path, req.Env); err != nil {
 		return false, err
 	}
-	cmd := exec.Command("docker-compose", "-f", req.Path, "config")
+	cmd := exec.Command(compose.CommandBase(), append(compose.CommandArgs(), "-f", req.Path, "config")...)
 	stdout, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, errors.New(string(stdout))
@@ -233,7 +233,7 @@ func (u *ContainerService) CreateCompose(req dto.ComposeCreate) (string, error) 
 	}
 	go func() {
 		defer file.Close()
-		cmd := exec.Command("docker-compose", "-f", req.Path, "up", "-d")
+		cmd := exec.Command(compose.CommandBase(), append(compose.CommandArgs(), "-f", req.Path, "up", "-d")...)
 		multiWriter := io.MultiWriter(os.Stdout, file)
 		cmd.Stdout = multiWriter
 		cmd.Stderr = multiWriter

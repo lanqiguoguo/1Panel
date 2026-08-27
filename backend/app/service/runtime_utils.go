@@ -17,6 +17,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/pkg/errors"
@@ -136,9 +137,9 @@ func reCreateRuntime(runtime *model.Runtime) {
 }
 
 func runComposeCmdWithLog(operate string, composePath string, logPath string) error {
-	cmd := exec.Command("docker-compose", "-f", composePath, operate)
+	cmd := exec.Command(compose.CommandBase(), append(compose.CommandArgs(), "-f", composePath, operate)...)
 	if operate == "up" {
-		cmd = exec.Command("docker-compose", "-f", composePath, operate, "-d")
+		cmd = exec.Command(compose.CommandBase(), append(compose.CommandArgs(), "-f", composePath, operate, "-d")...)
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
@@ -217,7 +218,7 @@ func buildRuntime(runtime *model.Runtime, oldImageID string, rebuild bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "docker-compose", "-f", composePath, "build")
+	cmd := exec.CommandContext(ctx, compose.CommandBase(), append(compose.CommandArgs(), "-f", composePath, "build")...)
 	multiWriterStdout := io.MultiWriter(os.Stdout, logFile)
 	cmd.Stdout = multiWriterStdout
 	var stderrBuf bytes.Buffer

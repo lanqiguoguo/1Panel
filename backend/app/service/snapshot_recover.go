@@ -14,6 +14,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
+	composeUtil "github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/systemctl"
 	"github.com/pkg/errors"
@@ -287,7 +288,7 @@ func restartCompose(composePath string) {
 		if _, err := os.Stat(pathItem); err != nil {
 			continue
 		}
-		upCmd := fmt.Sprintf("docker-compose -f %s up -d", pathItem)
+		upCmd := fmt.Sprintf("%s -f %s up -d", composeUtil.Command(), pathItem)
 		stdout, err := cmd.Exec(upCmd)
 		if err != nil {
 			global.LOG.Debugf("%s failed, err: %v", upCmd, stdout)
