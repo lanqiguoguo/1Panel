@@ -615,8 +615,38 @@ func decodeGBK(input string) (string, error) {
 	return decoded, nil
 }
 
+// decompressMaxEntries and decompressMaxTotalSize guard against zip bomb
+// archives: at most 100000 entries and 4GB of total uncompressed content may
+// be written out (the 512MB file upload limit and the commonly several
+// hundred MB backups/application packages leave plenty of headroom below the
+// 4GB cap).
+const (
+	decompressMaxEntries   = 100000
+	decompressMaxTotalSize = 4 * 1024 * 1024 * 1024
+)
+
+// checkArchivePath verifies that an entry name extracted from an archive stays
+// inside dst. Absolute paths, paths containing ".." components and symbolic
+// link entries are rejected to prevent path traversal and symlink escapes.
+func checkArchivePath(fileName string, info fs.FileInfo) error {
+	if info != nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("archive entry is a symlink: %s", fileName)
+	}
+	cleanName := filepath.Clean(filepath.FromSlash(fileName))
+	if cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanName) {
+		return fmt.Errorf("invalid archive entry path: %s", fileName)
+	}
+	return nil
+}
+
 func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType) error {
+	return f.decompressWithSDKWithLimits(srcFile, dst, cType, decompressMaxEntries, decompressMaxTotalSize)
+}
+
+func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType CompressType, maxEntries int, maxTotalSize int64) error {
 	format := getFormat(cType)
+	var totalSize int64
+	var totalEntries int
 	handler := func(ctx context.Context, archFile archiver.File) error {
 		info := archFile.FileInfo
 		if isIgnoreFile(archFile.Name()) {
@@ -632,7 +662,18 @@ func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType
 				}
 			}
 		}
-		filePath := filepath.Join(dst, fileName)
+		if err := checkArchivePath(fileName, archFile.FileInfo); err != nil {
+			return err
+		}
+		filePath := filepath.Join(dst, filepath.Clean(filepath.FromSlash(fileName)))
+		// double check the joined path still lies inside dst
+		if !strings.HasPrefix(filePath, filepath.Clean(dst)+string(filepath.Separator)) && filePath != filepath.Clean(dst) {
+			return fmt.Errorf("archive entry escapes destination: %s", fileName)
+		}
+		totalEntries++
+		if totalEntries > maxEntries {
+			return fmt.Errorf("archive contains too many entries (limit %d): %s", maxEntries, fileName)
+		}
 		if archFile.FileInfo.IsDir() {
 			if err := f.Fs.MkdirAll(filePath, info.Mode()); err != nil {
 				return err
@@ -646,6 +687,10 @@ func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType
 				}
 			}
 		}
+		remaining := maxTotalSize - totalSize
+		if remaining <= 0 {
+			return fmt.Errorf("archive total size exceeds limit (%d bytes)", maxTotalSize)
+		}
 		fr, err := archFile.Open()
 		if err != nil {
 			return err
@@ -656,8 +701,18 @@ func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType
 			return err
 		}
 		defer fw.Close()
-		if _, err := io.Copy(fw, fr); err != nil {
+		written, err := io.Copy(fw, io.LimitReader(fr, remaining))
+		if err != nil {
 			return err
+		}
+		totalSize += written
+		if written == remaining {
+			// the entry may continue beyond the remaining budget, read one
+			// more byte to detect it without writing unbounded content
+			var probe [1]byte
+			if n, _ := fr.Read(probe[:]); n > 0 {
+				return fmt.Errorf("archive total size exceeds limit (%d bytes)", maxTotalSize)
+			}
 		}
 
 		return nil
