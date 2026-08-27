@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -373,7 +374,6 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer client.Close()
 	repo, err := imageRepoRepo.Get(commonRepo.WithByID(req.RepoID))
 	if err != nil {
 		return "", err
@@ -410,6 +410,7 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	}
 	go func() {
 		defer file.Close()
+		defer client.Close()
 		out, err := client.ImagePush(context.TODO(), newName, options)
 		if err != nil {
 			global.LOG.Errorf("image %s push failed, err: %v", req.TagName, err)
@@ -417,9 +418,18 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 			return
 		}
 		defer out.Close()
+		// The docker client may return a nil error while the response stream
+		// carries the failure (e.g. the registry rejecting the push), so read
+		// the stream first and only report success when it holds no error.
+		pushLog, _ := io.ReadAll(out)
+		_, _ = file.Write(pushLog)
+		if bytes.Contains(pushLog, []byte("errorDetail")) || bytes.Contains(pushLog, []byte(`"error"`)) {
+			global.LOG.Errorf("image %s push failed: %s", req.TagName, pushLog)
+			_, _ = file.WriteString("\nimage push failed!")
+			return
+		}
 		global.LOG.Infof("push image %s successful!", req.Name)
-		_, _ = io.Copy(file, out)
-		_, _ = file.WriteString("image push successful!")
+		_, _ = file.WriteString("\nimage push successful!")
 	}()
 
 	return path.Base(logItem), nil

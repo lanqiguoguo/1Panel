@@ -996,6 +996,7 @@ func checkImageLike(imageName string) bool {
 	if err != nil {
 		return false
 	}
+	defer cli.Close()
 	images, err := cli.ImageList(context.Background(), image.ListOptions{})
 	if err != nil {
 		return false

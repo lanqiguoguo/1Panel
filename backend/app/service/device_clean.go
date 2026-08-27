@@ -519,6 +519,7 @@ func loadContainerTree() []dto.CleanTree {
 	if err != nil {
 		return treeData
 	}
+	defer client.Close()
 	diskUsage, err := client.DiskUsage(context.Background(), types.DiskUsageOptions{})
 	if err != nil {
 		return treeData
@@ -652,6 +653,7 @@ func dropBuildCache() {
 	if err != nil {
 		global.LOG.Errorf("do not get docker client")
 	}
+	defer client.Close()
 	opts := types.BuildCachePruneOptions{}
 	opts.All = true
 	_, err = client.BuildCachePrune(context.Background(), opts)
@@ -665,6 +667,7 @@ func dropImages() {
 	if err != nil {
 		global.LOG.Errorf("do not get docker client")
 	}
+	defer client.Close()
 	pruneFilters := filters.NewArgs()
 	pruneFilters.Add("dangling", "false")
 	_, err = client.ImagesPrune(context.Background(), pruneFilters)
@@ -678,6 +681,7 @@ func dropContainers() {
 	if err != nil {
 		global.LOG.Errorf("do not get docker client")
 	}
+	defer client.Close()
 	pruneFilters := filters.NewArgs()
 	_, err = client.ContainersPrune(context.Background(), pruneFilters)
 	if err != nil {
@@ -690,6 +694,7 @@ func dropVolumes() {
 	if err != nil {
 		global.LOG.Errorf("do not get docker client")
 	}
+	defer client.Close()
 	pruneFilters := filters.NewArgs()
 	versions, err := client.ServerVersion(context.Background())
 	if err != nil {
