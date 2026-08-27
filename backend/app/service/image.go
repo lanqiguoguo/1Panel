@@ -158,12 +158,15 @@ func (u *ImageService) ImageBuild(req dto.ImageBuild) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer client.Close()
+	// The build goroutine below owns the client and closes it once the build
+	// stream is fully consumed. On error paths that return before the
+	// goroutine is started, close the client explicitly to avoid a leak.
 	fileName := "Dockerfile"
 	if req.From == "edit" {
 		dir := fmt.Sprintf("%s/docker/build/%s", constant.DataDir, strings.ReplaceAll(req.Name, ":", "_"))
 		if _, err := os.Stat(dir); err != nil && os.IsNotExist(err) {
 			if err = os.MkdirAll(dir, os.ModePerm); err != nil {
+				client.Close()
 				return "", err
 			}
 		}
@@ -171,6 +174,7 @@ func (u *ImageService) ImageBuild(req dto.ImageBuild) (string, error) {
 		pathItem := fmt.Sprintf("%s/Dockerfile", dir)
 		file, err := os.OpenFile(pathItem, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 		if err != nil {
+			client.Close()
 			return "", err
 		}
 		defer file.Close()
@@ -184,6 +188,7 @@ func (u *ImageService) ImageBuild(req dto.ImageBuild) (string, error) {
 	}
 	tar, err := archive.TarWithOptions(req.Dockerfile+"/", &archive.TarOptions{})
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 
@@ -197,17 +202,20 @@ func (u *ImageService) ImageBuild(req dto.ImageBuild) (string, error) {
 	dockerLogDir := path.Join(global.CONF.System.TmpDir, "docker_logs")
 	if _, err := os.Stat(dockerLogDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(dockerLogDir, os.ModePerm); err != nil {
+			client.Close()
 			return "", err
 		}
 	}
 	logItem := fmt.Sprintf("%s/image_build_%s_%s.log", dockerLogDir, strings.ReplaceAll(req.Name, ":", "_"), time.Now().Format(constant.DateTimeSlimLayout))
 	file, err := os.OpenFile(logItem, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	go func() {
 		defer file.Close()
 		defer tar.Close()
+		defer client.Close()
 		res, err := client.ImageBuild(context.Background(), tar, opts)
 		if err != nil {
 			global.LOG.Errorf("build image %s failed, err: %v", req.Name, err)
@@ -242,10 +250,14 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer client.Close()
+	// Exactly one of the pull goroutines below runs per call; it owns the
+	// client and closes it once the pull stream is fully consumed. On error
+	// paths that return before a goroutine is started, close the client
+	// explicitly to avoid a leak.
 	dockerLogDir := path.Join(global.CONF.System.TmpDir, "docker_logs")
 	if _, err := os.Stat(dockerLogDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(dockerLogDir, os.ModePerm); err != nil {
+			client.Close()
 			return "", err
 		}
 	}
@@ -253,6 +265,7 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 	logItem := fmt.Sprintf("%s/image_pull_%s_%s.log", dockerLogDir, imageItemName, time.Now().Format(constant.DateTimeSlimLayout))
 	file, err := os.OpenFile(logItem, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	options := image.PullOptions{}
@@ -263,6 +276,7 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 		}
 		go func() {
 			defer file.Close()
+			defer client.Close()
 			out, err := client.ImagePull(context.TODO(), req.ImageName, options)
 			if err != nil {
 				global.LOG.Errorf("image %s pull failed, err: %v", req.ImageName, err)
@@ -276,6 +290,7 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 	}
 	repo, err := imageRepoRepo.Get(commonRepo.WithByID(req.RepoID))
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	if repo.Auth {
@@ -285,6 +300,7 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 		}
 		encodedJSON, err := json.Marshal(authConfig)
 		if err != nil {
+			client.Close()
 			return "", err
 		}
 		authStr := base64.StdEncoding.EncodeToString(encodedJSON)
@@ -293,6 +309,7 @@ func (u *ImageService) ImagePull(req dto.ImagePull) (string, error) {
 	image := repo.DownloadUrl + "/" + req.ImageName
 	go func() {
 		defer file.Close()
+		defer client.Close()
 		out, err := client.ImagePull(context.TODO(), image, options)
 		if err != nil {
 			_, _ = file.WriteString("image pull failed!")
@@ -374,8 +391,12 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The push goroutine below owns the client and closes it once the push
+	// stream is fully consumed. On error paths that return before the
+	// goroutine is started, close the client explicitly to avoid a leak.
 	repo, err := imageRepoRepo.Get(commonRepo.WithByID(req.RepoID))
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	options := image.PushOptions{All: true}
@@ -385,6 +406,7 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	}
 	encodedJSON, err := json.Marshal(authConfig)
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	authStr := base64.URLEncoding.EncodeToString(encodedJSON)
@@ -392,6 +414,7 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	newName := fmt.Sprintf("%s/%s", repo.DownloadUrl, req.Name)
 	if newName != req.TagName {
 		if err := client.ImageTag(context.TODO(), req.TagName, newName); err != nil {
+			client.Close()
 			return "", err
 		}
 	}
@@ -399,6 +422,7 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	dockerLogDir := global.CONF.System.TmpDir + "/docker_logs"
 	if _, err := os.Stat(dockerLogDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(dockerLogDir, os.ModePerm); err != nil {
+			client.Close()
 			return "", err
 		}
 	}
@@ -406,6 +430,7 @@ func (u *ImageService) ImagePush(req dto.ImagePush) (string, error) {
 	logItem := fmt.Sprintf("%s/image_push_%s_%s.log", dockerLogDir, imageItemName, time.Now().Format(constant.DateTimeSlimLayout))
 	file, err := os.OpenFile(logItem, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
+		client.Close()
 		return "", err
 	}
 	go func() {
