@@ -1,15 +1,23 @@
 package service
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/init/cache/badger_db"
 	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
+	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -259,5 +267,225 @@ func TestSettingUpdateMFAStatusDisable(t *testing.T) {
 	}
 	if got.Value != "disable" {
 		t.Errorf("MFAStatus = %q, want disable", got.Value)
+	}
+}
+
+// ---- password update / expired-handle flows (encrypted envelope wire format) ----
+
+const (
+	testEncryptKey    = "abcdefghijklmnop"                 // 16 bytes, required by StringEncrypt's AES-128
+	testAESKey        = "0123456789abcdef0123456789abcdef" // 32 bytes, mirrors the frontend generateAESKey() hex output
+	storedOldPassword = "old-password-123"
+)
+
+// setupPasswordFlowTest extends setupSettingUpdateTest with the settings the
+// password flows rely on: EncryptKey (storage salt key), the current Password,
+// expiration fields and the RSA keypair used for the password envelopes.
+// It returns the private key so tests can mint valid envelopes.
+func setupPasswordFlowTest(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	setupSettingUpdateTest(t)
+
+	// StringEncrypt/StringDecrypt cache the storage key in global config;
+	// clear it so the value seeded below is used and restore it afterwards.
+	prevKey := global.CONF.System.EncryptKey
+	global.CONF.System.EncryptKey = ""
+	t.Cleanup(func() { global.CONF.System.EncryptKey = prevKey })
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key failed: %v", err)
+	}
+	priPEM := exportPrivateKeyToPEM(privateKey)
+	pubPEM, err := exportPublicKeyToPEM(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("export public key failed: %v", err)
+	}
+
+	// EncryptKey must be seeded before StringEncrypt is called, since it loads
+	// the storage key from the settings table
+	if err := global.DB.Create(&model.Setting{Key: "EncryptKey", Value: testEncryptKey}).Error; err != nil {
+		t.Fatalf("seed setting EncryptKey failed: %v", err)
+	}
+	storedPassword, err := encrypt.StringEncrypt(storedOldPassword)
+	if err != nil {
+		t.Fatalf("encrypt stored password failed: %v", err)
+	}
+	seeds := []model.Setting{
+		{Key: "Password", Value: storedPassword},
+		{Key: "ExpirationDays", Value: "90"},
+		{Key: "ExpirationTime", Value: "2000-01-01 00:00:00"},
+		{Key: "PASSWORD_PRIVATE_KEY", Value: priPEM},
+		{Key: "PASSWORD_PUBLIC_KEY", Value: pubPEM},
+	}
+	for i := range seeds {
+		if err := global.DB.Create(&seeds[i]).Error; err != nil {
+			t.Fatalf("seed setting %s failed: %v", seeds[i].Key, err)
+		}
+	}
+	return privateKey
+}
+
+// buildPasswordEnvelope mints an envelope in the exact wire format the
+// frontend encryptPassword() helper produces:
+// base64(RSA-PKCS1v15(aesKey)):base64(iv):base64(AES-CBC-PKCS7(password)).
+func buildPasswordEnvelope(t *testing.T, publicKey *rsa.PublicKey, password string) string {
+	t.Helper()
+	keyCipher, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, []byte(testAESKey))
+	if err != nil {
+		t.Fatalf("rsa encrypt aes key failed: %v", err)
+	}
+	iv := make([]byte, aes.BlockSize)
+	if _, err := rand.Read(iv); err != nil {
+		t.Fatalf("generate iv failed: %v", err)
+	}
+	block, err := aes.NewCipher([]byte(testAESKey))
+	if err != nil {
+		t.Fatalf("new aes cipher failed: %v", err)
+	}
+	padded := pkcs7PadForTest([]byte(password), aes.BlockSize)
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, padded)
+	return base64.StdEncoding.EncodeToString(keyCipher) +
+		":" + base64.StdEncoding.EncodeToString(iv) +
+		":" + base64.StdEncoding.EncodeToString(ciphertext)
+}
+
+func pkcs7PadForTest(data []byte, blockSize int) []byte {
+	padLen := blockSize - len(data)%blockSize
+	return append(data, bytes.Repeat([]byte{byte(padLen)}, padLen)...)
+}
+
+// storedPasswordEquals decrypts the Password setting and compares it with the
+// given plaintext.
+func storedPasswordEquals(t *testing.T, want string) bool {
+	t.Helper()
+	got, err := settingRepo.Get(settingRepo.WithByKey("Password"))
+	if err != nil {
+		t.Fatalf("read Password setting failed: %v", err)
+	}
+	plaintext, err := encrypt.StringDecrypt(got.Value)
+	if err != nil {
+		t.Fatalf("decrypt stored password failed: %v", err)
+	}
+	return plaintext == want
+}
+
+// TestUpdatePasswordEncryptedEnvelope covers a successful password change with
+// correctly encrypted old+new envelopes: the new password must be stored (in
+// the existing StringEncrypt format) and the stale session must be cleaned.
+func TestUpdatePasswordEncryptedEnvelope(t *testing.T) {
+	privateKey := setupPasswordFlowTest(t)
+	u := &SettingService{}
+
+	if err := global.SESSION.Set("stale-sid", psession.SessionUser{ID: 1, Name: "admin", LoggedIn: true}, 60); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newAuthTestContext(t)
+
+	oldEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, storedOldPassword)
+	newEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, "new-password-456")
+	if err := u.UpdatePassword(c, oldEnc, newEnc); err != nil {
+		t.Fatalf("UpdatePassword with encrypted envelopes failed: %v", err)
+	}
+
+	if !storedPasswordEquals(t, "new-password-456") {
+		t.Fatal("stored password does not match the decrypted new password")
+	}
+	if _, err := global.SESSION.Get("stale-sid"); err == nil {
+		t.Fatal("session was not cleaned after password change")
+	}
+
+	// the new password must be accepted by the login flow (which consumes the
+	// same encrypted envelope format)
+	if err := checkPassword(buildPasswordEnvelope(t, &privateKey.PublicKey, "new-password-456")); err != nil {
+		t.Fatalf("login checkPassword rejected the new password: %v", err)
+	}
+}
+
+// TestUpdatePasswordWrongOldPassword ensures a wrong (but correctly
+// encrypted) old password fails and leaves the stored password untouched.
+func TestUpdatePasswordWrongOldPassword(t *testing.T) {
+	privateKey := setupPasswordFlowTest(t)
+	u := &SettingService{}
+
+	c, _ := newAuthTestContext(t)
+	oldEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, "wrong-password")
+	newEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, "new-password-456")
+	if err := u.UpdatePassword(c, oldEnc, newEnc); err != constant.ErrInitialPassword {
+		t.Fatalf("UpdatePassword with wrong old password = %v, want %v", err, constant.ErrInitialPassword)
+	}
+	if !storedPasswordEquals(t, storedOldPassword) {
+		t.Fatal("stored password was modified despite a failed update")
+	}
+}
+
+// TestUpdatePasswordRejectsPlaintext ensures the fail-closed behavior:
+// plaintext (non-envelope) passwords must be rejected, never silently accepted.
+func TestUpdatePasswordRejectsPlaintext(t *testing.T) {
+	setupPasswordFlowTest(t)
+	u := &SettingService{}
+
+	c, _ := newAuthTestContext(t)
+	if err := u.UpdatePassword(c, storedOldPassword, "brand-new-password"); err == nil {
+		t.Fatal("UpdatePassword accepted plaintext passwords, want error (fail closed)")
+	}
+	if !storedPasswordEquals(t, storedOldPassword) {
+		t.Fatal("stored password was modified by a rejected plaintext update")
+	}
+}
+
+// TestPasswordFlowsFailClosedWithoutRSAKey ensures that when the RSA private
+// key setting is missing or unparseable, both password endpoints fail exactly
+// like login does (raw parse error), instead of falling back to plaintext.
+func TestPasswordFlowsFailClosedWithoutRSAKey(t *testing.T) {
+	privateKey := setupPasswordFlowTest(t)
+	u := &SettingService{}
+
+	oldEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, storedOldPassword)
+
+	// simulate a missing/corrupted key after minting a valid envelope
+	if err := settingRepo.Update("PASSWORD_PRIVATE_KEY", "not-a-valid-key"); err != nil {
+		t.Fatalf("corrupt PASSWORD_PRIVATE_KEY failed: %v", err)
+	}
+
+	c, _ := newAuthTestContext(t)
+	if err := u.UpdatePassword(c, oldEnc, oldEnc); err == nil {
+		t.Fatal("UpdatePassword succeeded without a valid RSA private key, want error")
+	}
+	if err := u.HandlePasswordExpired(c, oldEnc, oldEnc); err == nil {
+		t.Fatal("HandlePasswordExpired succeeded without a valid RSA private key, want error")
+	}
+	if !storedPasswordEquals(t, storedOldPassword) {
+		t.Fatal("stored password was modified while the RSA key was unavailable")
+	}
+}
+
+// TestHandlePasswordExpiredEncryptedEnvelope covers the expired-password flow:
+// a valid encrypted envelope must rotate the password and refresh the
+// expiration time, and the new password must then work for login.
+func TestHandlePasswordExpiredEncryptedEnvelope(t *testing.T) {
+	privateKey := setupPasswordFlowTest(t)
+	u := &SettingService{}
+
+	c, _ := newAuthTestContext(t)
+	oldEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, storedOldPassword)
+	newEnc := buildPasswordEnvelope(t, &privateKey.PublicKey, "expired-new-password")
+	if err := u.HandlePasswordExpired(c, oldEnc, newEnc); err != nil {
+		t.Fatalf("HandlePasswordExpired with encrypted envelopes failed: %v", err)
+	}
+
+	if !storedPasswordEquals(t, "expired-new-password") {
+		t.Fatal("stored password does not match the decrypted new password")
+	}
+	expTime, err := settingRepo.Get(settingRepo.WithByKey("ExpirationTime"))
+	if err != nil {
+		t.Fatalf("read ExpirationTime failed: %v", err)
+	}
+	if strings.HasPrefix(expTime.Value, "2000-01-01") {
+		t.Fatalf("ExpirationTime was not refreshed, got %q", expTime.Value)
+	}
+	if err := checkPassword(buildPasswordEnvelope(t, &privateKey.PublicKey, "expired-new-password")); err != nil {
+		t.Fatalf("login checkPassword rejected the new password: %v", err)
 	}
 }

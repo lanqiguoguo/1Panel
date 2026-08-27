@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -473,7 +474,34 @@ func (u *SettingService) LoadFromCert() (*dto.SSLInfo, error) {
 	return &data, nil
 }
 
+// decryptEnvelope decrypts an RSA/AES password envelope produced by the
+// frontend encryptPassword() helper (format: "RSA(aesKey):iv:aesCiphertext"),
+// mirroring the login flow in auth.go checkPassword: it loads the RSA private
+// key from the PASSWORD_PRIVATE_KEY setting and fails closed when the key is
+// missing or unparseable (the raw parse/decrypt error is returned, the same
+// error login returns), so plaintext passwords are never accepted.
+func decryptEnvelope(envelope string) (string, error) {
+	priKey, _ := settingRepo.Get(settingRepo.WithByKey("PASSWORD_PRIVATE_KEY"))
+
+	privateKey, err := encrypt.ParseRSAPrivateKey(priKey.Value)
+	if err != nil {
+		return "", err
+	}
+	return encrypt.DecryptPassword(envelope, privateKey)
+}
+
 func (u *SettingService) HandlePasswordExpired(c *gin.Context, old, new string) error {
+	// old and new arrive as encrypted envelopes; decrypt both before any
+	// comparison or storage, so complexity rules (checked client-side on the
+	// plaintext) and the stored value keep operating on plaintext.
+	oldPassword, err := decryptEnvelope(old)
+	if err != nil {
+		return err
+	}
+	newPassword, err := decryptEnvelope(new)
+	if err != nil {
+		return err
+	}
 	setting, err := settingRepo.Get(settingRepo.WithByKey("Password"))
 	if err != nil {
 		return err
@@ -482,12 +510,13 @@ func (u *SettingService) HandlePasswordExpired(c *gin.Context, old, new string) 
 	if err != nil {
 		return err
 	}
-	if passwordFromDB == old {
-		newPassword, err := encrypt.StringEncrypt(new)
+	// constant-time comparison, matching the login flow
+	if hmac.Equal([]byte(passwordFromDB), []byte(oldPassword)) {
+		encryptedNew, err := encrypt.StringEncrypt(newPassword)
 		if err != nil {
 			return err
 		}
-		if err := settingRepo.Update("Password", newPassword); err != nil {
+		if err := settingRepo.Update("Password", encryptedNew); err != nil {
 			return err
 		}
 

@@ -96,6 +96,12 @@ type SSLInfo struct {
 	SSLID    uint   `json:"sslID"`
 }
 
+// PasswordUpdate carries the fields for /settings/password/update and
+// /settings/expired/handle. Both password values must be encrypted envelopes
+// in the same wire format the login endpoint consumes, produced by the
+// frontend encryptPassword() helper: "base64(RSA(aesKey)):base64(iv):base64(aesCiphertext)",
+// encrypted against the panel's PASSWORD_PUBLIC_KEY. Plaintext passwords are
+// rejected (fail closed) server-side.
 type PasswordUpdate struct {
 	OldPassword string `json:"oldPassword" validate:"required"`
 	NewPassword string `json:"newPassword" validate:"required"`

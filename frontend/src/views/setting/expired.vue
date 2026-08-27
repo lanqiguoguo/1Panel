@@ -53,6 +53,7 @@ import i18n from '@/lang';
 import { Rules } from '@/global/form-rules';
 import router from '@/routers';
 import { MsgError, MsgSuccess } from '@/utils/message';
+import { encryptPassword } from '@/utils/util';
 
 let isComplexity = ref(false);
 
@@ -88,7 +89,15 @@ const submitChangePassword = async (formEl: FormInstance | undefined) => {
             MsgError(i18n.global.t('setting.duplicatePassword'));
             return;
         }
-        await handleExpired({ oldPassword: passForm.oldPass, newPassword: password });
+        // passwords must never travel in plaintext: wrap them with the same
+        // RSA/AES envelope the login form uses
+        const oldEncrypted = encryptPassword(passForm.oldPass);
+        const newEncrypted = encryptPassword(password);
+        if (!oldEncrypted || !newEncrypted) {
+            MsgError(i18n.global.t('commons.login.encryptErr'));
+            return;
+        }
+        await handleExpired({ oldPassword: oldEncrypted, newPassword: newEncrypted });
         MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
         router.push({ name: 'home' });
     });

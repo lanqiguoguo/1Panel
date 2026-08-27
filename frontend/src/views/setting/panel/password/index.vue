@@ -66,6 +66,7 @@ import { reactive, ref } from 'vue';
 import { updatePassword } from '@/api/modules/setting';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { logOutApi } from '@/api/modules/auth';
+import { encryptPassword } from '@/utils/util';
 
 const globalStore = GlobalStore();
 const passFormRef = ref<FormInstance>();
@@ -116,8 +117,16 @@ const submitChangePassword = async (formEl: FormInstance | undefined) => {
             MsgError(i18n.global.t('setting.duplicatePassword'));
             return;
         }
+        // passwords must never travel in plaintext: wrap them with the same
+        // RSA/AES envelope the login form uses
+        const oldEncrypted = encryptPassword(passForm.oldPassword);
+        const newEncrypted = encryptPassword(password);
+        if (!oldEncrypted || !newEncrypted) {
+            MsgError(i18n.global.t('commons.login.encryptErr'));
+            return;
+        }
         loading.value = true;
-        await updatePassword({ oldPassword: passForm.oldPassword, newPassword: password })
+        await updatePassword({ oldPassword: oldEncrypted, newPassword: newEncrypted })
             .then(async () => {
                 loading.value = false;
                 passwordVisible.value = false;
