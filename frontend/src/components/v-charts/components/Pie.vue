@@ -4,6 +4,7 @@
 <script lang="ts" setup>
 import { onMounted, nextTick, watch, onBeforeUnmount } from 'vue';
 import * as echarts from 'echarts';
+import 'echarts/theme/v5';
 import { GlobalStore } from '@/store';
 import { storeToRefs } from 'pinia';
 const globalStore = GlobalStore();
@@ -31,7 +32,7 @@ const props = defineProps({
 function initChart() {
     let myChart = echarts?.getInstanceByDom(document.getElementById(props.id) as HTMLElement);
     if (myChart === null || myChart === undefined) {
-        myChart = echarts.init(document.getElementById(props.id) as HTMLElement);
+        myChart = echarts.init(document.getElementById(props.id) as HTMLElement, 'v5');
     }
     let percentText = String(props.option.data).split('.');
     const primaryLight2 = getComputedStyle(document.documentElement)

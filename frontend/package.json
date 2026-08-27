@@ -39,8 +39,8 @@
         "codemirror": "^6.0.1",
         "crypto-js": "^4.2.0",
         "dompurify": "^3.3.1",
-        "echarts": "^5.5.0",
-        "element-plus": "2.9.9",
+        "echarts": "^6.1.0",
+        "element-plus": "2.14.3",
         "fit2cloud-ui-plus": "^1.2.0",
         "highlight.js": "^11.9.0",
         "js-base64": "^3.7.7",
@@ -97,6 +97,14 @@
     "config": {
         "commitizen": {
             "path": "node_modules/cz-git"
+        }
+    },
+    "overrides": {
+        "fit2cloud-ui-plus": {
+            "uuid": "11.1.1",
+            "vite-plugin-markdown": {
+                "markdown-it": "14.3.0"
+            }
         }
     },
     "allowScripts": {

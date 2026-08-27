@@ -4,6 +4,7 @@
 <script lang="ts" setup>
 import { onMounted, nextTick, watch, onBeforeUnmount } from 'vue';
 import * as echarts from 'echarts';
+import 'echarts/theme/v5';
 import { GlobalStore } from '@/store';
 import { computeSizeFromKBs, computeSizeFromKB, computeSizeFromMB } from '@/utils/util';
 import { storeToRefs } from 'pinia';
@@ -104,7 +105,7 @@ function initChart() {
     const optionItem = itemChart?.getOption();
     const itemSelect = optionItem?.legend;
     if (itemChart == null) {
-        itemChart = echarts.init(document.getElementById(props.id) as HTMLElement);
+        itemChart = echarts.init(document.getElementById(props.id) as HTMLElement, 'v5');
     }
 
     const series = [];
