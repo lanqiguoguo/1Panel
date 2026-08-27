@@ -142,6 +142,34 @@ func shouldFilterPath(path string) bool {
 	return false
 }
 
+// systemProtectedDirs 系统关键目录，禁止删除或移入回收站
+var systemProtectedDirs = []string{
+	"/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot", "/dev", "/proc", "/sys", "/root", "/home",
+}
+
+// isProtectedPath 判断路径是否位于受保护目录内（根目录、系统关键目录、面板数据目录、回收站目录）
+func isProtectedPath(pathName string) bool {
+	cleanedPath := filepath.Clean(pathName)
+	if cleanedPath == "/" {
+		return true
+	}
+	for _, dir := range systemProtectedDirs {
+		if cleanedPath == dir || strings.HasPrefix(cleanedPath, dir+"/") {
+			return true
+		}
+	}
+	if baseDir := global.CONF.System.BaseDir; baseDir != "" {
+		panelDataDir := path.Join(baseDir, "1panel")
+		if cleanedPath == panelDataDir || strings.HasPrefix(cleanedPath, panelDataDir+"/") {
+			return true
+		}
+	}
+	if cleanedPath == constant.RecycleBinDir || strings.HasPrefix(cleanedPath, constant.RecycleBinDir+"/") {
+		return true
+	}
+	return false
+}
+
 // 递归构建文件树(只取当前目录以及当前目录下的第一层子节点)
 func (f *FileService) buildFileTree(node *response.FileTree, items []*files.FileInfo, op request.FileOption, level int) error {
 	for _, v := range items {
@@ -212,6 +240,9 @@ func (f *FileService) Create(op request.FileCreate) error {
 }
 
 func (f *FileService) Delete(op request.FileDelete) error {
+	if isProtectedPath(op.Path) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	if op.IsDir {
 		excludeDir := global.CONF.System.DataDir
 		if filepath.Base(op.Path) == ".1panel_clash" || op.Path == excludeDir {
@@ -237,6 +268,11 @@ func (f *FileService) Delete(op request.FileDelete) error {
 }
 
 func (f *FileService) BatchDelete(op request.FileBatchDelete) error {
+	for _, file := range op.Paths {
+		if isProtectedPath(file) {
+			return buserr.New(constant.ErrPathNotDelete)
+		}
+	}
 	fo := files.NewFileOp()
 	if op.IsDir {
 		for _, file := range op.Paths {

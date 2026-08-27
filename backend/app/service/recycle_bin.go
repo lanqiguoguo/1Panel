@@ -100,6 +100,9 @@ func (r RecycleBinService) Create(create request.RecycleBinCreate) error {
 	if !op.Stat(create.SourcePath) {
 		return buserr.New(constant.ErrLinkPathNotFound)
 	}
+	if isProtectedPath(create.SourcePath) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	clashDir, err := getClashDir(create.SourcePath)
 	if err != nil {
 		return err
