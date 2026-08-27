@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"regexp"
@@ -68,6 +69,7 @@ func (b *BaseApi) UpdateSetting(c *gin.Context) {
 	}
 	if req.Key == "SecurityEntrance" {
 		entranceValue := base64.StdEncoding.EncodeToString([]byte(req.Value))
+		c.SetSameSite(http.SameSiteLaxMode)
 		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
 	}
 	helper.SuccessWithData(c, nil)
@@ -366,17 +368,7 @@ func (b *BaseApi) MFABind(c *gin.Context) {
 		return
 	}
 
-	if err := settingService.Update("MFAInterval", req.Interval); err != nil {
-		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
-		return
-	}
-
-	if err := settingService.Update("MFAStatus", "enable"); err != nil {
-		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
-		return
-	}
-
-	if err := settingService.Update("MFASecret", req.Secret); err != nil {
+	if err := settingService.UpdateMFA(req.Interval, req.Secret); err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}

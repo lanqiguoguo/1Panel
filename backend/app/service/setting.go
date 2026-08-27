@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -45,6 +46,7 @@ type ISettingService interface {
 	HandlePasswordExpired(c *gin.Context, old, new string) error
 	GenerateApiKey() (string, error)
 	UpdateApiConfig(req dto.ApiInterfaceConfig) error
+	UpdateMFA(interval, secret string) error
 	GenerateRSAKey() error
 }
 
@@ -84,7 +86,44 @@ func sanitizeSettingInfo(info *dto.SettingInfo) {
 	info.ProxyPasswd = ""
 }
 
+// settingUpdateWhitelist contains the setting keys that may be written through
+// the generic /settings/update interface. Keys used by the panel frontend's
+// settings pages are allowed; keys that hold credentials or security policies
+// with dedicated endpoints must NOT be added here, otherwise an authenticated
+// session could bypass those endpoints and tamper with login credentials
+// (UserName/Password), MFA (MFAStatus/MFASecret), API access (ApiKey/
+// IpWhiteList/ApiInterfaceStatus) and other sensitive settings at will.
+var settingUpdateWhitelist = map[string]struct{}{
+	"MonitorStatus":          {},
+	"MonitorInterval":        {},
+	"MonitorStoreDays":       {},
+	"SessionTimeout":         {},
+	"ExpirationDays":         {},
+	"PanelName":              {},
+	"SystemIP":               {},
+	"Theme":                  {},
+	"MenuTabs":               {},
+	"Language":               {},
+	"DeveloperMode":          {},
+	"DefaultNetwork":         {},
+	"BindDomain":             {},
+	"AllowIPs":               {},
+	"SecurityEntrance":       {},
+	"NoAuthSetting":          {},
+	"ComplexityVerification": {},
+	"MFAStatus":              {},
+	"FileRecycleBin":         {},
+	"SnapshotIgnore":         {},
+	"DockerSockPath":         {},
+	"AppStoreLastModified":   {},
+	"AppStoreSyncStatus":     {},
+	"UserName":               {},
+}
+
 func (u *SettingService) Update(key, value string) error {
+	if _, ok := settingUpdateWhitelist[key]; !ok {
+		return fmt.Errorf("setting key %s is not allowed", key)
+	}
 	switch key {
 	case "MonitorStatus":
 		if value == "enable" && global.MonitorCronID == 0 {
@@ -110,6 +149,13 @@ func (u *SettingService) Update(key, value string) error {
 			if err := StartMonitor(true, value); err != nil {
 				return err
 			}
+		}
+	case "MFAStatus":
+		// Enabling MFA requires a validated TOTP code and a secret, and is only
+		// possible through /settings/mfa/bind (UpdateMFA). The generic update
+		// interface may only turn MFA off, matching the frontend behavior.
+		if value != "disable" {
+			return fmt.Errorf("setting key %s is not allowed", key)
 		}
 	case "AppStoreLastModified":
 		exist, _ := settingRepo.Get(settingRepo.WithByKey("AppStoreLastModified"))
@@ -264,6 +310,7 @@ func (u *SettingService) UpdateSSL(c *gin.Context, req dto.SSLUpdate) error {
 		_ = os.Remove(path.Join(secretDir, "server.crt"))
 		_ = os.Remove(path.Join(secretDir, "server.key"))
 		sID, _ := c.Cookie(constant.SessionName)
+		c.SetSameSite(http.SameSiteLaxMode)
 		c.SetCookie(constant.SessionName, sID, 0, "", "", false, true)
 
 		go func() {
@@ -362,6 +409,7 @@ func (u *SettingService) UpdateSSL(c *gin.Context, req dto.SSLUpdate) error {
 	}
 
 	sID, _ := c.Cookie(constant.SessionName)
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(constant.SessionName, sID, 0, "", "", true, true)
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -548,6 +596,20 @@ func (u *SettingService) UpdateApiConfig(req dto.ApiInterfaceConfig) error {
 	}
 	global.CONF.System.ApiKeyValidityTime = req.ApiKeyValidityTime
 	return nil
+}
+
+// UpdateMFA persists the MFA binding (status, interval and secret). It is only
+// reachable from /settings/mfa/bind, which validates the TOTP code before
+// calling, so MFAStatus/MFAInterval/MFASecret are deliberately not part of the
+// generic setting update whitelist.
+func (u *SettingService) UpdateMFA(interval, secret string) error {
+	if err := settingRepo.Update("MFAInterval", interval); err != nil {
+		return err
+	}
+	if err := settingRepo.Update("MFAStatus", "enable"); err != nil {
+		return err
+	}
+	return settingRepo.Update("MFASecret", secret)
 }
 
 func exportPrivateKeyToPEM(privateKey *rsa.PrivateKey) string {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -118,6 +119,25 @@ func TestGenerateSessionLoggedInFlag(t *testing.T) {
 	}
 	if !sessionUser.LoggedIn {
 		t.Fatal("session stored without LoggedIn=true")
+	}
+}
+
+// TestSessionCookieSameSite guards against CSRF: the session cookie must
+// carry SameSite=Lax so cross-site POST requests (which are not top-level
+// navigations) do not attach the cookie.
+func TestSessionCookieSameSite(t *testing.T) {
+	setupAuthServiceTest(t)
+	u := &AuthService{}
+	c, w := newAuthTestContext(t)
+
+	if _, err := u.generateSession(c, "admin", constant.AuthMethodSession); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.Header().Get("Set-Cookie"), constant.SessionName) {
+		t.Fatal("session cookie was not set on login")
+	}
+	if !strings.Contains(w.Header().Get("Set-Cookie"), "SameSite=Lax") {
+		t.Fatalf("session cookie missing SameSite=Lax, got: %s", w.Header().Get("Set-Cookie"))
 	}
 }
 

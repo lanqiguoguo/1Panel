@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/hmac"
 	"encoding/base64"
+	"net/http"
 	"strconv"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -69,6 +70,7 @@ func (u *AuthService) Login(c *gin.Context, info dto.Login, entrance string) (*d
 	}
 	if entrance != "" {
 		entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
+		c.SetSameSite(http.SameSiteLaxMode)
 		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
 	}
 	return loginUser, nil
@@ -111,6 +113,7 @@ func (u *AuthService) MFALogin(c *gin.Context, info dto.MFALogin, entrance strin
 	}
 	if entrance != "" {
 		entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
+		c.SetSameSite(http.SameSiteLaxMode)
 		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
 	}
 	return loginUser, nil
@@ -143,6 +146,7 @@ func (u *AuthService) generateSession(c *gin.Context, name, authMethod string) (
 	}
 	sID := uuid.New().String()
 	sessionUser := psession.SessionUser{Name: name, LoggedIn: true}
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(constant.SessionName, sID, 0, "", "", httpsSetting.Value == "enable", true)
 	if err := global.SESSION.Set(sID, sessionUser, lifeTime); err != nil {
 		return nil, err
@@ -157,6 +161,7 @@ func (u *AuthService) LogOut(c *gin.Context) error {
 	}
 	sID, _ := c.Cookie(constant.SessionName)
 	if sID != "" {
+		c.SetSameSite(http.SameSiteLaxMode)
 		c.SetCookie(constant.SessionName, sID, -1, "", "", httpsSetting.Value == "enable", true)
 		err := global.SESSION.Delete(sID)
 		if err != nil {

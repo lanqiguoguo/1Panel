@@ -163,6 +163,7 @@ func setWebStatic(rootRouter *gin.RouterGroup) {
 		entrance = authService.GetSecurityEntrance()
 		if entrance != "" {
 			entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
+			c.SetSameSite(http.SameSiteLaxMode)
 			c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
 		}
 		staticServer := http.FileServer(http.FS(web.IndexHtml))
