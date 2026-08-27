@@ -54,16 +54,8 @@ export const handleExpired = (param: Setting.PasswordUpdate) => {
 export const loadTimeZone = () => {
     return http.get<Array<string>>(`/settings/time/option`);
 };
-export const syncTime = (ntpSite: string) => {
-    return http.post<string>(`/settings/time/sync`, { ntpSite: ntpSite });
-};
-
 export const loadMFA = (param: Setting.MFARequest) => {
     return http.post<Setting.MFAInfo>(`/settings/mfa`, param);
-};
-
-export const loadDaemonJsonPath = () => {
-    return http.get<string>(`/settings/daemonjson`, {});
 };
 
 export const bindMFA = (param: Setting.MFABind) => {

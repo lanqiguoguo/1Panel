@@ -135,9 +135,6 @@ export const updateRedisPersistenceConf = (params: Database.RedisConfPersistence
 export const updateRedisConf = (params: Database.RedisConfUpdate) => {
     return http.post(`/databases/redis/conf/update`, params);
 };
-export const updateRedisConfByFile = (params: Database.DBConfUpdate) => {
-    return http.post(`/databases/redis/conffile/update`, params);
-};
 
 // database
 export const getDatabase = (name: string) => {

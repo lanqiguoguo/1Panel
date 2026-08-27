@@ -122,10 +122,6 @@ export const GetSSL = (id: number) => {
     return http.get<Website.SSL>(`/websites/ssl/${id}`);
 };
 
-export const ApplySSL = (req: Website.SSLApply) => {
-    return http.post<Website.SSLApply>(`/websites/ssl/apply`, req);
-};
-
 export const ObtainSSL = (req: Website.SSLObtain) => {
     return http.post<any>(`/websites/ssl/obtain`, req);
 };
