@@ -45,24 +45,14 @@ func WhiteAllow() gin.HandlerFunc {
 }
 
 func checkIpInCidr(cidr, checkIP string) bool {
-	ip, ipNet, err := net.ParseCIDR(cidr)
+	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		global.LOG.Errorf("parse CIDR %s failed, err: %v", cidr, err)
 		return false
 	}
-	for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); incIP(ip) {
-		if ip.String() == checkIP {
-			return true
-		}
+	ip := net.ParseIP(checkIP)
+	if ip == nil {
+		return false
 	}
-	return false
-}
-
-func incIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
-		}
-	}
+	return ipNet.Contains(ip)
 }
