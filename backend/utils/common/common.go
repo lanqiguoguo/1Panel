@@ -83,7 +83,7 @@ func ComparePanelVersion(version1, version2 string) bool {
 			return v1 > v2
 		}
 	}
-	return true
+	return false
 }
 
 func extractNumbers(version string) []string {
