@@ -545,9 +545,9 @@ const loadDBOptions = async () => {
     }
     if (currentDB.value) {
         search();
-    }
-    if (currentDB.value.from === 'remote') {
-        maskShow.value = false;
+        if (currentDB.value.from === 'remote') {
+            maskShow.value = false;
+        }
     }
 };
 const onDelete = async (row: Database.MysqlDBInfo) => {
