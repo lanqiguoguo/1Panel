@@ -321,7 +321,7 @@ func (f FileOp) DownloadFileWithProcess(url, dst, key string, ignoreCertificate 
 	}
 	request, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil
+		return err
 	}
 	request.Header.Set("Accept-Encoding", "identity")
 	resp, err := client.Do(request)
@@ -329,39 +329,39 @@ func (f FileOp) DownloadFileWithProcess(url, dst, key string, ignoreCertificate 
 		global.LOG.Errorf("get download file [%s] error, err %s", dst, err.Error())
 		return err
 	}
+	defer resp.Body.Close()
 	out, err := os.Create(dst)
 	if err != nil {
 		global.LOG.Errorf("create download file [%s] error, err %s", dst, err.Error())
 		return err
 	}
-	go func() {
-		counter := &WriteCounter{}
-		counter.Key = key
-		if resp.ContentLength > 0 {
-			counter.Total = uint64(resp.ContentLength)
-		}
-		counter.Name = filepath.Base(dst)
-		if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
-			global.LOG.Errorf("save download file [%s] error, err %s", dst, err.Error())
-		}
-		out.Close()
-		resp.Body.Close()
+	defer out.Close()
 
-		value, err := global.CACHE.Get(counter.Key)
-		if err != nil {
-			global.LOG.Errorf("get cache error,err %s", err.Error())
-			return
-		}
-		process := &Process{}
-		_ = json.Unmarshal(value, process)
-		process.Percent = 100
-		process.Name = counter.Name
-		process.Total = process.Written
-		by, _ := json.Marshal(process)
-		if err := global.CACHE.SetWithTTL(counter.Key, string(by), time.Second*time.Duration(10)); err != nil {
-			global.LOG.Errorf("save cache error, err %s", err.Error())
-		}
-	}()
+	counter := &WriteCounter{}
+	counter.Key = key
+	if resp.ContentLength > 0 {
+		counter.Total = uint64(resp.ContentLength)
+	}
+	counter.Name = filepath.Base(dst)
+	if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
+		global.LOG.Errorf("save download file [%s] error, err %s", dst, err.Error())
+		return err
+	}
+
+	value, err := global.CACHE.Get(counter.Key)
+	if err != nil {
+		global.LOG.Errorf("get cache error,err %s", err.Error())
+		return nil
+	}
+	process := &Process{}
+	_ = json.Unmarshal(value, process)
+	process.Percent = 100
+	process.Name = counter.Name
+	process.Total = process.Written
+	by, _ := json.Marshal(process)
+	if err := global.CACHE.SetWithTTL(counter.Key, string(by), time.Second*time.Duration(10)); err != nil {
+		global.LOG.Errorf("save cache error, err %s", err.Error())
+	}
 	return nil
 }
 
