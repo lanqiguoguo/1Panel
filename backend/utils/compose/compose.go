@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -17,10 +18,6 @@ var (
 // standalone setups only ship the legacy `docker-compose` binary. Probe once
 // per process and cache the result; default to the v2 plugin, falling back to
 // the legacy binary when the plugin is missing.
-//
-// The probe only inspects the error's identity (nil or not) — never its text.
-// buserr's Error() renders through i18n, whose localizer is only wired up by
-// the HTTP middleware, so calling it from a background goroutine panics.
 func command() string {
 	mu.Lock()
 	defer mu.Unlock()
@@ -30,7 +27,7 @@ func command() string {
 		}
 		return "docker-compose"
 	}
-	if _, err := cmd.Exec("docker compose version"); err == nil {
+	if _, err := cmd.Exec("docker compose version"); err == nil && !strings.Contains(err.Error(), "not found") {
 		composeCmdV2 = true
 	} else if _, err := cmd.Exec("docker-compose version"); err == nil {
 		composeCmdV2 = false
