@@ -38,6 +38,7 @@ import (
 func Start() {
 	viper.Init()
 	i18n.Init()
+	i18n.UseI18nForCmd("")
 	log.Init()
 	db.Init()
 	migration.Init()

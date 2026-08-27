@@ -3,6 +3,7 @@ package i18n
 import (
 	"embed"
 	"strings"
+	"sync"
 
 	"github.com/1Panel-dev/1Panel/backend/global"
 
@@ -12,14 +13,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var i18nMu sync.Mutex
+
+// defaultLocalizer returns the localizer safe to use outside of HTTP requests.
+// It prefers global.I18n (set by the UseI18n gin middleware) and lazily
+// initializes the command-line localizer as a fallback.
+func defaultLocalizer() *i18n.Localizer {
+	if global.I18n != nil {
+		return global.I18n
+	}
+	return cmdLocalizer()
+}
+
+// cmdLocalizer lazily initializes and returns the command-line localizer.
+// All reads/writes of global.I18nForCmd are protected by i18nMu.
+func cmdLocalizer() *i18n.Localizer {
+	i18nMu.Lock()
+	defer i18nMu.Unlock()
+	if global.I18nForCmd == nil {
+		useI18nForCmd("")
+	}
+	return global.I18nForCmd
+}
+
 func GetMsgWithMap(key string, maps map[string]interface{}) string {
+	localizer := defaultLocalizer()
 	var content string
 	if maps == nil {
-		content, _ = global.I18n.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID: key,
 		})
 	} else {
-		content, _ = global.I18n.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID:    key,
 			TemplateData: maps,
 		})
@@ -41,7 +66,7 @@ func GetMsgWithName(key string, name string, err error) string {
 	if err != nil {
 		dataMap["err"] = err.Error()
 	}
-	content, _ = global.I18n.Localize(&i18n.LocalizeConfig{
+	content, _ = defaultLocalizer().Localize(&i18n.LocalizeConfig{
 		MessageID:    key,
 		TemplateData: dataMap,
 	})
@@ -54,13 +79,14 @@ func GetMsgWithName(key string, name string, err error) string {
 }
 
 func GetErrMsg(key string, maps map[string]interface{}) string {
+	localizer := defaultLocalizer()
 	var content string
 	if maps == nil {
-		content, _ = global.I18n.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID: key,
 		})
 	} else {
-		content, _ = global.I18n.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID:    key,
 			TemplateData: maps,
 		})
@@ -69,7 +95,7 @@ func GetErrMsg(key string, maps map[string]interface{}) string {
 }
 
 func GetMsgByKey(key string) string {
-	content, _ := global.I18n.Localize(&i18n.LocalizeConfig{
+	content, _ := defaultLocalizer().Localize(&i18n.LocalizeConfig{
 		MessageID: key,
 	})
 	return content
@@ -90,6 +116,12 @@ func UseI18n() gin.HandlerFunc {
 }
 
 func Init() {
+	i18nMu.Lock()
+	defer i18nMu.Unlock()
+	initBundle()
+}
+
+func initBundle() {
 	if bundle != nil {
 		return
 	}
@@ -111,32 +143,32 @@ func UseI18nForCmd(lang string) {
 	if lang == "" {
 		lang = "en"
 	}
+	i18nMu.Lock()
+	defer i18nMu.Unlock()
+	useI18nForCmd(lang)
+}
 
+func useI18nForCmd(lang string) {
 	if bundle == nil {
-		Init()
+		initBundle()
 	}
 	global.I18nForCmd = i18n.NewLocalizer(bundle, lang)
 }
 func GetMsgByKeyForCmd(key string) string {
-	if global.I18nForCmd == nil {
-		UseI18nForCmd("")
-	}
-	content, _ := global.I18nForCmd.Localize(&i18n.LocalizeConfig{
+	content, _ := cmdLocalizer().Localize(&i18n.LocalizeConfig{
 		MessageID: key,
 	})
 	return content
 }
 func GetMsgWithMapForCmd(key string, maps map[string]interface{}) string {
-	if global.I18nForCmd == nil {
-		UseI18nForCmd("")
-	}
+	localizer := cmdLocalizer()
 	var content string
 	if maps == nil {
-		content, _ = global.I18nForCmd.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID: key,
 		})
 	} else {
-		content, _ = global.I18nForCmd.Localize(&i18n.LocalizeConfig{
+		content, _ = localizer.Localize(&i18n.LocalizeConfig{
 			MessageID:    key,
 			TemplateData: maps,
 		})
