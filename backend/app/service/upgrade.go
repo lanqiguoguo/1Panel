@@ -1,8 +1,11 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -32,6 +36,76 @@ type IUpgradeService interface {
 
 func NewIUpgradeService() IUpgradeService {
 	return &UpgradeService{}
+}
+
+// fetchPackageChecksum downloads the checksum sidecar published next to the
+// upgrade package (<package>.sha256.txt, sha256sum format). HandleGet returns
+// an error for any non-200 response, so a missing asset fails closed. It is a
+// package variable so tests can inject a local implementation (same pattern
+// as validateDownloadURL in utils/files/file_op.go).
+var fetchPackageChecksum = func(url string) ([]byte, error) {
+	_, body, err := httpUtil.HandleGet(url, http.MethodGet, constant.TimeOut20s)
+	return body, err
+}
+
+// parseChecksum extracts the digest from a sha256sum-generated checksum file
+// ("<hash>  <filename>"); blank lines and extra whitespace are tolerated.
+func parseChecksum(content string) (string, error) {
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		digest := strings.ToLower(fields[0])
+		if len(digest) != 64 {
+			break
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			break
+		}
+		return digest, nil
+	}
+	return "", fmt.Errorf("checksum file does not contain a valid sha256 digest")
+}
+
+// fileSHA256 streams path through crypto/sha256 without loading the whole
+// file into memory.
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s failed: %w", path, err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("hash %s failed: %w", path, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// verifyPackageDownload checks the downloaded package against the checksum
+// sidecar published next to it in the release channel. Every failure path
+// (fetch error, missing/malformed checksum, hash mismatch) returns a business
+// error so the upgrade aborts before the package is extracted or executed.
+func verifyPackageDownload(packageFile, checksumURL string) error {
+	checksumData, err := fetchPackageChecksum(checksumURL)
+	if err != nil {
+		return buserr.WithDetail(constant.ErrUpgradeVerifyFailed,
+			fmt.Sprintf("fetch checksum file %s failed: %v", checksumURL, err), nil)
+	}
+	expected, err := parseChecksum(string(checksumData))
+	if err != nil {
+		return buserr.WithDetail(constant.ErrUpgradeVerifyFailed, err.Error(), nil)
+	}
+	actual, err := fileSHA256(packageFile)
+	if err != nil {
+		return buserr.WithDetail(constant.ErrUpgradeVerifyFailed, err.Error(), nil)
+	}
+	if expected != actual {
+		return buserr.WithDetail(constant.ErrUpgradeVerifyFailed,
+			fmt.Sprintf("sha256 mismatch for %s: expected %s, got %s", filepath.Base(packageFile), expected, actual), nil)
+	}
+	return nil
 }
 
 func (u *UpgradeService) SearchUpgrade() (*dto.UpgradeInfo, error) {
@@ -133,6 +207,12 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 			return
 		}
 		defer os.RemoveAll(rootDir)
+
+		// verify package integrity before anything is extracted or executed
+		if err := verifyPackageDownload(path.Join(rootDir, fileName), downloadURL+".sha256.txt"); err != nil {
+			global.LOG.Errorf("Upgrade aborted, package verification failed: %v", err)
+			return
+		}
 
 		if err := handleUnTar(path.Join(rootDir, fileName), rootDir, ""); err != nil {
 			global.LOG.Errorf("Failed to extract package: %v", err)

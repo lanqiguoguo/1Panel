@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 1Panel installer for the lanqiguoguo fork.   revision: 2026-08-26-proxy-flag
+# 1Panel installer for the lanqiguoguo fork.   revision: 2026-08-27-sha256
 # Everything is served from this repository's own release channel:
 #   - version manifest : https://raw.githubusercontent.com/lanqiguoguo/1Panel/main/stable/latest
 #   - upgrade packages : https://github.com/lanqiguoguo/1Panel/releases/download/packages
@@ -188,6 +188,14 @@ function load_local_pkg() {
         log_err "package file not found: $LOCAL_PKG"
         exit 1
     fi
+    # verification is optional offline: only check when the checksum sidecar
+    # was fetched alongside the package
+    local checksum_file="${LOCAL_PKG}.sha256.txt"
+    if [[ -f "$checksum_file" ]]; then
+        verify_sha256 "$LOCAL_PKG" "$checksum_file"
+    else
+        log_warn "no checksum file next to $LOCAL_PKG, skipping sha256 verification"
+    fi
     local base
     base=$(basename "$LOCAL_PKG")
     if [[ "$base" =~ ^1panel-(v[0-9]+(\.[0-9]+)+-[a-z0-9]+([-._][0-9A-Za-z]+)*)-linux-[a-z0-9]+\.tar\.gz$ ]]; then
@@ -201,12 +209,44 @@ function load_local_pkg() {
     prepare_extracted_pkg "$LOCAL_PKG"
 }
 
-# Downloads land in a fixed directory so an interrupted run can be resumed
-# by simply running the installer again.
-DOWNLOAD_DIR="/tmp/1panel-download"
+# verify_sha256 TARBALL CHECKSUM_FILE — compare the digest recorded in a
+# sha256sum-generated checksum file ("<hash>  <filename>") against the actual
+# hash of the downloaded tarball. Any problem (unreadable file, malformed
+# digest, mismatch) aborts the install: fail closed.
+function verify_sha256() {
+    local tarball=$1 checksum_file=$2 expected actual
+    if [[ ! -r "$checksum_file" ]]; then
+        log_err "checksum file missing or unreadable: $checksum_file"
+        exit 1
+    fi
+    expected=$(awk 'NF{print $1; exit}' "$checksum_file")
+    if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+        log_err "checksum file does not start with a valid sha256 digest: $checksum_file"
+        exit 1
+    fi
+    if ! actual=$(sha256sum "$tarball"); then
+        log_err "failed to compute sha256 of $tarball"
+        exit 1
+    fi
+    actual=${actual%% *}
+    if [[ "$expected" != "$actual" ]]; then
+        log_err "sha256 mismatch for $(basename "$tarball"), refusing to install:"
+        log_err "  expected: $expected"
+        log_err "  actual:   $actual"
+        exit 1
+    fi
+    log_ok "sha256 verified: $actual"
+}
+
+# Downloads land in a private per-run temp directory. A fixed /tmp path shared
+# across runs and users would allow symlink swaps or tampering with the
+# partial file between download and install; resume still works within a
+# single run because the retry loop in fetch appends to the same partial file.
+DOWNLOAD_DIR=""
 
 function fetch_package() {
     local file_name="1panel-${VERSION}-linux-${ARCH}.tar.gz"
+    local checksum_name="${file_name}.sha256.txt"
     local url="$PKG_BASE/$file_name"
     if [[ -n "$PROXY_URL" ]]; then
         log_info "using explicit proxy: $PROXY_URL"
@@ -234,13 +274,22 @@ function fetch_package() {
             exit 1
             ;;
     esac
-    mkdir -p "$DOWNLOAD_DIR"
+    DOWNLOAD_DIR=$(mktemp -d /tmp/1panel-download.XXXXXX) || {
+        log_err "failed to create a private download directory"
+        exit 1
+    }
     log_info "downloading $url ..."
     if ! fetch "$url" "$DOWNLOAD_DIR/$file_name" 1800; then
-        log_err "download failed or timed out; partial file kept at $DOWNLOAD_DIR/$file_name,"
-        log_err "re-running the installer will resume from there"
+        log_err "download failed or timed out"
         exit 1
     fi
+    log_info "downloading $PKG_BASE/$checksum_name ..."
+    if ! fetch "$PKG_BASE/$checksum_name" "$DOWNLOAD_DIR/$checksum_name" 120; then
+        log_err "checksum file $PKG_BASE/$checksum_name is unavailable,"
+        log_err "refusing to install an unverified package"
+        exit 1
+    fi
+    verify_sha256 "$DOWNLOAD_DIR/$file_name" "$DOWNLOAD_DIR/$checksum_name"
     EXTRACT_ROOT=$(mktemp -d /tmp/1panel-install.XXXXXX)
     prepare_extracted_pkg "$DOWNLOAD_DIR/$file_name"
 }
@@ -541,7 +590,6 @@ function do_install() {
     if wait_active; then
         get_ips
         show_result
-        rm -rf "$EXTRACT_ROOT" "$DOWNLOAD_DIR"
         log_ok "1Panel $VERSION installed successfully"
     else
         log_warn "1Panel $VERSION installed, but service startup needs a manual check (see warnings above)"
@@ -636,5 +684,13 @@ function main() {
     fi
     do_install
 }
+
+# per-run temp directories; removed on every exit path, success or failure
+function cleanup_temp_dirs() {
+    [[ -n "$EXTRACT_ROOT" ]] && rm -rf "$EXTRACT_ROOT"
+    [[ -n "$DOWNLOAD_DIR" ]] && rm -rf "$DOWNLOAD_DIR"
+    return 0
+}
+trap cleanup_temp_dirs EXIT
 
 main "$@"

@@ -1,9 +1,17 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/1Panel-dev/1Panel/backend/buserr"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 )
 
 func TestMigrate1pctlParams(t *testing.T) {
@@ -76,5 +84,134 @@ func TestCheckVersionSemantics(t *testing.T) {
 				t.Fatalf("checkVersion(%q, %q) = %q, want %q", c.remote, c.current, got, c.expect)
 			}
 		})
+	}
+}
+
+const testPackageContent = "1panel-fake-upgrade-package-bytes"
+
+// stubPackageChecksum points fetchPackageChecksum at a canned response and
+// restores the original when the test finishes.
+func stubPackageChecksum(t *testing.T, data []byte, err error) {
+	t.Helper()
+	orig := fetchPackageChecksum
+	fetchPackageChecksum = func(string) ([]byte, error) {
+		return data, err
+	}
+	t.Cleanup(func() { fetchPackageChecksum = orig })
+}
+
+func writePackageFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	file := filepath.Join(dir, name)
+	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func TestParseChecksum(t *testing.T) {
+	digest := "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	cases := []struct {
+		name    string
+		content string
+		expect  string
+		wantErr bool
+	}{
+		{"sha256sum output", digest + "  1panel-v1.10.35-lts-linux-amd64.tar.gz\n", digest, false},
+		{"no trailing newline", digest + "  1panel-v1.10.35-lts-linux-amd64.tar.gz", digest, false},
+		{"tabs and multiple spaces", digest + "\t\t1panel-v1.10.35-lts-linux-amd64.tar.gz", digest, false},
+		{"blank lines and extra whitespace", "\n\n  " + digest + "   1panel-v1.10.35-lts-linux-amd64.tar.gz  \n\n", digest, false},
+		{"uppercase digest normalized", strings.ToUpper(digest) + "  pkg.tar.gz\n", digest, false},
+		{"trailing entries ignored", digest + "  a.tar.gz\n" + strings.Repeat("a", 64) + "  b.tar.gz\n", digest, false},
+		{"digest too short", "9f86d081  pkg.tar.gz\n", "", true},
+		{"digest not hex", strings.Repeat("g", 64) + "  pkg.tar.gz\n", "", true},
+		{"empty file", "\n  \n", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseChecksum(c.content)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("parseChecksum(%q) expected error, got %q", c.content, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseChecksum(%q) failed: %v", c.content, err)
+			}
+			if got != c.expect {
+				t.Fatalf("parseChecksum(%q) = %q, want %q", c.content, got, c.expect)
+			}
+		})
+	}
+}
+
+func TestVerifyPackageDownloadOK(t *testing.T) {
+	dir := t.TempDir()
+	pkg := writePackageFile(t, dir, "1panel-v1.10.35-lts-linux-amd64.tar.gz", testPackageContent)
+	sum := sha256.Sum256([]byte(testPackageContent))
+	checksum := hex.EncodeToString(sum[:]) + "  1panel-v1.10.35-lts-linux-amd64.tar.gz\n"
+	stubPackageChecksum(t, []byte(checksum), nil)
+
+	if err := verifyPackageDownload(pkg, "http://localhost/sha256.txt"); err != nil {
+		t.Fatalf("expected verification to pass, got %v", err)
+	}
+}
+
+func TestVerifyPackageDownloadMismatch(t *testing.T) {
+	dir := t.TempDir()
+	pkg := writePackageFile(t, dir, "1panel-v1.10.35-lts-linux-amd64.tar.gz", testPackageContent)
+	badChecksum := strings.Repeat("a", 64) + "  1panel-v1.10.35-lts-linux-amd64.tar.gz\n"
+	stubPackageChecksum(t, []byte(badChecksum), nil)
+
+	err := verifyPackageDownload(pkg, "http://localhost/sha256.txt")
+	if err == nil {
+		t.Fatal("expected mismatched checksum to abort verification")
+	}
+	var bizErr buserr.BusinessError
+	if !errors.As(err, &bizErr) || bizErr.Msg != constant.ErrUpgradeVerifyFailed {
+		t.Fatalf("expected business error %s, got %v", constant.ErrUpgradeVerifyFailed, err)
+	}
+	// the package file must be untouched: verification runs before any
+	// untar/execution step in Upgrade
+	got, errRead := os.ReadFile(pkg)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	if string(got) != testPackageContent {
+		t.Fatalf("package file was modified during verification: %q", got)
+	}
+}
+
+func TestVerifyPackageDownloadMissingChecksum(t *testing.T) {
+	dir := t.TempDir()
+	pkg := writePackageFile(t, dir, "1panel-v1.10.35-lts-linux-amd64.tar.gz", testPackageContent)
+
+	stubPackageChecksum(t, nil, fmt.Errorf("404 Not Found"))
+	if err := verifyPackageDownload(pkg, "http://localhost/sha256.txt"); err == nil {
+		t.Fatal("expected unfetchable checksum to abort verification")
+	}
+
+	// an empty/garbage sidecar must fail closed as well
+	stubPackageChecksum(t, []byte("not-a-digest\n"), nil)
+	if err := verifyPackageDownload(pkg, "http://localhost/sha256.txt"); err == nil {
+		t.Fatal("expected malformed checksum to abort verification")
+	}
+}
+
+func TestFileSHA256(t *testing.T) {
+	dir := t.TempDir()
+	pkg := writePackageFile(t, dir, "pkg.tar.gz", testPackageContent)
+	sum := sha256.Sum256([]byte(testPackageContent))
+	want := hex.EncodeToString(sum[:])
+	got, err := fileSHA256(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("fileSHA256 = %q, want %q", got, want)
+	}
+	if _, err := fileSHA256(filepath.Join(dir, "missing.tar.gz")); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

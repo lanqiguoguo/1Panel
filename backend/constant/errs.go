@@ -145,6 +145,11 @@ var (
 	ErrScriptsNotFound     = "ErrScriptsNotFound"
 )
 
+// upgrade
+var (
+	ErrUpgradeVerifyFailed = "ErrUpgradeVerifyFailed"
+)
+
 var (
 	ErrBackupInUsed = "ErrBackupInUsed"
 	ErrOSSConn      = "ErrOSSConn"
