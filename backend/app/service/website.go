@@ -302,7 +302,13 @@ func (w WebsiteService) CreateWebsite(create request.WebsiteCreate) (err error) 
 				tx.Rollback()
 				return err
 			}
-			tx.Commit()
+			if commitErr := tx.Commit().Error; commitErr != nil {
+				// Best-effort rollback; it fails if the failed commit already closed the transaction.
+				if rbErr := tx.Rollback().Error; rbErr != nil {
+					global.LOG.Debugf("rollback after failed commit: %v", rbErr)
+				}
+				return fmt.Errorf("commit app install transaction failed: %w", commitErr)
+			}
 			appInstall = install
 			website.AppInstallID = install.ID
 			website.Proxy = fmt.Sprintf("127.0.0.1:%d", appInstall.HttpPort)
@@ -345,7 +351,13 @@ func (w WebsiteService) CreateWebsite(create request.WebsiteCreate) (err error) 
 					tx.Rollback()
 					return err
 				}
-				tx.Commit()
+				if commitErr := tx.Commit().Error; commitErr != nil {
+					// Best-effort rollback; it fails if the failed commit already closed the transaction.
+					if rbErr := tx.Rollback().Error; rbErr != nil {
+						global.LOG.Debugf("rollback after failed commit: %v", rbErr)
+					}
+					return fmt.Errorf("commit app install transaction failed: %w", commitErr)
+				}
 				website.AppInstallID = install.ID
 				appInstall = install
 				website.Proxy = fmt.Sprintf("127.0.0.1:%d", appInstall.HttpPort)
@@ -392,7 +404,9 @@ func (w WebsiteService) CreateWebsite(create request.WebsiteCreate) (err error) 
 	if err = websiteDomainRepo.BatchCreate(ctx, domains); err != nil {
 		return err
 	}
-	tx.Commit()
+	if commitErr := tx.Commit().Error; commitErr != nil {
+		return fmt.Errorf("commit website creation transaction failed: %w", commitErr)
+	}
 	return nil
 }
 
@@ -509,7 +523,9 @@ func (w WebsiteService) DeleteWebsite(req request.WebsiteDelete) error {
 	if req.ID == websiteID {
 		_ = settingRepo.Update("MCP_WEBSITE_ID", "0")
 	}
-	tx.Commit()
+	if commitErr := tx.Commit().Error; commitErr != nil {
+		return fmt.Errorf("commit website deletion transaction failed: %w", commitErr)
+	}
 
 	uploadDir := path.Join(global.CONF.System.BaseDir, fmt.Sprintf("1panel/uploads/website/%s", website.Alias))
 	if _, err := os.Stat(uploadDir); err == nil {

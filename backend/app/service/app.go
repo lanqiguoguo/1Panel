@@ -714,7 +714,10 @@ func (a AppService) SyncAppListFromLocal() {
 			return
 		}
 	}
-	tx.Commit()
+	if commitErr := tx.Commit().Error; commitErr != nil {
+		global.LOG.Errorf("commit local application synchronization transaction failed: %v", commitErr)
+		return
+	}
 	global.LOG.Infof("Synchronization of local applications completed")
 }
 
@@ -1068,7 +1071,10 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 			return
 		}
 	}
-	tx.Commit()
+	if commitErr := tx.Commit().Error; commitErr != nil {
+		err = fmt.Errorf("commit app store synchronization transaction failed: %w", commitErr)
+		return
+	}
 
 	_ = settingService.Update("AppStoreSyncStatus", constant.SyncSuccess)
 	_ = settingService.Update("AppStoreLastModified", strconv.Itoa(list.LastModified))

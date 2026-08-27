@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 
 	"github.com/1Panel-dev/1Panel/backend/app/api/v1/helper"
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -278,7 +279,12 @@ func (b *BaseApi) DeleteMysql(c *gin.Context) {
 		tx.Rollback()
 		return
 	}
-	tx.Commit()
+	if err := tx.Commit().Error; err != nil {
+		// Best-effort rollback; it fails if the failed commit already closed the transaction.
+		_ = tx.Rollback().Error
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, fmt.Errorf("commit transaction failed: %w", err))
+		return
+	}
 	helper.SuccessWithData(c, nil)
 }
 

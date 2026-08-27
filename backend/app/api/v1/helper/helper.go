@@ -27,19 +27,19 @@ func ErrorWithDetail(ctx *gin.Context, code int, msgKey string, err error) {
 		switch {
 		case errors.Is(err, constant.ErrRecordExist):
 			res.Message = i18n.GetMsgWithMap("ErrRecordExist", nil)
-		case errors.Is(constant.ErrRecordNotFound, err):
+		case errors.Is(err, constant.ErrRecordNotFound):
 			res.Message = i18n.GetMsgWithMap("ErrRecordNotFound", nil)
-		case errors.Is(constant.ErrInvalidParams, err):
+		case errors.Is(err, constant.ErrInvalidParams):
 			res.Message = i18n.GetMsgWithMap("ErrInvalidParams", nil)
-		case errors.Is(constant.ErrStructTransform, err):
+		case errors.Is(err, constant.ErrStructTransform):
 			res.Message = i18n.GetMsgWithMap("ErrStructTransform", map[string]interface{}{"detail": err})
-		case errors.Is(constant.ErrCaptchaCode, err):
+		case errors.Is(err, constant.ErrCaptchaCode):
 			res.Code = constant.CodeAuth
 			res.Message = "ErrCaptchaCode"
-		case errors.Is(constant.ErrAuth, err):
+		case errors.Is(err, constant.ErrAuth):
 			res.Code = constant.CodeAuth
 			res.Message = "ErrAuth"
-		case errors.Is(constant.ErrInitialPassword, err):
+		case errors.Is(err, constant.ErrInitialPassword):
 			res.Message = i18n.GetMsgWithMap("ErrInitialPassword", map[string]interface{}{"detail": err})
 		case errors.As(err, &buserr.BusinessError{}):
 			res.Message = err.Error()
@@ -88,7 +88,10 @@ func GetParamID(c *gin.Context) (uint, error) {
 	if !ok {
 		return 0, errors.New("error id in path")
 	}
-	intNum, _ := strconv.Atoi(idParam)
+	intNum, err := strconv.Atoi(idParam)
+	if err != nil {
+		return 0, fmt.Errorf("invalid id param %q: %w", idParam, err)
+	}
 	return uint(intNum), nil
 }
 
@@ -97,7 +100,10 @@ func GetIntParamByKey(c *gin.Context, key string) (uint, error) {
 	if !ok {
 		return 0, fmt.Errorf("error %s in path", key)
 	}
-	intNum, _ := strconv.Atoi(idParam)
+	intNum, err := strconv.Atoi(idParam)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s param %q: %w", key, idParam, err)
+	}
 	return uint(intNum), nil
 }
 

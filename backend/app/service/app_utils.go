@@ -393,7 +393,9 @@ func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete b
 		global.LOG.Infof("delete app %s-%s backups successful", install.App.Key, install.Name)
 	}
 	_ = op.DeleteDir(appDir)
-	tx.Commit()
+	if commitErr := tx.Commit().Error; commitErr != nil {
+		return fmt.Errorf("commit app install deletion transaction failed: %w", commitErr)
+	}
 	return nil
 }
 
