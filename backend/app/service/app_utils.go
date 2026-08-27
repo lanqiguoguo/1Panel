@@ -569,27 +569,27 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 		defer func() {
 			if upErr != nil {
 				global.LOG.Infof(i18n.GetMsgWithName("ErrAppUpgrade", install.Name, upErr))
-				if req.Backup {
+				if req.Backup && backupFile != "" {
 					global.LOG.Infof(i18n.GetMsgWithName("AppRecover", install.Name, nil))
 					if err := NewIBackupService().AppRecover(dto.CommonRecover{Name: install.App.Key, DetailName: install.Name, Type: "app", Source: constant.ResourceLocal, File: backupFile}); err != nil {
 						global.LOG.Errorf("recover app [%s] [%s] failed %v", install.App.Key, install.Name, err)
+						if out, upErr := compose.Up(install.GetComposePath()); upErr != nil {
+							if out != "" {
+								upErr = errors.New(out)
+							}
+							global.LOG.Errorf("restart app [%s] [%s] after recover failed %v", install.App.Key, install.Name, upErr)
+						}
 					}
 				}
-				existInstall, _ := appInstallRepo.GetFirst(commonRepo.WithByID(req.InstallID))
-				if existInstall.ID > 0 {
-					existInstall.Status = constant.UpgradeErr
-					existInstall.Message = upErr.Error()
-					_ = appInstallRepo.Save(context.Background(), &existInstall)
+				if _, err := appInstallRepo.UpdateStatusByID(req.InstallID, constant.Upgrading, constant.UpgradeErr); err != nil {
+					global.LOG.Errorf("update app [%s] [%s] status failed %v", install.App.Key, install.Name, err)
 				}
+				_, _ = appInstallRepo.UpdateFieldsByID(req.InstallID, map[string]interface{}{"message": upErr.Error()})
 			}
 			if preErr != nil {
 				global.LOG.Infof(i18n.GetMsgWithName("ErrAppUpgrade", install.Name, preErr))
-				existInstall, _ := appInstallRepo.GetFirst(commonRepo.WithByID(req.InstallID))
-				if existInstall.ID > 0 {
-					existInstall.Status = constant.UpgradeErr
-					existInstall.Message = preErr.Error()
-					_ = appInstallRepo.Save(context.Background(), &existInstall)
-				}
+				_, _ = appInstallRepo.UpdateStatusByID(req.InstallID, constant.Upgrading, constant.UpgradeErr)
+				_, _ = appInstallRepo.UpdateFieldsByID(req.InstallID, map[string]interface{}{"message": preErr.Error()})
 			}
 		}()
 
@@ -704,8 +704,16 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 			upErr = err
 			return
 		}
-		install.Status = constant.Running
-		_ = appInstallRepo.Save(context.Background(), &install)
+		if _, err := appInstallRepo.UpdateFieldsByID(req.InstallID, map[string]interface{}{
+			"version":        install.Version,
+			"app_detail_id":  install.AppDetailId,
+			"docker_compose": install.DockerCompose,
+		}); err != nil {
+			global.LOG.Errorf("update app [%s] [%s] upgrade info failed %v", install.App.Key, install.Name, err)
+		}
+		if _, err := appInstallRepo.UpdateStatusByID(req.InstallID, constant.Upgrading, constant.Running); err != nil {
+			global.LOG.Errorf("update app [%s] [%s] status failed %v", install.App.Key, install.Name, err)
+		}
 		global.LOG.Infof(i18n.GetMsgWithName("UpgradeAppSuccess", install.Name, nil))
 	}()
 
@@ -997,43 +1005,58 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 	} else {
 		appInstall.Status = constant.Running
 	}
-	exist, _ := appInstallRepo.GetFirst(commonRepo.WithByID(appInstall.ID))
-	if exist.ID > 0 {
-		containerNames, err := getContainerNames(*appInstall)
-		if err != nil {
-			return
-		}
-		if len(containerNames) > 0 {
-			appInstall.ContainerName = strings.Join(containerNames, ",")
-		}
-		_ = appInstallRepo.Save(context.Background(), appInstall)
+	containerNames, err := getContainerNames(*appInstall)
+	if err != nil {
+		_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
+			"status":  appInstall.Status,
+			"message": err.Error(),
+		})
+		return
 	}
+	fields := map[string]interface{}{"status": appInstall.Status}
+	if len(containerNames) > 0 {
+		fields["container_name"] = strings.Join(containerNames, ",")
+	}
+	_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, fields)
 }
 
 func rebuildApp(appInstall model.AppInstall) error {
 	appInstall.Status = constant.Rebuilding
 	_ = appInstallRepo.Save(context.Background(), &appInstall)
 	go func() {
+		writeBack := func(status, message string) {
+			if _, err := appInstallRepo.UpdateStatusByID(appInstall.ID, constant.Rebuilding, status); err != nil {
+				global.LOG.Errorf("update app [%s] status failed %v", appInstall.Name, err)
+			}
+			if message != "" {
+				_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{"message": message})
+			}
+		}
+		rebuildErr := func(err error, out string) {
+			message := err.Error()
+			if out != "" {
+				message = out
+			}
+			writeBack(constant.UpErr, message)
+		}
 		dockerComposePath := appInstall.GetComposePath()
 		out, err := compose.Down(dockerComposePath)
 		if err != nil {
-			_ = handleErr(appInstall, err, out)
+			rebuildErr(err, out)
 			return
 		}
 		out, err = compose.Up(appInstall.GetComposePath())
 		if err != nil {
-			_ = handleErr(appInstall, err, out)
+			rebuildErr(err, out)
 			return
 		}
 		containerNames, err := getContainerNames(appInstall)
 		if err != nil {
-			_ = handleErr(appInstall, err, out)
+			rebuildErr(err, "")
 			return
 		}
-		appInstall.ContainerName = strings.Join(containerNames, ",")
-
-		appInstall.Status = constant.Running
-		_ = appInstallRepo.Save(context.Background(), &appInstall)
+		_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{"container_name": strings.Join(containerNames, ",")})
+		writeBack(constant.Running, "")
 	}()
 	return nil
 }

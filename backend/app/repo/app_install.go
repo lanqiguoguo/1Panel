@@ -30,6 +30,8 @@ type IAppInstallRepo interface {
 	GetFirst(opts ...DBOption) (model.AppInstall, error)
 	Create(ctx context.Context, install *model.AppInstall) error
 	Save(ctx context.Context, install *model.AppInstall) error
+	UpdateStatusByID(id uint, oldStatus, newStatus string) (int64, error)
+	UpdateFieldsByID(id uint, fields map[string]interface{}) (int64, error)
 	DeleteBy(opts ...DBOption) error
 	Delete(ctx context.Context, install model.AppInstall) error
 	Page(page, size int, opts ...DBOption) (int64, []model.AppInstall, error)
@@ -130,6 +132,25 @@ func (a *AppInstallRepo) Create(ctx context.Context, install *model.AppInstall) 
 
 func (a *AppInstallRepo) Save(ctx context.Context, install *model.AppInstall) error {
 	return getTx(ctx).Save(&install).Error
+}
+
+// UpdateStatusByID updates the status of the install with the given id, but only
+// when its current status still equals oldStatus. It returns the number of rows
+// affected, so concurrent writers (e.g. the sync task) that already changed the
+// status cannot be silently overwritten by a stale goroutine.
+func (a *AppInstallRepo) UpdateStatusByID(id uint, oldStatus, newStatus string) (int64, error) {
+	db := getDb().Model(&model.AppInstall{})
+	result := db.Where("id = ? AND status = ?", id, oldStatus).Update("status", newStatus)
+	return result.RowsAffected, result.Error
+}
+
+// UpdateFieldsByID updates only the given fields of the install with the given
+// id. Unlike Save it never overwrites the whole row, so fields updated by other
+// writers while a background task is running are preserved.
+func (a *AppInstallRepo) UpdateFieldsByID(id uint, fields map[string]interface{}) (int64, error) {
+	db := getDb().Model(&model.AppInstall{})
+	result := db.Where("id = ?", id).Updates(fields)
+	return result.RowsAffected, result.Error
 }
 
 func (a *AppInstallRepo) DeleteBy(opts ...DBOption) error {
