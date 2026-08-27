@@ -56,7 +56,12 @@ func (b *BaseApi) Login(c *gin.Context) {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
-	global.IPTracker.Clear(ip)
+	// Only a fully completed login (no pending MFA step) may clear the IP
+	// tracker. When MFA is pending, no session was issued yet and the TOTP
+	// step still needs rate limiting, so the failure counter must survive.
+	if shouldClearTracker(user.MfaStatus) {
+		global.IPTracker.Clear(ip)
+	}
 	helper.SuccessWithData(c, user)
 }
 
@@ -183,4 +188,14 @@ func saveLoginLogs(c *gin.Context, err error) {
 // refused until the tracker entry expires.
 func mfaLoginAllowed(ip string) bool {
 	return !global.IPTracker.NeedCaptcha(ip)
+}
+
+// shouldClearTracker reports whether a successful stage-1 login finished the
+// whole authentication. authService.Login returns a non-empty MfaStatus when
+// the credentials were accepted but no session was issued yet (MFA pending).
+// In that case the IP tracker state must be kept so the pending TOTP step
+// stays rate limited; otherwise attackers could reset their failure counter
+// by repeating stage-1 login.
+func shouldClearTracker(mfaStatus string) bool {
+	return mfaStatus == ""
 }
