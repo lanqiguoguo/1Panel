@@ -520,7 +520,7 @@ func loadOs() string {
 }
 
 func loadSnapSize(records []model.Snapshot) ([]dto.SnapshotFile, error) {
-	var datas []dto.SnapshotFile
+	datas := make([]dto.SnapshotFile, len(records))
 	clientMap := make(map[string]loadSizeHelper)
 	var wg sync.WaitGroup
 	for i := 0; i < len(records); i++ {
@@ -531,30 +531,31 @@ func loadSnapSize(records []model.Snapshot) ([]dto.SnapshotFile, error) {
 			if err != nil {
 				global.LOG.Errorf("load backup model %s from db failed, err: %v", records[i].DefaultDownload, err)
 				clientMap[records[i].DefaultDownload] = loadSizeHelper{}
-				datas = append(datas, item)
+				datas[i] = item
 				continue
 			}
 			client, err := NewIBackupService().NewClient(&backup)
 			if err != nil {
 				global.LOG.Errorf("load backup client %s from db failed, err: %v", records[i].DefaultDownload, err)
 				clientMap[records[i].DefaultDownload] = loadSizeHelper{}
-				datas = append(datas, item)
+				datas[i] = item
 				continue
 			}
 			item.Size, _ = client.Size(path.Join(strings.TrimLeft(backup.BackupPath, "/"), itemPath))
-			datas = append(datas, item)
+			datas[i] = item
 			clientMap[records[i].DefaultDownload] = loadSizeHelper{backupPath: strings.TrimLeft(backup.BackupPath, "/"), client: client, isOk: true}
 			continue
 		}
-		if clientMap[records[i].DefaultDownload].isOk {
+		// Copy the helper out of clientMap so the goroutine below never reads
+		// the map, which this loop keeps writing on later iterations.
+		helper := clientMap[records[i].DefaultDownload]
+		datas[i] = item
+		if helper.isOk {
 			wg.Add(1)
-			go func(index int) {
-				item.Size, _ = clientMap[records[index].DefaultDownload].client.Size(path.Join(clientMap[records[index].DefaultDownload].backupPath, itemPath))
-				datas = append(datas, item)
-				wg.Done()
-			}(i)
-		} else {
-			datas = append(datas, item)
+			go func(index int, helper loadSizeHelper, itemPath string) {
+				defer wg.Done()
+				datas[index].Size, _ = helper.client.Size(path.Join(helper.backupPath, itemPath))
+			}(i, helper, itemPath)
 		}
 	}
 	wg.Wait()

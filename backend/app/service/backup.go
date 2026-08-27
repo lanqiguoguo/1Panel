@@ -542,12 +542,15 @@ func (u *BackupService) loadRecordSize(records []model.BackupRecord) ([]dto.Back
 			clientMap[records[i].Source] = loadSizeHelper{backupPath: strings.TrimLeft(backup.BackupPath, "/"), client: client, isOk: true}
 			continue
 		}
-		if clientMap[records[i].Source].isOk {
+		// Copy the helper out of clientMap so the goroutine below never reads
+		// the map, which this loop keeps writing on later iterations.
+		helper := clientMap[records[i].Source]
+		if helper.isOk {
 			wg.Add(1)
-			go func(index int) {
-				data[i].Size, _ = clientMap[records[index].Source].client.Size(path.Join(clientMap[records[index].Source].backupPath, itemPath))
-				wg.Done()
-			}(i)
+			go func(index int, helper loadSizeHelper, itemPath string) {
+				defer wg.Done()
+				data[index].Size, _ = helper.client.Size(path.Join(helper.backupPath, itemPath))
+			}(i, helper, itemPath)
 		}
 	}
 	wg.Wait()
