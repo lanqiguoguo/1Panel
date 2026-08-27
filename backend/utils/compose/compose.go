@@ -1,7 +1,6 @@
 package compose
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -27,7 +26,10 @@ func command() string {
 		}
 		return "docker-compose"
 	}
-	if _, err := cmd.Exec("docker compose version"); err == nil && !strings.Contains(err.Error(), "not found") {
+	// Probe success/failure only; never inspect err.Error() here: buserr
+	// errors render through i18n and panic in background goroutines without an
+	// HTTP localizer, and calling Error() on a nil error crashes outright.
+	if _, err := cmd.Exec("docker compose version"); err == nil {
 		composeCmdV2 = true
 	} else if _, err := cmd.Exec("docker-compose version"); err == nil {
 		composeCmdV2 = false
