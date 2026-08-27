@@ -52,7 +52,7 @@ func (b *BaseApi) Login(c *gin.Context) {
 	user, err := authService.Login(c, req, string(entrance))
 	go saveLoginLogs(c, err)
 	if err != nil {
-		global.IPTracker.SetNeedCaptcha(ip)
+		global.IPTracker.RecordFailure(ip)
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
@@ -73,6 +73,12 @@ func (b *BaseApi) MFALogin(c *gin.Context) {
 		return
 	}
 
+	ip := common.GetRealClientIP(c)
+	if !mfaLoginAllowed(ip) {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, constant.ErrCaptchaCode)
+		return
+	}
+
 	entranceItem := c.Request.Header.Get("EntranceCode")
 	var entrance []byte
 	if len(entranceItem) != 0 {
@@ -81,9 +87,11 @@ func (b *BaseApi) MFALogin(c *gin.Context) {
 
 	user, err := authService.MFALogin(c, req, string(entrance))
 	if err != nil {
+		global.IPTracker.RecordFailure(ip)
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
+	global.IPTracker.Clear(ip)
 	helper.SuccessWithData(c, user)
 }
 
@@ -168,4 +176,11 @@ func saveLoginLogs(c *gin.Context, err error) {
 	logs.IP = c.ClientIP()
 	logs.Agent = c.GetHeader("User-Agent")
 	_ = logService.CreateLoginLog(logs)
+}
+
+// mfaLoginAllowed reports whether the IP may keep trying MFA codes. Once the
+// IP is flagged by NeedCaptcha (e.g. after failed logins), MFA attempts are
+// refused until the tracker entry expires.
+func mfaLoginAllowed(ip string) bool {
+	return !global.IPTracker.NeedCaptcha(ip)
 }

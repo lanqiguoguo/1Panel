@@ -29,8 +29,8 @@ func CreateCaptcha() (*dto.CaptchaResponse, error) {
 	driverString.Source = "1234567890QWERTYUPLKJHGFDSAZXCVBNMqwertyupkjhgfdsazxcvbnm"
 	driverString.Width = 120
 	driverString.Height = 50
-	driverString.NoiseCount = 0
-	driverString.Length = 4
+	driverString.NoiseCount = 3
+	driverString.Length = 5
 	driverString.Fonts = []string{"RitaSmith.ttf", "actionj.ttf", "chromohv.ttf"}
 	driver := driverString.ConvertFonts()
 	c := base64Captcha.NewCaptcha(driver, store)
