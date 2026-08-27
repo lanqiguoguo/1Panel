@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/buserr"
@@ -34,8 +35,22 @@ func handleErr(stdout, stderr bytes.Buffer, err error) (string, error) {
 	return errMsg, err
 }
 
+func setSysProcAttr(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+// killProcessGroup 杀掉命令及其整个进程组，避免超时后留下孤儿子进程。
+// 进程组 ID 等于进程 PID（Setpgid 后）。
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+
 func ExecWithTimeOut(cmdStr string, timeout time.Duration) (string, error) {
 	cmd := exec.Command("bash", "-c", cmdStr)
+	setSysProcAttr(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -49,7 +64,7 @@ func ExecWithTimeOut(cmdStr string, timeout time.Duration) (string, error) {
 	after := time.After(timeout)
 	select {
 	case <-after:
-		_ = cmd.Process.Kill()
+		killProcessGroup(cmd)
 		return "", buserr.New(constant.ErrCmdTimeout)
 	case err := <-done:
 		if err != nil {
@@ -80,6 +95,7 @@ func ExecCronjobWithTimeOut(cmdStr, workdir, outPath string, timeout time.Durati
 	defer file.Close()
 
 	cmd := exec.Command("bash", "-c", cmdStr)
+	setSysProcAttr(cmd)
 	cmd.Dir = workdir
 	cmd.Stdout = file
 	cmd.Stderr = file
@@ -93,7 +109,7 @@ func ExecCronjobWithTimeOut(cmdStr, workdir, outPath string, timeout time.Durati
 	after := time.After(timeout)
 	select {
 	case <-after:
-		_ = cmd.Process.Kill()
+		killProcessGroup(cmd)
 		return buserr.New(constant.ErrCmdTimeout)
 	case err := <-done:
 		if err != nil {
@@ -129,6 +145,7 @@ func ExecWithCheck(name string, a ...string) (string, error) {
 
 func ExecScript(scriptPath, workDir string) (string, error) {
 	cmd := exec.Command("bash", scriptPath)
+	setSysProcAttr(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Dir = workDir
 	cmd.Stdout = &stdout
@@ -143,7 +160,7 @@ func ExecScript(scriptPath, workDir string) (string, error) {
 	after := time.After(10 * time.Minute)
 	select {
 	case <-after:
-		_ = cmd.Process.Kill()
+		killProcessGroup(cmd)
 		return "", buserr.New(constant.ErrCmdTimeout)
 	case err := <-done:
 		if err != nil {
