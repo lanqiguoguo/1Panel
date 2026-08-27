@@ -163,6 +163,7 @@ const message = {
             password: '비밀번호',
             welcome: '다시 오신 것을 환영합니다. 사용자 이름과 비밀번호를 입력하여 로그인하세요!',
             errorAuthInfo: '입력한 사용자 이름 또는 비밀번호가 잘못되었습니다. 다시 입력해주세요!',
+            encryptErr: '비밀번호 암호화에 실패했습니다. 페이지를 새로 고친 후 다시 시도해주세요!',
             errorMfaInfo: '인증 정보가 잘못되었습니다. 다시 시도해주세요!',
             captchaHelper: '캡챠',
             errorCaptcha: '캡챠 코드 오류!',

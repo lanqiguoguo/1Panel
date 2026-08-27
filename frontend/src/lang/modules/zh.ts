@@ -164,6 +164,7 @@ const message = {
             password: '密码',
             welcome: '欢迎回来，请输入用户名和密码登录！',
             errorAuthInfo: '您输入的用户名或密码不正确，请重新输入！',
+            encryptErr: '密码加密失败，请刷新页面后重试！',
             errorMfaInfo: '错误的验证信息，请重试！',
             captchaHelper: '验证码',
             errorCaptcha: '验证码错误！',

@@ -178,7 +178,7 @@ import { useRouter } from 'vue-router';
 import type { ElForm } from 'element-plus';
 import { loginApi, getCaptcha, mfaLoginApi, checkIsDemo, getAuthSetting, checkIsIntl } from '@/api/modules/auth';
 import { GlobalStore, MenuStore, TabsStore } from '@/store';
-import { MsgSuccess } from '@/utils/message';
+import { MsgError, MsgSuccess } from '@/utils/message';
 import { useI18n } from 'vue-i18n';
 import { getSettingInfo } from '@/api/modules/setting';
 import { Rules } from '@/global/form-rules';
@@ -323,6 +323,11 @@ const login = (formEl: FormInstance | undefined) => {
             authMethod: 'session',
             language: loginForm.language,
         };
+        if (!requestLoginForm.password) {
+            MsgError(i18n.t('commons.login.encryptErr'));
+            location.reload();
+            return;
+        }
         if (!globalStore.ignoreCaptcha && requestLoginForm.captcha == '') {
             errCaptcha.value = true;
             return;

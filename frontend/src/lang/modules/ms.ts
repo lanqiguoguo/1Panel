@@ -166,6 +166,7 @@ const message = {
             password: 'Kata Laluan',
             welcome: 'Selamat datang kembali, sila masukkan nama pengguna dan kata laluan anda untuk log masuk!',
             errorAuthInfo: 'Nama pengguna atau kata laluan yang anda masukkan tidak betul, sila cuba lagi!',
+            encryptErr: 'Penyulitan kata laluan gagal, sila muat semula halaman dan cuba lagi!',
             errorMfaInfo: 'Maklumat pengesahan tidak betul, sila cuba lagi!',
             captchaHelper: 'Captcha',
             errorCaptcha: 'Ralat kod captcha!',

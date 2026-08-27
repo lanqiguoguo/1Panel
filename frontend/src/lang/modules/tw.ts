@@ -165,6 +165,7 @@ const message = {
             password: '密碼',
             welcome: '歡迎回來，請輸入用戶名和密碼登入！',
             errorAuthInfo: '您輸入的用戶名或密碼不正確，請重新輸入！',
+            encryptErr: '密碼加密失敗，請刷新頁面後重試！',
             errorMfaInfo: '錯誤的驗證資訊，請重試！',
             captchaHelper: '驗證碼',
             errorCaptcha: '驗證碼錯誤！',

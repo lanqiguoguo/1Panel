@@ -163,6 +163,7 @@ const message = {
             password: 'パスワード',
             welcome: 'ようこそ、ユーザー名とパスワードを入力してログインしてください！',
             errorAuthInfo: '入力したユーザー名またはパスワードは間違っています。再入力してください！',
+            encryptErr: 'パスワードの暗号化に失敗しました。ページを更新して再試行してください！',
             errorMfaInfo: '認証情報が誤っていない、もう一度やり直してください！',
             captchaHelper: 'キャプチャ',
             errorCaptcha: 'Captchaコードエラー！',

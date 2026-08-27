@@ -16,7 +16,7 @@ func SetPasswordPublicKey() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		c.SetCookie("panel_public_key", base64Key, 7*24*60*60, "/", "", false, false)
+		c.SetCookie("panel_public_key", base64Key, 7*24*60*60, "/", "", c.Request.TLS != nil, false)
 		c.Next()
 	}
 }

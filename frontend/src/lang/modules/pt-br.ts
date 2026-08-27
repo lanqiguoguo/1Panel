@@ -164,6 +164,7 @@ const message = {
             password: 'Senha',
             welcome: 'Bem-vindo de volta, insira seu usuário e senha para acessar!',
             errorAuthInfo: 'O nome de usuário ou senha que você inseriu está incorreto, tente novamente!',
+            encryptErr: 'Falha ao criptografar a senha, atualize a página e tente novamente!',
             errorMfaInfo: 'Informações de autenticação incorretas, tente novamente!',
             captchaHelper: 'Captcha',
             errorCaptcha: 'Erro no código Captcha!',
