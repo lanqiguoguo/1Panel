@@ -312,8 +312,22 @@ func (w *WriteCounter) SaveProcess() {
 	}
 }
 
+// downloadMaxSize caps the size of files fetched through
+// DownloadFileWithProcess (512MB, the same limit as file uploads) so a
+// misbehaving or malicious remote server cannot exhaust local disk space.
+// It is a variable so tests can override it with a smaller value.
+var downloadMaxSize = int64(512 << 20)
+
+// validateDownloadURL guards DownloadFileWithProcess against SSRF: only
+// http/https URLs whose host resolves to a public address are accepted.
+// It is a variable so tests can relax it for local httptest servers.
+var validateDownloadURL = http2.ValidatePublicURL
+
 func (f FileOp) DownloadFileWithProcess(url, dst, key string, ignoreCertificate bool) error {
-	client := &http.Client{}
+	if err := validateDownloadURL(url); err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: constant.TimeOut5m * time.Second}
 	if ignoreCertificate {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -343,9 +357,16 @@ func (f FileOp) DownloadFileWithProcess(url, dst, key string, ignoreCertificate 
 		counter.Total = uint64(resp.ContentLength)
 	}
 	counter.Name = filepath.Base(dst)
-	if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
+	written, err := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, downloadMaxSize+1), counter))
+	if err != nil {
 		global.LOG.Errorf("save download file [%s] error, err %s", dst, err.Error())
+		_ = os.Remove(dst)
 		return err
+	}
+	if written > downloadMaxSize {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return fmt.Errorf("download exceeds size limit (%d bytes)", downloadMaxSize)
 	}
 
 	value, err := global.CACHE.Get(counter.Key)
