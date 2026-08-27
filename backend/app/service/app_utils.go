@@ -965,10 +965,12 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 			projectName := strings.ToLower(appInstall.Name)
 			envByte, err := files.NewFileOp().GetContent(appInstall.GetEnvPath())
 			if err != nil {
+				appInstall.Message = err.Error()
 				return err
 			}
 			images, err := composeV2.GetDockerComposeImages(projectName, envByte, []byte(appInstall.DockerCompose))
 			if err != nil {
+				appInstall.Message = err.Error()
 				return err
 			}
 			for _, image := range images {
@@ -995,15 +997,21 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 
 		out, err = compose.Up(appInstall.GetComposePath())
 		if err != nil {
-			if out != "" {
-				appInstall.Message = errMsg + out
+			appInstall.Message = errMsg + out
+			if appInstall.Message == "" {
+				appInstall.Message = err.Error()
 			}
 			return err
 		}
 		return
 	}
-	if err := upProject(appInstall); err != nil {
+	upErr := upProject(appInstall)
+	if upErr != nil {
 		appInstall.Status = constant.UpErr
+		global.LOG.Errorf("up app [%s] failed, err: %v", appInstall.Name, upErr)
+		if appInstall.Message != "" {
+			global.LOG.Debugf("up app [%s] failed, message: %s", appInstall.Name, appInstall.Message)
+		}
 	} else {
 		appInstall.Status = constant.Running
 	}
@@ -1015,7 +1023,23 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 		})
 		return
 	}
+	persistInstallResult(appInstall, upErr, containerNames)
+}
+
+// persistInstallResult writes the up result back to the install row: the
+// status always, the failure reason on error so a failed install never ends
+// up with an empty message in the UI, and the container names when known.
+func persistInstallResult(appInstall *model.AppInstall, upErr error, containerNames []string) {
 	fields := map[string]interface{}{"status": appInstall.Status}
+	if appInstall.Status == constant.UpErr {
+		message := appInstall.Message
+		if message == "" && upErr != nil {
+			message = upErr.Error()
+		}
+		if message != "" {
+			fields["message"] = message
+		}
+	}
 	if len(containerNames) > 0 {
 		fields["container_name"] = strings.Join(containerNames, ",")
 	}
