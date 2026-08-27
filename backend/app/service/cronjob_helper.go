@@ -6,7 +6,9 @@ import (
 	"os"
 	"path"
 	pathUtils "path"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/buserr"
@@ -23,13 +25,44 @@ import (
 	"github.com/pkg/errors"
 )
 
+// runningJobs tracks cronjobs whose body is currently executing, keyed by job
+// ID. DelayIfStillRunning only serializes ticks of a single cron entry, while
+// one job may be registered under several specs and can also be triggered
+// manually via HandleOnce; this shared guard closes those remaining overlap
+// windows.
+var runningJobs sync.Map
+
+// runJobBody executes fn while holding the per-job running guard. If the same
+// job is still running, the invocation is skipped with a log entry instead of
+// running concurrently. A deferred recover keeps a panicking job body from
+// terminating the panel process, both on the cron worker goroutine and on the
+// goroutine spawned by a manual trigger.
+func runJobBody(jobID uint, jobName string, fn func()) {
+	if _, busy := runningJobs.LoadOrStore(jobID, struct{}{}); busy {
+		global.LOG.Infof("job %s is still running, skip", jobName)
+		return
+	}
+	defer runningJobs.Delete(jobID)
+	defer func() {
+		if r := recover(); r != nil {
+			global.LOG.Errorf("panic in job %s, err: %v\n%s", jobName, r, debug.Stack())
+		}
+	}()
+	fn()
+}
+
+// HandleJob runs one cronjob execution synchronously. Running the body in the
+// caller's goroutine is what makes the scheduler chain effective again:
+// cron.Recover catches panics raised here, and DelayIfStillRunning delays the
+// next tick of the same entry until this run finishes instead of letting runs
+// overlap.
 func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
-	var (
-		message []byte
-		err     error
-	)
-	record := cronjobRepo.StartRecords(cronjob.ID, cronjob.KeepLocal, "")
-	go func() {
+	runJobBody(cronjob.ID, cronjob.Name, func() {
+		var (
+			message []byte
+			err     error
+		)
+		record := cronjobRepo.StartRecords(cronjob.ID, cronjob.KeepLocal, "")
 		switch cronjob.Type {
 		case "shell":
 			if len(cronjob.Script) == 0 {
@@ -99,7 +132,7 @@ func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 			}
 		}
 		cronjobRepo.EndRecords(record, constant.StatusSuccess, "", record.Records)
-	}()
+	})
 }
 
 func (u *CronjobService) handleShell(cronType, cornName, script, logPath string) error {

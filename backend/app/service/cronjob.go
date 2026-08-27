@@ -173,7 +173,12 @@ func (u *CronjobService) HandleOnce(id uint) error {
 	if cronjob.ID == 0 {
 		return constant.ErrRecordNotFound
 	}
-	u.HandleJob(&cronjob)
+	// HandleJob runs synchronously now, so trigger it in the background to
+	// keep the HTTP request non-blocking for long-running jobs. The guard and
+	// recover inside HandleJob still cover this goroutine: a trigger while the
+	// same job is already running is skipped with a log entry, and a panicking
+	// job body cannot take down the panel process.
+	go u.HandleJob(&cronjob)
 	return nil
 }
 
