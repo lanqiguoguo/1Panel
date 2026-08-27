@@ -69,14 +69,19 @@ func (u *SettingService) GetSettingInfo() (*dto.SettingInfo, error) {
 	if err := json.Unmarshal(arr, &info); err != nil {
 		return nil, err
 	}
-	if info.ProxyPasswdKeep != constant.StatusEnable {
-		info.ProxyPasswd = ""
-	} else {
-		info.ProxyPasswd, _ = encrypt.StringDecrypt(info.ProxyPasswd)
-	}
+	sanitizeSettingInfo(&info)
 
 	info.LocalTime = time.Now().Format("2006-01-02 15:04:05 MST -0700")
 	return &info, err
+}
+
+// sanitizeSettingInfo clears sensitive fields that must not be echoed back to the
+// frontend through the settings query API. ApiKey is intentionally kept: the
+// API interface settings page needs to display it for copy, and the route is
+// only reachable with a valid login session (SessionAuth).
+func sanitizeSettingInfo(info *dto.SettingInfo) {
+	info.MFASecret = ""
+	info.ProxyPasswd = ""
 }
 
 func (u *SettingService) Update(key, value string) error {
