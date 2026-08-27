@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/1Panel-dev/1Panel/backend/buserr"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 )
@@ -17,6 +19,9 @@ func NewTarGzArchiver() ShellArchiver {
 }
 
 func (t TarGzArchiver) Extract(filePath, dstDir string, secret string) error {
+	if !ValidShellArgs(filePath, dstDir) || (len(secret) != 0 && !ValidShellArgs(secret)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var err error
 	commands := ""
 	if len(secret) != 0 {
@@ -34,6 +39,17 @@ func (t TarGzArchiver) Extract(filePath, dstDir string, secret string) error {
 }
 
 func (t TarGzArchiver) Compress(sourcePaths []string, dstFile string, secret string) error {
+	if len(sourcePaths) == 0 {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	for _, item := range sourcePaths {
+		if !ValidShellArgs(filepath.Base(item)) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	if !ValidShellArgs(filepath.Dir(sourcePaths[0]), dstFile) || (len(secret) != 0 && !ValidShellArgs(secret)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var itemDirs []string
 	for _, item := range sourcePaths {
 		itemDirs = append(itemDirs, fmt.Sprintf("\"%s\"", filepath.Base(item)))

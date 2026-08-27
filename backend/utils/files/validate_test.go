@@ -83,3 +83,41 @@ func TestValidPath(t *testing.T) {
 		}
 	}
 }
+
+func TestValidShellArgs(t *testing.T) {
+	valid := []string{
+		"/www/sites/site1/backup.zip",
+		"/opt/1panel/my backup/app.tar.gz",
+		"/data/备份/数据库.tar.gz",
+		"my file with spaces.txt",
+		"secret phrase with spaces",
+	}
+	for _, s := range valid {
+		if !ValidShellArgs(s) {
+			t.Errorf("ValidShellArgs(%q) = false, want true", s)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"/tmp/a;id",
+		"/tmp/$(id)",
+		"/tmp/`id`",
+		"/tmp/a&whoami",
+		"/tmp/a|id",
+		"/tmp/a'id",
+		`/tmp/a"id`,
+		"/tmp/a(b)",
+		"/tmp/a\nid",
+		"/tmp/a\rid",
+		"/tmp/a>out",
+		"/tmp/a<in",
+		"/tmp/$HOME",
+		"p@ss'w0rd",
+	}
+	for _, s := range invalid {
+		if ValidShellArgs(s) {
+			t.Errorf("ValidShellArgs(%q) = true, want false", s)
+		}
+	}
+}

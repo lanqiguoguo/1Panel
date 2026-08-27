@@ -182,6 +182,22 @@ func ValidPath(s string) bool {
 	return !cmd.CheckIllegal(s)
 }
 
+// ValidShellArgs reports whether every value can be safely interpolated into
+// a bash -c command: each must be non-empty and free of shell metacharacters
+// (see cmd.CheckIllegal, which rejects &, |, ;, $, quotes, backticks,
+// parentheses, redirections and newlines). It is applied to every
+// user-controlled value before a shell archiver command is built; secrets
+// are covered as well because a single quote would break the openssl -k
+// quoting.
+func ValidShellArgs(values ...string) bool {
+	for _, v := range values {
+		if !ValidPath(v) {
+			return false
+		}
+	}
+	return true
+}
+
 // SanitizeFilename validates an uploaded file name and returns a safe
 // basename. Empty names, "." and "..", absolute paths, and names containing
 // path separators ("/" or "\") are rejected to prevent path traversal
@@ -747,14 +763,20 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 
 func (f FileOp) Decompress(srcFile string, dst string, cType CompressType, secret string) error {
 	if cType == Tar || cType == Zip || cType == TarGz {
-		shellArchiver, err := NewShellArchiver(cType)
 		if !f.Stat(dst) {
 			_ = f.CreateDir(dst, 0755)
 		}
-		if err == nil {
-			if err = shellArchiver.Extract(srcFile, dst, secret); err == nil {
-				return nil
-			}
+		// Prefer the hardened SDK path (entry path checks, GBK file names,
+		// zip-bomb limits). The SDK cannot handle password-protected
+		// archives, so the shell archiver stays as a fallback for those
+		// (e.g. an openssl-encrypted tar.gz that needs the secret); the
+		// shell archivers validate every interpolated value before any
+		// command is built.
+		if err := f.decompressWithSDK(srcFile, dst, cType); err == nil {
+			return nil
+		}
+		if shellArchiver, err := NewShellArchiver(cType); err == nil {
+			return shellArchiver.Extract(srcFile, dst, secret)
 		}
 	}
 	return f.decompressWithSDK(srcFile, dst, cType)
