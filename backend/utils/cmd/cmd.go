@@ -76,6 +76,13 @@ func ExecWithTimeOut(cmdStr string, timeout time.Duration) (string, error) {
 }
 
 func ExecContainerScript(containerName, cmdStr string, timeout time.Duration) error {
+	// containerName is interpolated unquoted into the docker exec command,
+	// so reject shell metacharacters even for rows persisted before the
+	// service-level name checks existed (ValidShellArgs semantics: non-empty
+	// and free of the CheckIllegal charset).
+	if containerName == "" || CheckIllegal(containerName) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	cmdStr = fmt.Sprintf("docker exec -i %s bash -c '%s'", containerName, cmdStr)
 	out, err := ExecWithTimeOut(cmdStr, timeout)
 	if err != nil {

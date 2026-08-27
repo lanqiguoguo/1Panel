@@ -387,6 +387,13 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 	servicesMap := value.(map[string]interface{})
 	containerName := constant.ContainerPrefix + app.Key + "-" + common.RandStr(4)
 	if req.Advanced && req.ContainerName != "" {
+		// The container name is persisted and later interpolated unquoted
+		// into shell commands (docker exec ... nginx -s reload), so enforce
+		// the docker name charset before it is stored.
+		if !files.ValidContainerName(req.ContainerName) {
+			err = buserr.New(constant.ErrCmdIllegal)
+			return
+		}
 		containerName = req.ContainerName
 		appInstalls, _ := appInstallRepo.ListBy(appInstallRepo.WithContainerName(containerName))
 		if len(appInstalls) > 0 {

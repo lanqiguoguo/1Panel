@@ -6,6 +6,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/response"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
@@ -205,6 +206,12 @@ func getNginxParamsFromStaticFile(scope dto.NginxKey, newParams []dto.NginxParam
 }
 
 func opNginx(containerName, operate string) error {
+	// containerName is interpolated unquoted into the docker exec command,
+	// so guard it even for rows persisted before the service-level charset
+	// checks existed.
+	if !files.ValidShellArgs(containerName) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	nginxCmd := fmt.Sprintf("docker exec -i %s %s", containerName, "nginx -s reload")
 	if operate == constant.NginxCheck {
 		nginxCmd = fmt.Sprintf("docker exec -i %s %s", containerName, "nginx -t")

@@ -167,6 +167,12 @@ func handleWebsiteRecover(website *model.Website, recoverFile string, isRollback
 		global.LOG.Errorf("handle recover from web.tar.gz failed, err: %v", err)
 		return err
 	}
+	// The openresty container name is interpolated unquoted into the docker
+	// exec command, so guard it even for rows persisted before the
+	// service-level charset checks existed.
+	if !files.ValidShellArgs(nginxInfo.ContainerName) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	stdout, err := cmd.Execf("docker exec -i %s nginx -s reload", nginxInfo.ContainerName)
 	if err != nil {
 		global.LOG.Errorf("nginx -s reload failed, err: %s", stdout)

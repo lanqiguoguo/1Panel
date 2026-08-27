@@ -173,6 +173,17 @@ func ValidUserGroup(s string) bool {
 	return validUserGroupRegexp.MatchString(s)
 }
 
+var validContainerNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// ValidContainerName reports whether the given name matches the docker
+// container name rule: 1-128 characters of alphanumerics, underscore, dot
+// and dash, starting with a letter or digit. Container names also land
+// unquoted in shell commands (docker exec), so this charset is enforced at
+// the service boundary in addition to ValidShellArgs at the call sites.
+func ValidContainerName(s string) bool {
+	return validContainerNameRegexp.MatchString(s)
+}
+
 // ValidPath checks whether the given path contains no shell metacharacters.
 // It is used before a path is interpolated into a shell command.
 func ValidPath(s string) bool {

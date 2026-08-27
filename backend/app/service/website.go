@@ -210,6 +210,13 @@ func (w WebsiteService) CreateWebsite(create request.WebsiteCreate) (err error) 
 	if alias == "default" {
 		return buserr.New("ErrDefaultAlias")
 	}
+	// The alias is embedded into filesystem paths (site dir, nginx include
+	// files) and interpolated into shell commands (backup/restore tar), so
+	// reject path traversal and shell metacharacters while CJK characters,
+	// spaces, dots, dashes and underscores stay valid.
+	if !validSiteName(alias) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if common.ContainsChinese(alias) {
 		alias, err = common.PunycodeEncode(alias)
 		if err != nil {
@@ -1567,7 +1574,28 @@ func (w WebsiteService) UpdateSitePermission(req request.WebsiteUpdateDirPermiss
 	return websiteRepo.Save(context.Background(), &website)
 }
 
+// validSiteName reports whether name is a safe single path segment for the
+// website tree: it is joined into site directories and nginx proxy/redirect
+// include file names ("<name>.conf") and can therefore reach shell commands.
+// ".", "..", path separators, dot-dot segments and shell metacharacters
+// (see files.ValidShellArgs) are rejected; CJK characters, spaces, dots,
+// dashes and underscores stay valid.
+func validSiteName(name string) bool {
+	if name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return false
+	}
+	return files.ValidShellArgs(name)
+}
+
 func (w WebsiteService) DeleteProxy(req request.WebsiteProxyDel) (err error) {
+	// req.Name is joined into the proxy include file names below, so reject
+	// traversal and shell metacharacters before it reaches any path.
+	if !validSiteName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	fileOp := files.NewFileOp()
 	website, err := websiteRepo.GetFirst(commonRepo.WithByID(req.ID))
 	if err != nil {
@@ -1591,6 +1619,11 @@ func (w WebsiteService) DeleteProxy(req request.WebsiteProxyDel) (err error) {
 }
 
 func (w WebsiteService) OperateProxy(req request.WebsiteProxyConfig) (err error) {
+	// req.Name is joined into the proxy include file names below, so reject
+	// traversal and shell metacharacters before it reaches any path.
+	if !validSiteName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		website      model.Website
 		params       []response.NginxParam
@@ -1813,6 +1846,11 @@ func (w WebsiteService) GetProxies(id uint) (res []request.WebsiteProxyConfig, e
 }
 
 func (w WebsiteService) UpdateProxyFile(req request.NginxProxyUpdate) (err error) {
+	// req.Name is joined into the proxy include path below, so reject
+	// traversal and shell metacharacters before it reaches any path.
+	if !validSiteName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		website           model.Website
 		nginxFull         dto.NginxFull
@@ -2195,6 +2233,11 @@ func (w WebsiteService) GetAntiLeech(id uint) (*response.NginxAntiLeechRes, erro
 }
 
 func (w WebsiteService) OperateRedirect(req request.NginxRedirectReq) (err error) {
+	// req.Name is joined into the redirect include file names below, so
+	// reject traversal and shell metacharacters before it reaches any path.
+	if !validSiteName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		website      model.Website
 		nginxInstall model.AppInstall
@@ -2483,6 +2526,11 @@ func (w WebsiteService) GetRedirect(id uint) (res []response.NginxRedirectConfig
 }
 
 func (w WebsiteService) UpdateRedirectFile(req request.NginxRedirectUpdate) (err error) {
+	// req.Name is joined into the redirect include path below, so reject
+	// traversal and shell metacharacters before it reaches any path.
+	if !validSiteName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		website           model.Website
 		nginxFull         dto.NginxFull

@@ -334,6 +334,14 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) error {
 		if req.ContainerName == "" {
 			req.Params[constant.ContainerName] = installed.ContainerName
 		} else {
+			// The container name is persisted and later interpolated
+			// unquoted into shell commands (docker exec ... nginx -s
+			// reload), so enforce the docker name charset before it is
+			// stored; this keeps existing rows from being swapped for
+			// injection-bearing names via update.
+			if !files.ValidContainerName(req.ContainerName) {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
 			req.Params[constant.ContainerName] = req.ContainerName
 			if installed.ContainerName != req.ContainerName {
 				exist, _ := appInstallRepo.GetFirst(appInstallRepo.WithContainerName(req.ContainerName), appInstallRepo.WithIDNotIs(installed.ID))
