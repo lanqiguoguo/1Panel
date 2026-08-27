@@ -27,6 +27,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// MaxUploadSize limits the body size of multipart uploads (512MB) to prevent
+// resource exhaustion. Chunk uploads are limited per chunk and merged
+// server-side, so the total size is bounded by the chunk count.
+const MaxUploadSize = 512 << 20
+
 // @Tags File
 // @Summary List files
 // @Accept json
@@ -299,8 +304,14 @@ func (b *BaseApi) SaveContent(c *gin.Context) {
 // @Router /files/upload [post]
 // @x-panel-log {"bodyKeys":["path"],"paramKeys":[],"BeforeFunctions":[],"formatZH":"上传文件 [path]","formatEN":"Upload file [path]"}
 func (b *BaseApi) UploadFiles(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadSize)
 	form, err := c.MultipartForm()
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, fmt.Errorf("upload file size exceeds the limit of %d bytes", MaxUploadSize))
+			return
+		}
 		helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, err)
 		return
 	}
@@ -318,6 +329,12 @@ func (b *BaseApi) UploadFiles(c *gin.Context) {
 	if len(paths) == 0 || !strings.Contains(paths[0], "/") {
 		helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, errors.New("error paths in request"))
 		return
+	}
+	for _, item := range strings.Split(paths[0], "/") {
+		if item == ".." {
+			helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, errors.New("error paths in request"))
+			return
+		}
 	}
 	dir := path.Dir(paths[0])
 
@@ -349,7 +366,14 @@ func (b *BaseApi) UploadFiles(c *gin.Context) {
 	success := 0
 	failures := make(buserr.MultiErr)
 	for _, file := range uploadFiles {
-		dstFilename := path.Join(paths[0], file.Filename)
+		filename, err := files.SanitizeFilename(file.Filename)
+		if err != nil {
+			e := fmt.Errorf("upload [%s] file failed, invalid filename: %v", file.Filename, err)
+			failures[file.Filename] = e
+			global.LOG.Error(e)
+			continue
+		}
+		dstFilename := path.Join(paths[0], filename)
 		dstDir := path.Dir(dstFilename)
 		if !fileOp.Stat(dstDir) {
 			if err = fileOp.CreateDir(dstDir, mode); err != nil {
@@ -634,8 +658,18 @@ func mergeChunks(fileName string, fileDir string, dstDir string, chunkCount int,
 		_ = os.RemoveAll(fileDir)
 	}()
 
+	fileName, err := files.SanitizeFilename(fileName)
+	if err != nil {
+		return err
+	}
+
 	op := files.NewFileOp()
 	dstDir = strings.TrimSpace(dstDir)
+	for _, item := range strings.Split(dstDir, "/") {
+		if item == ".." {
+			return errors.New("error paths in request")
+		}
+	}
 	mode, _ := files.GetParentMode(dstDir)
 	if mode == 0 {
 		mode = 0755
@@ -697,9 +731,15 @@ func mergeChunks(fileName string, fileDir string, dstDir string, chunkCount int,
 // @Security Timestamp
 // @Router /files/chunkupload [post]
 func (b *BaseApi) UploadChunkFiles(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadSize)
 	var err error
 	fileForm, err := c.FormFile("chunk")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, fmt.Errorf("upload chunk size exceeds the limit of %d bytes", MaxUploadSize))
+			return
+		}
 		helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, err)
 		return
 	}
@@ -727,7 +767,11 @@ func (b *BaseApi) UploadChunkFiles(c *gin.Context) {
 			return
 		}
 	}
-	filename := c.PostForm("filename")
+	filename, err := files.SanitizeFilename(c.PostForm("filename"))
+	if err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, err)
+		return
+	}
 	fileDir := filepath.Join(tmpDir, filename)
 	if chunkIndex == 0 {
 		if fileOp.Stat(fileDir) {

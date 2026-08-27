@@ -182,6 +182,24 @@ func ValidPath(s string) bool {
 	return !cmd.CheckIllegal(s)
 }
 
+// SanitizeFilename validates an uploaded file name and returns a safe
+// basename. Empty names, "." and "..", absolute paths, and names containing
+// path separators ("/" or "\") are rejected to prevent path traversal
+// attacks on file upload.
+func SanitizeFilename(name string) (string, error) {
+	if name == "" || name == "." || name == ".." {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	base := filepath.Base(name)
+	if base == "." || base == ".." || base != name {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	return base, nil
+}
+
 func (f FileOp) ChownR(dst string, uid string, gid string, sub bool) error {
 	if !ValidUserGroup(uid) || !ValidUserGroup(gid) {
 		return buserr.New(constant.ErrCmdIllegal)
