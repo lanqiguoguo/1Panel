@@ -20,6 +20,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/middleware"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	websocket2 "github.com/1Panel-dev/1Panel/backend/utils/websocket"
 	"github.com/gin-gonic/gin"
@@ -783,9 +784,7 @@ func (b *BaseApi) UploadChunkFiles(c *gin.Context) {
 }
 
 var wsUpgrade = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin: middleware.CheckWSOrigin,
 }
 
 func (b *BaseApi) Ws(c *gin.Context) {
