@@ -1,3 +1,4 @@
-# v1.10.37-lts
+# v1.10.36-lts
 
-- 修复应用安装时后台探测 compose 命令导致面板崩溃(SIGSEGV)的问题:探测不再读取错误详情(buserr 错误渲染依赖 HTTP 中间件初始化的 i18n,后台协程中为 nil)
+- 应用启停/安装/卸载的 compose 调用兼容两种形态:现代 Docker 自带的 v2 插件(`docker compose`)与旧版独立二进制(`docker-compose`),自动探测、进程内缓存,无需用户调整 Docker 安装
+- 修复卸载应用时因缺少 compose 命令导致的失败
