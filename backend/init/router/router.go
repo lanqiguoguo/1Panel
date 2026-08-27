@@ -121,8 +121,18 @@ func checkSession(c *gin.Context) bool {
 
 func setWebStatic(rootRouter *gin.RouterGroup) {
 	rootRouter.StaticFS("/public", http.FS(web.Favicon))
-	rootRouter.StaticFS("/favicon.ico", http.FS(web.Favicon))
-	rootRouter.Static("/api/v1/images", "./uploads")
+	// The embedded asset is favicon.png; serve it for /favicon.ico too so
+	// browsers that request the conventional .ico URL get a working icon
+	// instead of a 301 into the SPA catch-all.
+	rootRouter.GET("/favicon.ico", func(c *gin.Context) {
+		c.Writer.Header().Set("Content-Type", "image/png")
+		c.Writer.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", 3600))
+		if data, err := web.Favicon.ReadFile("favicon.png"); err == nil {
+			_, _ = c.Writer.Write(data)
+			return
+		}
+		handleNoRoute(c)
+	})
 
 	rootRouter.GET("/assets/*filepath", func(c *gin.Context) {
 		c.Writer.Header().Set("Cache-Control", fmt.Sprintf("private, max-age=%d", 3600))
