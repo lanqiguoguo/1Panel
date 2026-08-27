@@ -16,9 +16,21 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+// jobWrappers returns the chain applied to every scheduled job. WithChain
+// replaces the entire chain instead of appending to it, so both wrappers must
+// be passed in a single call. Recover stays outermost so it also absorbs panics
+// raised by DelayIfStillRunning; without it a panicking job would terminate the
+// whole panel process, since cron jobs run outside gin's recovery middleware.
+func jobWrappers() []cron.JobWrapper {
+	return []cron.JobWrapper{
+		cron.Recover(cron.DefaultLogger),
+		cron.DelayIfStillRunning(cron.DefaultLogger),
+	}
+}
+
 func Run() {
 	nyc, _ := time.LoadLocation(common.LoadTimeZoneByCmd())
-	global.Cron = cron.New(cron.WithLocation(nyc), cron.WithChain(cron.Recover(cron.DefaultLogger)), cron.WithChain(cron.DelayIfStillRunning(cron.DefaultLogger)))
+	global.Cron = cron.New(cron.WithLocation(nyc), cron.WithChain(jobWrappers()...))
 
 	var (
 		interval model.Setting
