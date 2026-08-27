@@ -34,22 +34,52 @@ func NewIRecycleBinService() IRecycleBinService {
 }
 
 func (r RecycleBinService) Page(search dto.PageInfo) (int64, []response.RecycleBinDTO, error) {
-	var (
-		result []response.RecycleBinDTO
-	)
 	partitions, err := disk.Partitions(false)
 	if err != nil {
 		return 0, nil, err
 	}
-	op := files.NewFileOp()
+	result := collectRecycleFiles(partitions)
+	startIndex := (search.Page - 1) * search.PageSize
+	endIndex := startIndex + search.PageSize
+
+	if startIndex > len(result) {
+		return int64(len(result)), result, nil
+	}
+	if endIndex > len(result) {
+		endIndex = len(result)
+	}
+	return int64(len(result)), result[startIndex:endIndex], nil
+}
+
+// collectRecycleFiles enumerates every recycle dir across the given
+// partitions. Several mountpoints may alias the same physical directory
+// (e.g. WSL2 bind mounts), so the dirs are deduplicated by file identity to
+// avoid listing the same recycled item twice.
+func collectRecycleFiles(partitions []disk.PartitionStat) []response.RecycleBinDTO {
+	var (
+		result   []response.RecycleBinDTO
+		seenDirs []os.FileInfo
+	)
 	for _, p := range partitions {
 		dir := path.Join(p.Mountpoint, ".1panel_clash")
-		if !op.Stat(dir) {
+		dirInfo, err := os.Stat(dir)
+		if err != nil {
 			continue
 		}
+		duplicate := false
+		for _, seen := range seenDirs {
+			if os.SameFile(dirInfo, seen) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		seenDirs = append(seenDirs, dirInfo)
 		clashFiles, err := os.ReadDir(dir)
 		if err != nil {
-			return 0, nil, err
+			continue
 		}
 		for _, file := range clashFiles {
 			if strings.HasPrefix(file.Name(), "_1p_") {
@@ -62,16 +92,7 @@ func (r RecycleBinService) Page(search dto.PageInfo) (int64, []response.RecycleB
 			}
 		}
 	}
-	startIndex := (search.Page - 1) * search.PageSize
-	endIndex := startIndex + search.PageSize
-
-	if startIndex > len(result) {
-		return int64(len(result)), result, nil
-	}
-	if endIndex > len(result) {
-		endIndex = len(result)
-	}
-	return int64(len(result)), result[startIndex:endIndex], nil
+	return result
 }
 
 func (r RecycleBinService) Create(create request.RecycleBinCreate) error {
