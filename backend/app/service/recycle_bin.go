@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -134,6 +135,11 @@ func (r RecycleBinService) Create(create request.RecycleBinCreate) error {
 }
 
 func (r RecycleBinService) Reduce(reduce request.RecycleBinReduce) error {
+	// RName must be a plain file name: path separators or traversal
+	// elements would let path.Join escape the recycle bin directory.
+	if reduce.RName == "." || reduce.RName == ".." || strings.ContainsAny(reduce.RName, `/\`) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	filePath := path.Join(reduce.From, reduce.RName)
 	op := files.NewFileOp()
 	if !op.Stat(filePath) {
@@ -143,15 +149,32 @@ func (r RecycleBinService) Reduce(reduce request.RecycleBinReduce) error {
 	if err != nil {
 		return err
 	}
-	if !op.Stat(path.Dir(recycleBinDTO.SourcePath)) {
+	// A crafted name can encode ".." segments which resolve outside the
+	// location checked below once handled by the OS, so reject them and
+	// normalize the source path before any check or operation.
+	for _, seg := range strings.Split(recycleBinDTO.SourcePath, "/") {
+		if seg == ".." {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	sourcePath := filepath.Clean(recycleBinDTO.SourcePath)
+	if isProtectedPath(sourcePath) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
+	// sourcePath and filePath are interpolated into shell commands by
+	// RmRf/Mv, so reject shell metacharacters beforehand.
+	if !files.ValidShellArgs(sourcePath, filePath) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !op.Stat(path.Dir(sourcePath)) {
 		return buserr.New("ErrSourcePathNotFound")
 	}
-	if op.Stat(recycleBinDTO.SourcePath) {
-		if err = op.RmRf(recycleBinDTO.SourcePath); err != nil {
+	if op.Stat(sourcePath) {
+		if err = op.RmRf(sourcePath); err != nil {
 			return err
 		}
 	}
-	return op.Mv(filePath, recycleBinDTO.SourcePath)
+	return op.Mv(filePath, sourcePath)
 }
 
 func (r RecycleBinService) Clear() error {
