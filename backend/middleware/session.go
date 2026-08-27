@@ -53,7 +53,7 @@ func SessionAuth() gin.HandlerFunc {
 			return
 		}
 		psession, err := global.SESSION.Get(sId)
-		if err != nil {
+		if err != nil || !psession.LoggedIn {
 			helper.ErrorWithDetail(c, constant.CodeErrUnauthorized, constant.ErrTypeNotLogin, nil)
 			return
 		}

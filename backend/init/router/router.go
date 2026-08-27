@@ -115,8 +115,8 @@ func checkSession(c *gin.Context) bool {
 	if err != nil {
 		return false
 	}
-	_, err = global.SESSION.Get(sId)
-	return err == nil
+	sessionUser, err := global.SESSION.Get(sId)
+	return err == nil && sessionUser.LoggedIn
 }
 
 func setWebStatic(rootRouter *gin.RouterGroup) {

@@ -8,8 +8,17 @@ import (
 )
 
 type SessionUser struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	LoggedIn bool   `json:"loggedIn"`
+}
+
+func (s SessionUser) String() string {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 type PSession struct {
@@ -29,7 +38,9 @@ func (p *PSession) Get(sessionID string) (SessionUser, error) {
 	if err != nil {
 		return result, err
 	}
-	_ = json.Unmarshal(item, &result)
+	if err := json.Unmarshal(item, &result); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 

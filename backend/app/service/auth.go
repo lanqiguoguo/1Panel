@@ -9,6 +9,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
 	"github.com/1Panel-dev/1Panel/backend/utils/jwt"
 	"github.com/1Panel-dev/1Panel/backend/utils/mfa"
@@ -140,21 +141,12 @@ func (u *AuthService) generateSession(c *gin.Context, name, authMethod string) (
 		}
 		return &dto.UserLoginInfo{Name: name, Token: token}, nil
 	}
-	sID, _ := c.Cookie(constant.SessionName)
-	sessionUser, err := global.SESSION.Get(sID)
-	if err != nil {
-		sID = uuid.New().String()
-		c.SetCookie(constant.SessionName, sID, 0, "", "", httpsSetting.Value == "enable", true)
-		err := global.SESSION.Set(sID, sessionUser, lifeTime)
-		if err != nil {
-			return nil, err
-		}
-		return &dto.UserLoginInfo{Name: name}, nil
-	}
+	sID := uuid.New().String()
+	sessionUser := psession.SessionUser{Name: name, LoggedIn: true}
+	c.SetCookie(constant.SessionName, sID, 0, "", "", httpsSetting.Value == "enable", true)
 	if err := global.SESSION.Set(sID, sessionUser, lifeTime); err != nil {
 		return nil, err
 	}
-
 	return &dto.UserLoginInfo{Name: name}, nil
 }
 
@@ -203,8 +195,11 @@ func (u *AuthService) GetSecurityEntrance() string {
 
 func (u *AuthService) IsLogin(c *gin.Context) bool {
 	sID, _ := c.Cookie(constant.SessionName)
-	_, err := global.SESSION.Get(sID)
-	return err == nil
+	if sID == "" {
+		return false
+	}
+	sessionUser, err := global.SESSION.Get(sID)
+	return err == nil && sessionUser.LoggedIn
 }
 
 func checkPassword(password string) error {
