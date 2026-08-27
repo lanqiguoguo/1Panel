@@ -877,7 +877,10 @@ func checkIsLinkApp(website model.Website) bool {
 }
 
 func chownRootDir(path string) error {
-	_, err := cmd.ExecWithTimeOut(fmt.Sprintf(`chown -R 1000:1000 "%s"`, path), 1*time.Second)
+	if cmd.CheckIllegal(path) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	_, err := cmd.ExecWithTimeOut(fmt.Sprintf(`chown -R 1000:1000 '%s'`, path), 1*time.Second)
 	if err != nil {
 		return err
 	}

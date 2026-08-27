@@ -33,8 +33,8 @@ type FileCreate struct {
 type FileRoleReq struct {
 	Paths []string `json:"paths" validate:"required"`
 	Mode  int64    `json:"mode" validate:"required"`
-	User  string   `json:"user" validate:"required"`
-	Group string   `json:"group" validate:"required"`
+	User  string   `json:"user" validate:"required,min=1,max=64"`
+	Group string   `json:"group" validate:"required,min=1,max=64"`
 	Sub   bool     `json:"sub"`
 }
 
@@ -122,8 +122,8 @@ type FileProcessReq struct {
 
 type FileRoleUpdate struct {
 	Path  string `json:"path" validate:"required"`
-	User  string `json:"user" validate:"required"`
-	Group string `json:"group" validate:"required"`
+	User  string `json:"user" validate:"required,min=1,max=64"`
+	Group string `json:"group" validate:"required,min=1,max=64"`
 	Sub   bool   `json:"sub"`
 }
 

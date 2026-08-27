@@ -1549,7 +1549,10 @@ func (w WebsiteService) UpdateSitePermission(req request.WebsiteUpdateDirPermiss
 		return err
 	}
 	absoluteIndexPath := path.Join(nginxInstall.GetPath(), "www", "sites", website.Alias, "index")
-	chownCmd := fmt.Sprintf("chown -R %s:%s %s", req.User, req.Group, absoluteIndexPath)
+	if !files.ValidUserGroup(req.User) || !files.ValidUserGroup(req.Group) || cmd.CheckIllegal(absoluteIndexPath) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	chownCmd := fmt.Sprintf("chown -R %s:%s '%s'", req.User, req.Group, absoluteIndexPath)
 	if cmd.HasNoPasswordSudo() {
 		chownCmd = fmt.Sprintf("sudo %s", chownCmd)
 	}

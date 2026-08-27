@@ -170,8 +170,8 @@ type WebsiteUpdateDir struct {
 
 type WebsiteUpdateDirPermission struct {
 	ID    uint   `json:"id" validate:"required"`
-	User  string `json:"user" validate:"required"`
-	Group string `json:"group" validate:"required"`
+	User  string `json:"user" validate:"required,min=1,max=64"`
+	Group string `json:"group" validate:"required,min=1,max=64"`
 }
 
 type WebsiteProxyConfig struct {

@@ -14,10 +14,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	http2 "github.com/1Panel-dev/1Panel/backend/utils/http"
@@ -103,11 +105,17 @@ func (f FileOp) DeleteFile(dst string) error {
 }
 
 func (f FileOp) CleanDir(dst string) error {
-	return cmd.ExecCmd(fmt.Sprintf("rm -rf %s/*", dst))
+	if !ValidPath(dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return cmd.ExecCmd(fmt.Sprintf("rm -rf '%s'/*", dst))
 }
 
 func (f FileOp) RmRf(dst string) error {
-	return cmd.ExecCmd(fmt.Sprintf("rm -rf %s", dst))
+	if !ValidPath(dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return cmd.ExecCmd(fmt.Sprintf("rm -rf '%s'", dst))
 }
 
 func (f FileOp) WriteFile(dst string, in io.Reader, mode fs.FileMode) error {
@@ -157,10 +165,33 @@ func (f FileOp) SaveFileWithByte(dst string, content []byte, mode fs.FileMode) e
 	return nil
 }
 
+var validUserGroupRegexp = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
+// ValidUserGroup checks whether the given user/group name only contains
+// characters allowed by chown (alphanumerics, dot, underscore and dash).
+func ValidUserGroup(s string) bool {
+	return validUserGroupRegexp.MatchString(s)
+}
+
+// ValidPath checks whether the given path contains no shell metacharacters.
+// It is used before a path is interpolated into a shell command.
+func ValidPath(s string) bool {
+	if s == "" {
+		return false
+	}
+	return !cmd.CheckIllegal(s)
+}
+
 func (f FileOp) ChownR(dst string, uid string, gid string, sub bool) error {
-	cmdStr := fmt.Sprintf(`chown %s:%s "%s"`, uid, gid, dst)
+	if !ValidUserGroup(uid) || !ValidUserGroup(gid) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !ValidPath(dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	cmdStr := fmt.Sprintf(`chown %s:%s '%s'`, uid, gid, dst)
 	if sub {
-		cmdStr = fmt.Sprintf(`chown -R %s:%s "%s"`, uid, gid, dst)
+		cmdStr = fmt.Sprintf(`chown -R %s:%s '%s'`, uid, gid, dst)
 	}
 	if cmd.HasNoPasswordSudo() {
 		cmdStr = fmt.Sprintf("sudo %s", cmdStr)
@@ -175,9 +206,12 @@ func (f FileOp) ChownR(dst string, uid string, gid string, sub bool) error {
 }
 
 func (f FileOp) ChmodR(dst string, mode int64, sub bool) error {
-	cmdStr := fmt.Sprintf(`chmod %v "%s"`, fmt.Sprintf("%04o", mode), dst)
+	if !ValidPath(dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	cmdStr := fmt.Sprintf(`chmod %v '%s'`, fmt.Sprintf("%04o", mode), dst)
 	if sub {
-		cmdStr = fmt.Sprintf(`chmod -R %v "%s"`, fmt.Sprintf("%04o", mode), dst)
+		cmdStr = fmt.Sprintf(`chmod -R %v '%s'`, fmt.Sprintf("%04o", mode), dst)
 	}
 	if cmd.HasNoPasswordSudo() {
 		cmdStr = fmt.Sprintf("sudo %s", cmdStr)
@@ -192,9 +226,12 @@ func (f FileOp) ChmodR(dst string, mode int64, sub bool) error {
 }
 
 func (f FileOp) ChmodRWithMode(dst string, mode fs.FileMode, sub bool) error {
-	cmdStr := fmt.Sprintf(`chmod %v "%s"`, fmt.Sprintf("%o", mode.Perm()), dst)
+	if !ValidPath(dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	cmdStr := fmt.Sprintf(`chmod %v '%s'`, fmt.Sprintf("%o", mode.Perm()), dst)
 	if sub {
-		cmdStr = fmt.Sprintf(`chmod -R %v "%s"`, fmt.Sprintf("%o", mode.Perm()), dst)
+		cmdStr = fmt.Sprintf(`chmod -R %v '%s'`, fmt.Sprintf("%o", mode.Perm()), dst)
 	}
 	if cmd.HasNoPasswordSudo() {
 		cmdStr = fmt.Sprintf("sudo %s", cmdStr)
