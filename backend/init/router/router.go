@@ -172,6 +172,7 @@ func setWebStatic(rootRouter *gin.RouterGroup) {
 
 func Routers() *gin.Engine {
 	Router = gin.New()
+	Router.Use(middleware.Recovery())
 	Router.Use(middleware.OperationLog())
 	// Router.Use(middleware.CSRF())
 	// Router.Use(middleware.LoadCsrfToken())

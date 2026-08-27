@@ -22,6 +22,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/init/session"
 	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
 
+	"github.com/1Panel-dev/1Panel/backend/app/service"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/init/db"
 	"github.com/1Panel-dev/1Panel/backend/init/hook"
@@ -30,7 +31,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/init/router"
 	"github.com/1Panel-dev/1Panel/backend/init/validator"
 	"github.com/1Panel-dev/1Panel/backend/init/viper"
-	"github.com/1Panel-dev/1Panel/backend/app/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -49,7 +49,11 @@ func Start() {
 	gob.Register(psession.SessionUser{})
 	cache.Init()
 	session.Init()
-	gin.SetMode(gin.DebugMode)
+	if global.CONF.System.Mode == "dev" {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	cron.Run()
 	hook.Init()
 	InitOthers()
