@@ -444,6 +444,17 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 	if len(oldPaths) == 0 {
 		return nil
 	}
+	// every oldPath plus the computed destination is interpolated into the
+	// mv command below, so all of them must be free of shell metacharacters
+	values := make([]string, 0, len(oldPaths)+2)
+	values = append(values, oldPaths...)
+	values = append(values, dst)
+	if name != "" {
+		values = append(values, name)
+	}
+	if !ValidShellArgs(values...) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var dstPath string
 	coverFlag := ""
 	if name != "" {
@@ -470,6 +481,9 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 }
 
 func (f FileOp) Mv(oldPath, dstPath string) error {
+	if !ValidShellArgs(oldPath, dstPath) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	cmdStr := fmt.Sprintf(`mv '%s' '%s'`, oldPath, dstPath)
 	if err := cmd.ExecCmd(cmdStr); err != nil {
 		return err
@@ -514,6 +528,12 @@ func (f FileOp) CopyAndReName(src, dst, name string, cover bool) error {
 		return os.ErrInvalid
 	}
 
+	// src, dst and the rename target are interpolated into the cp commands
+	// below, so they must be free of shell metacharacters
+	if !ValidShellArgs(src, dst) || (name != "" && !ValidPath(name)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+
 	srcInfo, err := f.Fs.Stat(src)
 	if err != nil {
 		return err
@@ -535,6 +555,9 @@ func (f FileOp) CopyAndReName(src, dst, name string, cover bool) error {
 }
 
 func (f FileOp) CopyDir(src, dst string) error {
+	if !ValidShellArgs(src, dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	srcInfo, err := f.Fs.Stat(src)
 	if err != nil {
 		return err
@@ -547,6 +570,9 @@ func (f FileOp) CopyDir(src, dst string) error {
 }
 
 func (f FileOp) CopyFile(src, dst string) error {
+	if !ValidShellArgs(src, dst) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	dst = filepath.Clean(dst) + string(filepath.Separator)
 	return cmd.ExecCmd(fmt.Sprintf(`cp -f '%s' '%s'`, src, dst+"/"))
 }
