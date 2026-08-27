@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -871,6 +870,7 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 	appsMap := getApps(oldApps, list.Apps)
 
 	global.LOG.Infof("Starting synchronization of application details...")
+	iconMap, composeMap := downloadAppAssets(list.Apps, oldApps, baseRemoteUrl, setting.SystemVersion, transport, nil)
 	for _, l := range list.Apps {
 		app := appsMap[l.AppProperty.Key]
 		app.GpuSupport = l.AppProperty.GpuSupport
@@ -880,19 +880,10 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 			continue
 		}
 
-		if err = http2.ValidatePublicURL(l.Icon); err != nil {
-			return err
-		}
-		_, iconRes, err := httpUtil.HandleGetWithTransport(l.Icon, http.MethodGet, transport, constant.TimeOut20s)
-		if err != nil {
-			return err
-		}
-		iconStr := ""
-		if !strings.Contains(string(iconRes), "<xml>") {
-			iconStr = base64.StdEncoding.EncodeToString(iconRes)
+		if icon, ok := iconMap[l.AppProperty.Key]; ok {
+			app.Icon = icon
 		}
 
-		app.Icon = iconStr
 		app.TagsKey = l.AppProperty.Tags
 		if l.AppProperty.Recommend > 0 {
 			app.Recommend = l.AppProperty.Recommend
@@ -915,15 +906,13 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 				continue
 			}
 			if _, ok := InitTypes[app.Type]; ok {
-				dockerComposeUrl := fmt.Sprintf("%s/%s", versionUrl, "docker-compose.yml")
-				if err = http2.ValidatePublicURL(dockerComposeUrl); err != nil {
-					return err
+				if compose, ok := composeMap[app.Key][version]; ok {
+					detail.DockerCompose = compose
+				} else {
+					global.LOG.Errorf("download app compose %s failed", fmt.Sprintf("%s/%s", versionUrl, "docker-compose.yml"))
+					delete(detailsMap, version)
+					continue
 				}
-				_, composeRes, err := httpUtil.HandleGetWithTransport(dockerComposeUrl, http.MethodGet, transport, constant.TimeOut20s)
-				if err != nil {
-					return err
-				}
-				detail.DockerCompose = string(composeRes)
 			} else {
 				detail.DockerCompose = ""
 			}

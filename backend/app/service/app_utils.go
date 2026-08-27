@@ -14,10 +14,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
 
+	http2 "github.com/1Panel-dev/1Panel/backend/utils/http"
 	httpUtil "github.com/1Panel-dev/1Panel/backend/utils/http"
 	"github.com/docker/docker/api/types/container"
 
@@ -1090,6 +1092,147 @@ func getApps(oldApps []model.App, items []dto.AppDefine) map[string]model.App {
 		apps[key] = app
 	}
 	return apps
+}
+
+const appAssetsConcurrency = 8
+
+// assetVersion is a docker-compose download task of one app version.
+type assetVersion struct {
+	version    string
+	composeURL string
+}
+
+// appAsset is a download task of one app icon and its docker-compose files.
+type appAsset struct {
+	key      string
+	iconURL  string
+	skipIcon bool
+	versions []assetVersion
+}
+
+// shouldSkipIconDownload returns true when the app was already synchronized and
+// its remote icon is unchanged, in which case the existing icon is kept.
+func shouldSkipIconDownload(app model.App, lastModified int) bool {
+	return app.Icon != "" && app.LastModified == lastModified
+}
+
+// downloadAppAssets downloads icons and docker-compose files of all apps concurrently
+// with a bounded worker pool. It returns:
+//   - iconMap: app key -> base64 encoded icon; only apps whose icon was downloaded
+//     successfully appear in the map. Apps whose icon is unchanged or whose download
+//     failed are skipped so callers keep the existing icon.
+//   - composeMap: app key -> version -> docker-compose content; a version only
+//     appears when its docker-compose file was downloaded successfully.
+//
+// oldApps are the remote apps in the local database, used to skip icons that are
+// already up-to-date. systemVersion is the current panel version, versions that
+// are not supported by it are filtered out. validateURL guards each url before it
+// is requested and defaults to http2.ValidatePublicURL, it can be replaced in
+// tests. A failed icon or compose download is logged and skipped, it never aborts
+// the whole synchronization.
+func downloadAppAssets(apps []dto.AppDefine, oldApps []model.App, baseRemoteUrl, systemVersion string, transport *http.Transport, validateURL func(string) error) (map[string]string, map[string]map[string]string) {
+	if validateURL == nil {
+		validateURL = http2.ValidatePublicURL
+	}
+	oldByKey := make(map[string]model.App, len(oldApps))
+	for _, old := range oldApps {
+		oldByKey[old.Key] = old
+	}
+	tasks := make([]appAsset, 0, len(apps))
+	for _, l := range apps {
+		key := l.AppProperty.Key
+		task := appAsset{
+			key:     key,
+			iconURL: l.Icon,
+		}
+		if old, ok := oldByKey[key]; ok {
+			task.skipIcon = shouldSkipIconDownload(old, l.LastModified)
+		}
+		if l.AppProperty.Version > 0 && common.CompareVersion(strconv.FormatFloat(l.AppProperty.Version, 'f', -1, 64), systemVersion) {
+			task.skipIcon = true
+			tasks = append(tasks, task)
+			continue
+		}
+		if _, ok := InitTypes[l.AppProperty.Type]; ok {
+			for _, v := range l.Versions {
+				paramByte, _ := json.Marshal(v.AppForm)
+				var appForm dto.AppForm
+				_ = json.Unmarshal(paramByte, &appForm)
+				if appForm.SupportVersion > 0 && common.CompareVersion(strconv.FormatFloat(appForm.SupportVersion, 'f', -1, 64), systemVersion) {
+					continue
+				}
+				task.versions = append(task.versions, assetVersion{
+					version:    v.Name,
+					composeURL: fmt.Sprintf("%s/%s/%s/%s", baseRemoteUrl, key, v.Name, "docker-compose.yml"),
+				})
+			}
+		}
+		tasks = append(tasks, task)
+	}
+
+	type iconResult struct {
+		key  string
+		icon string
+	}
+	type composeResult struct {
+		key     string
+		version string
+		content string
+	}
+	iconCh := make(chan iconResult, len(tasks))
+	composeCh := make(chan composeResult, len(tasks))
+	sem := make(chan struct{}, appAssetsConcurrency)
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(task appAsset) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if !task.skipIcon && task.iconURL != "" {
+				if err := validateURL(task.iconURL); err != nil {
+					global.LOG.Errorf("validate app icon url %s failed, err: %v", task.iconURL, err)
+				} else if _, iconRes, err := httpUtil.HandleGetWithTransport(task.iconURL, http.MethodGet, transport, constant.TimeOut20s); err != nil {
+					global.LOG.Errorf("download app icon %s failed, err: %v", task.iconURL, err)
+				} else {
+					iconStr := ""
+					if !strings.Contains(string(iconRes), "<xml>") {
+						iconStr = base64.StdEncoding.EncodeToString(iconRes)
+					}
+					iconCh <- iconResult{key: task.key, icon: iconStr}
+				}
+			}
+
+			for _, asset := range task.versions {
+				if err := validateURL(asset.composeURL); err != nil {
+					global.LOG.Errorf("validate app compose url %s failed, err: %v", asset.composeURL, err)
+				} else if _, composeRes, err := httpUtil.HandleGetWithTransport(asset.composeURL, http.MethodGet, transport, constant.TimeOut20s); err != nil {
+					global.LOG.Errorf("download app compose %s failed, err: %v", asset.composeURL, err)
+				} else {
+					composeCh <- composeResult{key: task.key, version: asset.version, content: string(composeRes)}
+				}
+			}
+		}(task)
+	}
+	wg.Wait()
+	close(iconCh)
+	close(composeCh)
+
+	iconMap := make(map[string]string, len(tasks))
+	for res := range iconCh {
+		iconMap[res.key] = res.icon
+	}
+	composeMap := make(map[string]map[string]string, len(tasks))
+	for res := range composeCh {
+		versionMap, ok := composeMap[res.key]
+		if !ok {
+			versionMap = make(map[string]string)
+			composeMap[res.key] = versionMap
+		}
+		versionMap[res.version] = res.content
+	}
+	return iconMap, composeMap
 }
 
 func handleLocalAppDetail(versionDir string, appDetail *model.AppDetail) error {
