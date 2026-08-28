@@ -229,6 +229,10 @@ func (u *SettingService) UpdateBindInfo(req dto.BindInfo) error {
 
 func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
 	req.ProxyType = strings.ToLower(strings.TrimSpace(req.ProxyType))
+	if req.ProxyDockerSync != "true" {
+		// normalize to the "true"/"false" string convention used by the setting
+		req.ProxyDockerSync = "false"
+	}
 	switch req.ProxyType {
 	case "":
 		// 不启用：清空全部代理配置，恢复直连（出站回落环境变量）
@@ -251,6 +255,12 @@ func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
 		}
 	}
 
+	// snapshot the previous sync flag before it is overwritten below, so the
+	// docker sync knows whether "sync off" means "clean up a previous sync"
+	prevSync := "false"
+	if item, err := settingRepo.Get(settingRepo.WithByKey("ProxyDockerSync")); err == nil {
+		prevSync = item.Value
+	}
 	if err := settingRepo.Update("ProxyUrl", req.ProxyUrl); err != nil {
 		return err
 	}
@@ -277,7 +287,18 @@ func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
 	if err := settingRepo.Update("ProxyPasswdKeep", req.ProxyPasswdKeep); err != nil {
 		return err
 	}
+	if err := settingRepo.Update("ProxyDockerSync", req.ProxyDockerSync); err != nil {
+		return err
+	}
 	RefreshProxy()
+
+	// Mirror the (already persisted) proxy into the Docker daemon config. The
+	// proxy settings stay saved even when the daemon sync fails, so the error
+	// only reports the sync outcome to the UI.
+	if err := syncDockerDaemonProxy(prevSync, req); err != nil {
+		global.LOG.Errorf("sync panel proxy to docker daemon failed: %v", err)
+		return fmt.Errorf("panel proxy saved, but docker daemon sync failed: %w", err)
+	}
 	return nil
 }
 

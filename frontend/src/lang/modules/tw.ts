@@ -1424,8 +1424,12 @@ const message = {
         proxyAddrRequired: '請先填寫代理地址',
         proxyUrl: '代理地址',
         proxyPort: '代理埠',
-        proxyDocker: 'Docker 代理',
+        proxyDocker: '同步到 Docker',
         proxyDockerHelper: '將代理伺服器配寘同步至 Docker，支援離線伺服器拉取鏡像等操作',
+        proxyHelper4:
+            '勾選「同步到 Docker」後，代理將寫入 Docker daemon 配置（/etc/docker/daemon.json）並重啟 Docker，使鏡像拉取等請求生效；重啟期間容器會短暫停止',
+        proxyDockerSyncConfirm:
+            '儲存後代理將寫入 Docker daemon 配置（/etc/docker/daemon.json）並重啟 Docker，重啟期間執行中的容器會短暫停止（若已在容器設定中開啟 live-restore 則不受影響）。是否繼續？',
         apiInterface: 'API 介面',
         apiInterfaceClose: '關閉後將不能使用 API 介面進行瀏覽，APP功能將被限制，是否繼續？',
         apiInterfaceHelper: '支持面板 API 介面瀏覽功能（面板 APP 需要開啟該功能）',

@@ -248,6 +248,7 @@ const form = reactive({
     proxyPort: '',
     proxyUser: '',
     proxyPasswdKeep: 'false',
+    proxyDockerSync: 'false',
     proxySummary: '',
 });
 
@@ -305,6 +306,7 @@ const search = async () => {
     form.proxyPort = res.data.proxyPort;
     form.proxyUser = res.data.proxyUser;
     form.proxyPasswdKeep = res.data.proxyPasswdKeep;
+    form.proxyDockerSync = res.data.proxyDockerSync === 'true' ? 'true' : 'false';
     form.proxySummary =
         res.data.proxyType === ''
             ? i18n.t('setting.proxyDisable')
@@ -320,6 +322,7 @@ const onChangeProxy = () => {
         proxyPort: form.proxyPort,
         proxyUser: form.proxyUser,
         proxyPasswdKeep: form.proxyPasswdKeep,
+        proxyDockerSync: form.proxyDockerSync,
     });
 };
 

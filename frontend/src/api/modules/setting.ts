@@ -67,8 +67,10 @@ export const loadBaseDir = () => {
 };
 
 // proxy
+// T_5M: the write restarts the Docker daemon when the proxy is synced to it,
+// so the request must survive the restart window (applied unconditionally).
 export const updateProxy = (param: Setting.ProxyUpdate) => {
-    return http.post(`/settings/proxy/update`, param);
+    return http.post(`/settings/proxy/update`, param, TimeoutEnum.T_5M);
 };
 export const testProxy = (param: Setting.ProxyUpdate) => {
     return http.post<string>(`/settings/proxy/test`, param, TimeoutEnum.T_40S);

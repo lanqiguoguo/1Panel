@@ -1500,9 +1500,13 @@ const message = {
         proxyAddrRequired: 'Please fill in the proxy address first',
         proxyUrl: 'Proxy Address',
         proxyPort: 'Proxy Port',
-        proxyDocker: 'Docker Proxy',
+        proxyDocker: 'Sync to Docker',
         proxyDockerHelper:
             'Synchronize proxy server configuration to Docker, support offline server image pulling and other operations',
+        proxyHelper4:
+            'With "Sync to Docker" checked, the proxy is written to the Docker daemon config (/etc/docker/daemon.json) and Docker is restarted so image pulls etc. take effect; containers stop briefly during the restart',
+        proxyDockerSyncConfirm:
+            'After saving, the proxy will be written to the Docker daemon config (/etc/docker/daemon.json) and Docker will be restarted. Running containers will be briefly stopped during the restart (unaffected when live-restore is enabled in the container settings). Continue?',
         apiInterface: 'Enable API',
         apiInterfaceClose:
             'API interfaces are unavailable, app functionality will be restricted. Do you want to continue?',

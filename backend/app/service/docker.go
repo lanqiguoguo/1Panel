@@ -8,12 +8,14 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
+	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
 	"github.com/1Panel-dev/1Panel/backend/utils/systemctl"
 	"github.com/pkg/errors"
 )
@@ -482,4 +484,199 @@ func restartDocker() error {
 		return nil
 	}
 	return systemctl.Restart("docker")
+}
+
+// ---- panel proxy -> Docker daemon.json sync ----
+//
+// The panel proxy settings (ProxyType/Url/Port/User/Passwd) can optionally be
+// mirrored into the Docker daemon configuration so image pulls etc. go through
+// the same proxy. The full proxy URL is reused for both http-proxy and
+// https-proxy; a socks5 proxy is written into http-proxy as a socks5:// URL
+// because dockerd's config validation rejects a "socks5-proxy" key.
+
+// dockerProxySyncAction decides what the daemon.json "proxies" key should look
+// like for a proxy update. It returns nil (remove the key) or the proxies
+// object to write, plus whether daemon.json needs to be touched at all:
+//   - sync on  + proxy configured -> write the proxies object
+//   - sync on  + proxy disabled   -> remove the key (the whole proxy is off)
+//   - sync off + previously on    -> remove the key (uncheck after a sync)
+//   - sync off + previously off   -> no-op (daemon.json left untouched)
+func dockerProxySyncAction(prevSync, newSync, proxyURL string) (proxies map[string]interface{}, apply bool) {
+	if newSync != "true" {
+		if prevSync == "true" {
+			return nil, true
+		}
+		return nil, false
+	}
+	if proxyURL == "" {
+		return nil, true
+	}
+	return map[string]interface{}{
+		"http-proxy":  proxyURL,
+		"https-proxy": proxyURL,
+		"no-proxy":    "127.0.0.0/8,::1",
+	}, true
+}
+
+// daemonJsonBackup captures the previous state of daemon.json so a failed
+// proxy sync can be rolled back.
+type daemonJsonBackup struct {
+	Existed bool
+	Content []byte
+}
+
+// backupDaemonJson snapshots the daemon.json at filePath, recording whether the
+// file exists so a rollback can recreate or drop it accordingly.
+func backupDaemonJson(filePath string) (daemonJsonBackup, error) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return daemonJsonBackup{}, nil
+		}
+		return daemonJsonBackup{}, err
+	}
+	return daemonJsonBackup{Existed: true, Content: content}, nil
+}
+
+// restoreDaemonJson writes the backed-up content back, or removes the file
+// when it did not exist before the change.
+func restoreDaemonJson(filePath string, backup daemonJsonBackup) error {
+	if !backup.Existed {
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(filePath, backup.Content, 0640)
+}
+
+// writeDaemonJsonProxies merges the "proxies" key into the daemon.json at the
+// given file path (proxies == nil removes the key), preserving every other
+// existing key. The file is marshaled like UpdateConf does (tab indent, 0640).
+// When the resulting config would be empty the file is removed, matching
+// UpdateConf's convention.
+func writeDaemonJsonProxies(filePath string, proxies map[string]interface{}) error {
+	daemonMap := make(map[string]interface{})
+	if content, err := os.ReadFile(filePath); err == nil {
+		if err := json.Unmarshal(content, &daemonMap); err != nil {
+			return fmt.Errorf("parse %s failed: %w", filePath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if proxies == nil {
+		delete(daemonMap, "proxies")
+	} else {
+		daemonMap["proxies"] = proxies
+	}
+	if len(daemonMap) == 0 {
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(path.Dir(filePath), 0755); err != nil {
+		return err
+	}
+	newJSON, err := json.MarshalIndent(daemonMap, "", "\t")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, newJSON, 0640)
+}
+
+// waitDockerAlive pings the Docker daemon with retries (10 attempts, 2s apart)
+// to wait out the restart window.
+func waitDockerAlive() error {
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		time.Sleep(2 * time.Second)
+		client, err := docker.NewDockerClient()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = client.Ping(ctx)
+		cancel()
+		client.Close()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("docker daemon ping failed after 10 retries: %w", lastErr)
+}
+
+// rollbackDaemonJson restores the backed-up daemon.json and attempts one more
+// docker restart. It returns a wrapped error describing both the original
+// failure and the rollback outcome.
+func rollbackDaemonJson(filePath string, backup daemonJsonBackup, cause error) error {
+	global.LOG.Errorf("docker proxy sync failed (%v), rolling back daemon.json", cause)
+	var rbErr error
+	if err := restoreDaemonJson(filePath, backup); err != nil {
+		rbErr = fmt.Errorf("restore daemon.json failed: %w", err)
+	} else if err := restartDocker(); err != nil {
+		rbErr = fmt.Errorf("restart docker after restore failed: %w", err)
+	}
+	if rbErr != nil {
+		return fmt.Errorf("%w; rollback was attempted but failed: %v", cause, rbErr)
+	}
+	return fmt.Errorf("%w; daemon.json was rolled back to its previous state", cause)
+}
+
+// applyDaemonJsonProxies writes the daemon.json "proxies" key (nil removes it),
+// then validates the config, restarts Docker and pings the daemon. On any
+// failure (write/validate/restart/ping) the previous file state is restored
+// (with one more restart attempt) and a wrapped error is returned.
+func applyDaemonJsonProxies(filePath string, proxies map[string]interface{}) error {
+	backup, err := backupDaemonJson(filePath)
+	if err != nil {
+		return fmt.Errorf("backup %s failed: %w", filePath, err)
+	}
+	if err := writeDaemonJsonProxies(filePath, proxies); err != nil {
+		return rollbackDaemonJson(filePath, backup, fmt.Errorf("write proxies to %s failed: %w", filePath, err))
+	}
+	if err := validateDockerConfig(); err != nil {
+		return rollbackDaemonJson(filePath, backup, err)
+	}
+	if err := restartDocker(); err != nil {
+		return rollbackDaemonJson(filePath, backup, err)
+	}
+	if err := waitDockerAlive(); err != nil {
+		return rollbackDaemonJson(filePath, backup, err)
+	}
+	return nil
+}
+
+// syncDockerDaemonProxy mirrors the panel proxy into Docker's daemon.json per
+// the ProxyDockerSync flag. It is called from UpdateProxy after the settings
+// are saved and RefreshProxy has run, so req carries the persisted values; when
+// the form kept the stored password (empty password with ProxyPasswdKeep), the
+// stored encrypted password is decrypted for the daemon URL.
+func syncDockerDaemonProxy(prevSync string, req dto.ProxyUpdate) error {
+	if prevSync != "true" && req.ProxyDockerSync != "true" {
+		return nil
+	}
+	pass := req.ProxyPasswd
+	if pass == "" && req.ProxyPasswdKeep == "true" {
+		if stored, err := settingRepo.Get(settingRepo.WithByKey("ProxyPasswd")); err == nil && stored.Value != "" {
+			if plain, derr := encrypt.StringDecrypt(stored.Value); derr == nil {
+				pass = plain
+			} else {
+				global.LOG.Errorf("decrypt stored proxy password for docker sync failed: %v", derr)
+			}
+		}
+	}
+	proxyURL := ""
+	if u, err := buildProxyURL(req.ProxyType, req.ProxyUrl, req.ProxyPort, req.ProxyUser, pass); err != nil {
+		return err
+	} else if u != nil {
+		proxyURL = u.String()
+	}
+	proxies, apply := dockerProxySyncAction(prevSync, req.ProxyDockerSync, proxyURL)
+	if !apply {
+		return nil
+	}
+	return applyDaemonJsonProxies(constant.DaemonJsonPath, proxies)
 }

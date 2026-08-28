@@ -528,6 +528,7 @@ func setupProxyUpdateTest(t *testing.T) {
 		{Key: "ProxyUser", Value: "proxy-user"},
 		{Key: "ProxyPasswd", Value: storedPass},
 		{Key: "ProxyPasswdKeep", Value: "true"},
+		{Key: "ProxyDockerSync", Value: "false"},
 	}
 	for i := range seeds {
 		if err := global.DB.Create(&seeds[i]).Error; err != nil {

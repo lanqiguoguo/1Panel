@@ -57,6 +57,7 @@ export namespace Setting {
         proxyUser: string;
         proxyPasswd: string;
         proxyPasswdKeep: string;
+        proxyDockerSync: string;
 
         apiInterfaceStatus: string;
         apiKey: string;
@@ -70,6 +71,7 @@ export namespace Setting {
         proxyUser: string;
         proxyPasswd: string;
         proxyPasswdKeep: string;
+        proxyDockerSync: string;
     }
     export interface SettingUpdate {
         key: string;

@@ -50,11 +50,17 @@
                                     {{ $t('setting.proxyRememberPwd') }}
                                 </el-checkbox>
                             </el-form-item>
+                            <el-form-item prop="proxyDockerSync">
+                                <el-checkbox v-model="form.proxyDockerSync" true-value="true" false-value="false">
+                                    {{ $t('setting.proxyDocker') }}
+                                </el-checkbox>
+                            </el-form-item>
                         </template>
                         <span class="input-help">{{ $t('setting.proxyHelper') }}</span>
                         <span class="input-help">{{ $t('setting.proxyHelper1') }}</span>
                         <span class="input-help">{{ $t('setting.proxyHelper2') }}</span>
                         <span class="input-help">{{ $t('setting.proxyHelper3') }}</span>
+                        <span class="input-help">{{ $t('setting.proxyHelper4') }}</span>
                     </el-col>
                 </el-row>
             </el-form>
@@ -83,6 +89,7 @@ import { MsgError, MsgSuccess } from '@/utils/message';
 import { testProxy, updateProxy } from '@/api/modules/setting';
 import { Setting } from '@/api/interface/setting';
 import { FormInstance } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
 import { Rules } from '@/global/form-rules';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 
@@ -99,6 +106,7 @@ const form = reactive({
     proxyUser: '',
     proxyPasswd: '',
     proxyPasswdKeep: 'true',
+    proxyDockerSync: 'false',
     hasStoredPass: false,
 });
 
@@ -125,6 +133,7 @@ const acceptParams = (params: {
     proxyPort: string;
     proxyUser: string;
     proxyPasswdKeep: string;
+    proxyDockerSync: string;
 }): void => {
     // 后端空串表示未启用，映射为内部值 disable
     form.proxyType = params.proxyType || 'disable';
@@ -134,6 +143,7 @@ const acceptParams = (params: {
     form.proxyPasswd = '';
     form.hasStoredPass = params.proxyPasswdKeep === 'true';
     form.proxyPasswdKeep = params.proxyPasswdKeep === 'true' ? 'true' : 'false';
+    form.proxyDockerSync = params.proxyDockerSync === 'true' ? 'true' : 'false';
     drawerVisible.value = true;
 };
 
@@ -149,12 +159,37 @@ const buildReq = (): Setting.ProxyUpdate => ({
             ? ''
             : btoa(unescape(encodeURIComponent(form.proxyPasswd))),
     proxyPasswdKeep: form.proxyPasswdKeep,
+    proxyDockerSync: form.proxyDockerSync,
 });
+
+// confirmDockerSync warns before the save triggers a docker daemon restart:
+// containers are briefly stopped (live-restore is off unless enabled in the
+// container settings) and the panel needs docker to come back.
+const confirmDockerSync = async (): Promise<boolean> => {
+    try {
+        await ElMessageBox.confirm(
+            i18n.global.t('setting.proxyDockerSyncConfirm'),
+            i18n.global.t('setting.confDockerProxy'),
+            {
+                confirmButtonText: i18n.global.t('commons.button.confirm'),
+                cancelButtonText: i18n.global.t('commons.button.cancel'),
+                type: 'warning',
+            },
+        );
+        return true;
+    } catch {
+        return false;
+    }
+};
 
 const onSave = async (formEl: FormInstance | undefined) => {
     if (!formEl) return;
     formEl.validate(async (valid) => {
         if (!valid) return;
+        if (form.proxyDockerSync === 'true') {
+            const confirmed = await confirmDockerSync();
+            if (!confirmed) return;
+        }
         loading.value = true;
         await updateProxy(buildReq())
             .then(() => {

@@ -1464,15 +1464,17 @@ const message = {
             'アプリストアのインデックス同期、アイコン/構成ファイルのダウンロードとインストールパッケージのダウンロード',
         proxyHelper2: 'システムのアップグレード（バージョンチェック、更新内容とパッケージのダウンロード）',
         proxyHelper4:
-            'Dockerネットワークはプロキシサーバーを通じてアクセスされます（プロフェッショナルエディションのみ）',
+            '「Dockerに同期」をチェックすると、プロキシがDockerのdaemon設定（/etc/docker/daemon.json）に書き込まれ、Dockerが再起動されてイメージの取得などに反映されます。再起動中はコンテナが一時的に停止します',
         proxyHelper3: '証明書の申請（ACME アカウント登録/証明書オーダーと ZeroSSL EAB の取得）',
         proxyType: 'プロキシタイプ',
         proxyUrl: 'プロキシアドレス',
         proxyPort: 'プロキシポート',
         proxyPasswdKeep: 'パスワードを覚えておいてください',
-        proxyDocker: 'Dockerプロキシ',
+        proxyDocker: 'Dockerに同期',
         proxyDockerHelper:
             'プロキシサーバーの構成をDockerに同期し、オフラインサーバーイメージの引っ張りやその他の操作をサポートします',
+        proxyDockerSyncConfirm:
+            '保存すると、プロキシはDockerのdaemon設定（/etc/docker/daemon.json）に書き込まれ、Dockerが再起動されます。再起動中、実行中のコンテナは一時的に停止します（コンテナ設定でlive-restoreが有効な場合は影響しません）。続行しますか？',
         apiInterface: 'APIを有効にします',
         apiInterfaceClose: 'APIインターフェースが利用できません。アプリ機能が制限されます。続行しますか？',
         apiInterfaceHelper:

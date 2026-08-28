@@ -509,3 +509,13 @@ var UpdateOnedrive = &gormigrate.Migration{
 		return nil
 	},
 }
+
+var AddProxyDockerSync = &gormigrate.Migration{
+	ID: "20250828-add-proxy-docker-sync",
+	Migrate: func(tx *gorm.DB) error {
+		if err := tx.Create(&model.Setting{Key: "ProxyDockerSync", Value: "false"}).Error; err != nil {
+			return err
+		}
+		return nil
+	},
+}

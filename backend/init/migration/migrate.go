@@ -111,6 +111,7 @@ func Init() {
 		migrations.AddPbootCMSPHPExtensions,
 		migrations.DeleteV2Openresty,
 		migrations.UpdateOnedrive,
+		migrations.AddProxyDockerSync,
 	})
 	if err := m.Migrate(); err != nil {
 		global.LOG.Error(err)

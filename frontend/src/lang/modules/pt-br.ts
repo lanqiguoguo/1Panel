@@ -1495,16 +1495,19 @@ const message = {
             'Sincronização do índice da loja de aplicativos, download de ícones/composições e download de pacotes de instalação',
         proxyHelper2:
             'Atualização do sistema (verificação de versão, notas de atualização e download do pacote de atualização)',
-        proxyHelper4: 'A rede Docker será acessada por meio de um servidor proxy (apenas edição profissional)',
+        proxyHelper4:
+            'Com "Sincronizar com o Docker" marcado, o proxy será gravado na configuração do daemon do Docker (/etc/docker/daemon.json) e o Docker será reiniciado para que o download de imagens etc. entre em vigor; os contêineres são interrompidos brevemente durante a reinicialização',
         proxyHelper3:
             'Solicitação de certificado (registro de conta ACME/pedidos de certificado e obtenção do ZeroSSL EAB)',
         proxyType: 'Tipo de proxy',
         proxyUrl: 'Endereço do proxy',
         proxyPort: 'Porta do proxy',
         proxyPasswdKeep: 'Lembrar senha',
-        proxyDocker: 'Proxy Docker',
+        proxyDocker: 'Sincronizar com o Docker',
         proxyDockerHelper:
             'Sincronize a configuração do servidor proxy com o Docker, suportando operações de puxar imagens de servidor offline e outras',
+        proxyDockerSyncConfirm:
+            'Após salvar, o proxy será gravado na configuração do daemon do Docker (/etc/docker/daemon.json) e o Docker será reiniciado. Os contêineres em execução serão interrompidos brevemente durante a reinicialização (sem efeito se o live-restore estiver habilitado nas configurações de contêiner). Continuar?',
         apiInterface: 'Habilitar API',
         apiInterfaceClose:
             'As interfaces de API estão indisponíveis, a funcionalidade do aplicativo será restrita. Deseja continuar?',

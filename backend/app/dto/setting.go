@@ -66,6 +66,7 @@ type SettingInfo struct {
 	ProxyUser       string `json:"proxyUser"`
 	ProxyPasswd     string `json:"proxyPasswd"`
 	ProxyPasswdKeep string `json:"proxyPasswdKeep"`
+	ProxyDockerSync string `json:"proxyDockerSync"`
 
 	ApiInterfaceStatus string `json:"apiInterfaceStatus"`
 	ApiKey             string `json:"apiKey"`
@@ -205,6 +206,7 @@ type ProxyUpdate struct {
 	ProxyUser       string `json:"proxyUser"`
 	ProxyPasswd     string `json:"proxyPasswd"`
 	ProxyPasswdKeep string `json:"proxyPasswdKeep"`
+	ProxyDockerSync string `json:"proxyDockerSync"`
 }
 
 type CleanData struct {

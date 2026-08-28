@@ -1446,15 +1446,18 @@ const message = {
         proxyHelper: '프록시 서버를 설정한 후 다음 시나리오에서 적용됩니다:',
         proxyHelper1: '앱 스토어 인덱스 동기화, 아이콘/컴포즈 다운로드 및 설치 패키지 다운로드',
         proxyHelper2: '시스템 업그레이드(버전 확인, 업데이트 내용 및 업그레이드 패키지 다운로드)',
-        proxyHelper4: 'Docker 네트워크가 프록시 서버를 통해 액세스됩니다 (전문 버전에서만 제공)',
+        proxyHelper4:
+            '"Docker에 동기화"를 체크하면 프록시가 Docker 데몬 설정(/etc/docker/daemon.json)에 기록되고 Docker가 재시작되어 이미지 가져오기 등에 적용됩니다. 재시작 중에는 컨테이너가 잠시 중단됩니다',
         proxyHelper3: '인증서 신청(ACME 계정 등록/인증서 주문 및 ZeroSSL EAB 조회)',
         proxyType: '프록시 유형',
         proxyUrl: '프록시 주소',
         proxyPort: '프록시 포트',
         proxyPasswdKeep: '비밀번호 기억',
-        proxyDocker: 'Docker 프록시',
+        proxyDocker: 'Docker에 동기화',
         proxyDockerHelper:
             '프록시 서버 구성을 Docker 에 동기화하여 오프라인 서버 이미지 가져오기 등의 작업을 지원합니다.',
+        proxyDockerSyncConfirm:
+            '저장하면 프록시가 Docker 데몬 설정(/etc/docker/daemon.json)에 기록되고 Docker가 재시작됩니다. 재시작 중에는 실행 중인 컨테이너가 잠시 중단됩니다(컨테이너 설정에서 live-restore가 활성화된 경우에는 영향을 받지 않습니다). 계속하시겠습니까?',
         apiInterface: 'API 활성화',
         apiInterfaceClose: 'API 인터페이스를 사용할 수 없습니다. 앱 기능이 제한됩니다. 계속하시겠습니까?',
         apiInterfaceHelper: '패널 API 인터페이스 액세스를 지원합니다(패널 앱에서 이 기능을 활성화해야 합니다)',

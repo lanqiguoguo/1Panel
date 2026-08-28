@@ -1507,15 +1507,18 @@ const message = {
         proxyHelper: 'Ia akan berkuat kuasa dalam senario berikut selepas anda menyediakan pelayan proksi:',
         proxyHelper1: 'Penyelarasan indeks kedai aplikasi, muat turun ikon/orkestrasi dan muat turun pakej pemasangan',
         proxyHelper2: 'Peningkatan sistem (semakan versi, nota kemas kini dan muat turun pakej peningkatan)',
-        proxyHelper4: 'Rangkaian Docker akan diakses melalui pelayan proksi (Edisi Profesional sahaja)',
+        proxyHelper4:
+            'Dengan menanda "Segerak ke Docker", proksi akan ditulis ke konfigurasi daemon Docker (/etc/docker/daemon.json) dan Docker dimulakan semula supaya tarikan imej dll. berkuat kuasa; kontena berhenti sebentar semasa permulaan semula',
         proxyHelper3: 'Permohonan sijil (pendaftaran akaun ACME/pesanan sijil dan pengambilan ZeroSSL EAB)',
         proxyType: 'Jenis proksi',
         proxyUrl: 'Alamat proksi',
         proxyPort: 'Port proksi',
         proxyPasswdKeep: 'Ingat Kata Laluan',
-        proxyDocker: 'Proksi Docker',
+        proxyDocker: 'Segerak ke Docker',
         proxyDockerHelper:
             'Selaraskan konfigurasi pelayan proksi ke Docker, menyokong tarikan imej pelayan luar talian dan operasi lain',
+        proxyDockerSyncConfirm:
+            'Selepas disimpan, proksi akan ditulis ke konfigurasi daemon Docker (/etc/docker/daemon.json) dan Docker akan dimulakan semula. Kontena yang sedang berjalan akan berhenti sebentar semasa permulaan semula (tidak terjejas jika live-restore diaktifkan dalam tetapan kontena). Teruskan?',
         apiInterface: 'Aktifkan API',
         apiInterfaceClose: 'ntaramuka API tidak tersedia, fungsi aplikasi akan terhad. Adakah anda ingin meneruskan?',
         apiInterfaceHelper: 'Menyokong akses antara muka API panel (fungsi ini perlu diaktifkan untuk aplikasi panel)',
