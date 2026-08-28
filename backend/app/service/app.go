@@ -27,6 +27,7 @@ import (
 	http2 "github.com/1Panel-dev/1Panel/backend/utils/http"
 	httpUtil "github.com/1Panel-dev/1Panel/backend/utils/http"
 	"gopkg.in/yaml.v3"
+	"sync"
 )
 
 type AppService struct {
@@ -816,7 +817,36 @@ var InitTypes = map[string]struct{}{
 	"node":    {},
 }
 
+// appStoreSyncMu serializes remote app store synchronization. The API layer
+// launches SyncAppListFromRemote in a goroutine without checking whether a
+// sync is already running, and the AppStoreSyncStatus check in GetAppUpdate is
+// check-then-act (read from DB, not atomic), so two concurrent calls could
+// both enter the full sync flow, each opening its own DB transaction and
+// rewriting/deleting the other's data. Holding the mutex while re-reading the
+// status and setting it to Syncing before releasing turns the whole function
+// into a single-flight critical section: the second caller sees Syncing under
+// the lock and returns immediately instead of entering the transaction block.
+var appStoreSyncMu sync.Mutex
+
 func (a AppService) SyncAppListFromRemote() (err error) {
+	// Acquire the lock before the initial status check: GetAppUpdate only
+	// reports Syncing based on a previous DB read, which is not atomic, so
+	// serializing here is what guarantees only one sync runs at a time.
+	appStoreSyncMu.Lock()
+	settingService := NewISettingService()
+	setting, err := settingService.GetSettingInfo()
+	if err != nil {
+		appStoreSyncMu.Unlock()
+		return err
+	}
+	if setting.AppStoreSyncStatus == constant.Syncing {
+		// Another synchronization is already in progress (started before we
+		// acquired the lock); treat it as "already syncing" and return.
+		appStoreSyncMu.Unlock()
+		return nil
+	}
+	appStoreSyncMu.Unlock()
+
 	global.LOG.Infof("Starting synchronization with App Store...")
 	updateRes, err := a.GetAppUpdate()
 	if err != nil {
@@ -830,6 +860,27 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		global.LOG.Infof("The App Store is at the latest version")
 		return
 	}
+	// Claim the sync only after the remote update check passed. Claiming before
+	// GetAppUpdate would make its own Syncing check (read from DB) short-circuit
+	// and report "already syncing" without ever performing the sync. The claim
+	// is still done before any DB transaction opens, so concurrent callers that
+	// passed the gate together are serialized here: the first sets Syncing, the
+	// second re-reads it under the mutex and backs off.
+	appStoreSyncMu.Lock()
+	settingService = NewISettingService()
+	setting, err = settingService.GetSettingInfo()
+	if err != nil {
+		appStoreSyncMu.Unlock()
+		return err
+	}
+	if setting.AppStoreSyncStatus == constant.Syncing {
+		// A concurrent caller claimed the sync while we were fetching the
+		// update; let it finish and treat this call as "already syncing".
+		appStoreSyncMu.Unlock()
+		return nil
+	}
+	_ = settingService.Update("AppStoreSyncStatus", constant.Syncing)
+	appStoreSyncMu.Unlock()
 
 	list := &dto.AppList{}
 	if updateRes.AppList == nil {
@@ -840,8 +891,6 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 	} else {
 		list = updateRes.AppList
 	}
-	settingService := NewISettingService()
-	_ = settingService.Update("AppStoreSyncStatus", constant.Syncing)
 
 	defer func() {
 		if err != nil {
@@ -850,7 +899,7 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		}
 	}()
 
-	setting, err := settingService.GetSettingInfo()
+	setting, err = settingService.GetSettingInfo()
 	if err != nil {
 		return err
 	}
