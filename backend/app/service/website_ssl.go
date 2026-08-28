@@ -27,8 +27,16 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// sslApplyMu 保护 lego 库的包级全局 Logger（github.com/go-acme/lego/v4/log.Logger）。
+// client.ObtainSSL 内部无法注入 per-call logger，所有 lego 日志都走该全局变量；
+// 并发证书申请（各自在 goroutine 中执行 ObtainSSL）会互相覆盖它，导致日志串写、
+// 写入已关闭的文件句柄甚至 panic。因此并发证书申请必须串行使用它：任意时刻只允许
+// 一个申请 goroutine 持有并写入 lego 全局 Logger，其余申请在 sslApplyMu 上等待。
+var sslApplyMu sync.Mutex
 
 type WebsiteSSLService struct {
 }
@@ -301,8 +309,17 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 	}
 
 	go func() {
+		// 串行化 lego 全局 Logger 的使用：从创建 per-域名 logFile、覆盖
+		// legoLogger.Logger 到 ObtainSSL 全程与 handleError 中的
+		// legoLogger.Logger.Println，都必须持有 sslApplyMu，保证任意时刻
+		// 只有一个证书申请 goroutine 在使用 lego 全局 Logger。
+		sslApplyMu.Lock()
 		logFile, _ := os.OpenFile(path.Join(constant.SSLLogDir, fmt.Sprintf("%s-ssl-%d.log", websiteSSL.PrimaryDomain, websiteSSL.ID)), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+		// 后注册的 defer 先执行：sslApplyMu.Unlock 在 logFile.Close 之前执行，
+		// 释放锁时前一个 goroutine 的日志句柄仍在用（且下一个持锁者会立刻
+		// 用自己新建的 logger 覆盖 legoLogger.Logger），随后 logFile 才关闭。
 		defer logFile.Close()
+		defer sslApplyMu.Unlock()
 		logger := log.New(logFile, "", log.LstdFlags)
 		legoLogger.Logger = logger
 		if !apply.DisableLog {
