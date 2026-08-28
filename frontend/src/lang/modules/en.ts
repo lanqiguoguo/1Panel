@@ -1485,8 +1485,10 @@ const message = {
         systemIP: 'System address',
         proxy: 'Server proxy',
         proxyHelper: 'After a proxy server is configured, it takes effect in the following scenarios:',
-        proxyHelper1: 'App store index synchronization and package download',
-        proxyHelper2: 'System upgrade and resource download',
+        proxyHelper1: 'App store index synchronization, icon/compose download and package download',
+        proxyHelper2: 'System upgrade (version check, release notes and upgrade package download)',
+        proxyHelper3:
+            'Certificate application (ACME account registration/certificate orders and ZeroSSL EAB retrieval)',
         proxyType: 'Proxy type',
         proxyDisable: 'Disabled',
         proxyOptional: 'Optional',

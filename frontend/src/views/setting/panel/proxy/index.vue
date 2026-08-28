@@ -54,6 +54,7 @@
                         <span class="input-help">{{ $t('setting.proxyHelper') }}</span>
                         <span class="input-help">{{ $t('setting.proxyHelper1') }}</span>
                         <span class="input-help">{{ $t('setting.proxyHelper2') }}</span>
+                        <span class="input-help">{{ $t('setting.proxyHelper3') }}</span>
                     </el-col>
                 </el-row>
             </el-form>

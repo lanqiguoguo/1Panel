@@ -1492,10 +1492,12 @@ const message = {
         proxy: 'Proxy do servidor',
         proxyHelper: 'Será eficaz nos seguintes cenários após configurar o servidor proxy:',
         proxyHelper1:
-            'Download de pacotes de instalação e sincronização da loja de aplicativos (apenas edição profissional)',
-        proxyHelper2: 'Atualização do sistema e recuperação de informações de atualização (apenas edição profissional)',
+            'Sincronização do índice da loja de aplicativos, download de ícones/composições e download de pacotes de instalação',
+        proxyHelper2:
+            'Atualização do sistema (verificação de versão, notas de atualização e download do pacote de atualização)',
         proxyHelper4: 'A rede Docker será acessada por meio de um servidor proxy (apenas edição profissional)',
-        proxyHelper3: 'Verificação e sincronização da licença do sistema',
+        proxyHelper3:
+            'Solicitação de certificado (registro de conta ACME/pedidos de certificado e obtenção do ZeroSSL EAB)',
         proxyType: 'Tipo de proxy',
         proxyUrl: 'Endereço do proxy',
         proxyPort: 'Porta do proxy',
