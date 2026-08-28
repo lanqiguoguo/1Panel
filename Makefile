@@ -32,3 +32,16 @@ build_backend_on_darwin:
 build_all: build_frontend build_backend_on_linux
 
 build_on_local: clean_assets build_frontend build_backend_on_darwin
+
+# Regenerates cmd/server/docs from the @-annotations in the API handlers.
+# The operation-log middleware reads the embedded swagger.json at runtime,
+# so docs must be regenerated whenever an @x-panel-log annotation changes.
+# Notes on the flags (both matter, getting them wrong fails the parse with
+# misleading "cannot find type definition" errors):
+#   - -g is relative to the FIRST --dir entry (cmd/server), not the cwd;
+#   - --dir must list ./cmd/server and ./backend explicitly: pointing it at
+#     the repo root makes `go list` fail (no Go files at the root) and the
+#     dto/response / model packages never get registered.
+swagger:
+	go run github.com/swaggo/swag/cmd/swag@v1.16.3 init -g main.go \
+		-o cmd/server/docs --dir ./cmd/server,./backend

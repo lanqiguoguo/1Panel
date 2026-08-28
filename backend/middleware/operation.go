@@ -109,28 +109,9 @@ func OperationLog() gin.HandlerFunc {
 				}
 			}
 		}
-		for key, value := range formatMap {
-			if strings.Contains(operationDic.FormatEN, "["+key+"]") {
-				t := reflect.TypeOf(value)
-				if t.Kind() != reflect.Array && t.Kind() != reflect.Slice {
-					operationDic.FormatZH = strings.ReplaceAll(operationDic.FormatZH, "["+key+"]", fmt.Sprintf("[%v]", value))
-					operationDic.FormatEN = strings.ReplaceAll(operationDic.FormatEN, "["+key+"]", fmt.Sprintf("[%v]", value))
-				} else {
-					val := reflect.ValueOf(value)
-					length := val.Len()
-
-					var elements []string
-					for i := 0; i < length; i++ {
-						element := val.Index(i).Interface().(string)
-						elements = append(elements, element)
-					}
-					operationDic.FormatZH = strings.ReplaceAll(operationDic.FormatZH, "["+key+"]", fmt.Sprintf("[%v]", strings.Join(elements, ",")))
-					operationDic.FormatEN = strings.ReplaceAll(operationDic.FormatEN, "["+key+"]", fmt.Sprintf("[%v]", strings.Join(elements, ",")))
-				}
-			}
-		}
-		record.DetailEN = strings.ReplaceAll(operationDic.FormatEN, "[]", "")
-		record.DetailZH = strings.ReplaceAll(operationDic.FormatZH, "[]", "")
+		record.DetailZH, record.DetailEN = renderOperationDetail(operationDic, formatMap)
+		record.DetailEN = strings.ReplaceAll(record.DetailEN, "[]", "")
+		record.DetailZH = strings.ReplaceAll(record.DetailZH, "[]", "")
 
 		writer := responseBodyWriter{
 			ResponseWriter: c.Writer,
@@ -179,6 +160,39 @@ func OperationLog() gin.HandlerFunc {
 
 type swaggerJson struct {
 	Paths map[string]interface{} `json:"paths"`
+}
+
+// renderOperationDetail replaces [key] placeholders in both FormatZH and FormatEN
+// with the corresponding values from formatMap. A key is replaced as long as it
+// appears in either language, so a placeholder used by only one language is still
+// resolved (ReplaceAll on the other language is a no-op when the key is absent).
+func renderOperationDetail(operationDic operationJson, formatMap map[string]interface{}) (zh, en string) {
+	zh, en = operationDic.FormatZH, operationDic.FormatEN
+	for key, value := range formatMap {
+		if !strings.Contains(zh, "["+key+"]") && !strings.Contains(en, "["+key+"]") {
+			continue
+		}
+		t := reflect.TypeOf(value)
+		if t.Kind() != reflect.Array && t.Kind() != reflect.Slice {
+			zh = strings.ReplaceAll(zh, "["+key+"]", fmt.Sprintf("[%v]", value))
+			en = strings.ReplaceAll(en, "["+key+"]", fmt.Sprintf("[%v]", value))
+		} else {
+			val := reflect.ValueOf(value)
+			length := val.Len()
+
+			var elements []string
+			// %v instead of a type assertion: the value comes from the raw
+			// request body, so a malformed array (e.g. [1,2] submitted for a
+			// []string field) would panic the old .(string) assertion and
+			// drop the operation log entirely.
+			for i := 0; i < length; i++ {
+				elements = append(elements, fmt.Sprintf("%v", val.Index(i).Interface()))
+			}
+			zh = strings.ReplaceAll(zh, "["+key+"]", fmt.Sprintf("[%v]", strings.Join(elements, ",")))
+			en = strings.ReplaceAll(en, "["+key+"]", fmt.Sprintf("[%v]", strings.Join(elements, ",")))
+		}
+	}
+	return zh, en
 }
 
 type operationJson struct {

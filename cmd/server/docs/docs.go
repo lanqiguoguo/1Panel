@@ -1349,22 +1349,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/language": {
-            "get": {
-                "tags": [
-                    "Auth"
-                ],
-                "summary": "Load System Language",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
         "/auth/login": {
             "post": {
                 "consumes": [
@@ -1453,6 +1437,22 @@ const docTemplate = `{
                             "EntranceCode": {
                                 "type": "string"
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/setting": {
+            "get": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Load System Setting for login",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.LoginSetting"
                         }
                     }
                 }
@@ -3168,7 +3168,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/dto.ImageRepoDelete"
+                            "$ref": "#/definitions/dto.ImageRepoCreate"
                         }
                     }
                 ],
@@ -3215,7 +3215,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/dto.ImageRepoDelete"
+                            "$ref": "#/definitions/dto.OperateByID"
                         }
                     }
                 ],
@@ -3229,17 +3229,17 @@ const docTemplate = `{
                         {
                             "db": "image_repos",
                             "input_column": "id",
-                            "input_value": "ids",
-                            "isList": true,
+                            "input_value": "id",
+                            "isList": false,
                             "output_column": "name",
-                            "output_value": "names"
+                            "output_value": "name"
                         }
                     ],
                     "bodyKeys": [
-                        "ids"
+                        "id"
                     ],
-                    "formatEN": "delete image repo [names]",
-                    "formatZH": "删除镜像仓库 [names]",
+                    "formatEN": "delete image repo [name]",
+                    "formatZH": "删除镜像仓库 [name]",
                     "paramKeys": []
                 }
             }
@@ -9839,6 +9839,281 @@ const docTemplate = `{
                 }
             }
         },
+        "/mcp/domain/bind": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Bind Domain for mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpBindDomain"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/mcp/domain/get": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Get bin Domain for mcp server",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.McpBindDomainRes"
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/domain/update": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Update bind Domain for mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpBindDomainUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/mcp/search": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "List mcp servers",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpServerSearch"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/response.McpServersRes"
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/server": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Create mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpServerCreate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/mcp/server/del": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Delete mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpServerDelete"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/mcp/server/op": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Operate mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpServerOperate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/mcp/server/update": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "McpServer"
+                ],
+                "summary": "Update mcp server",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/request.McpServerUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
         "/openresty": {
             "get": {
                 "security": [
@@ -11751,6 +12026,44 @@ const docTemplate = `{
                 }
             }
         },
+        "/settings/proxy/test": {
+            "post": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    },
+                    {
+                        "Timestamp": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System Setting"
+                ],
+                "summary": "Test proxy connection with the given form values",
+                "parameters": [
+                    {
+                        "description": "request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.ProxyUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/settings/proxy/update": {
             "post": {
                 "security": [
@@ -11790,8 +12103,8 @@ const docTemplate = `{
                         "proxyUrl",
                         "proxyPort"
                     ],
-                    "formatEN": "set proxy [proxyPort]:[proxyPort].",
-                    "formatZH": "服务器代理配置 [proxyPort]:[proxyPort]",
+                    "formatEN": "set proxy [proxyUrl]:[proxyPort].",
+                    "formatZH": "服务器代理配置 [proxyUrl]:[proxyPort]",
                     "paramKeys": []
                 }
             }
@@ -12934,60 +13247,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/dto.PageResult"
                         }
                     }
-                }
-            }
-        },
-        "/toolbox/clam/status/update": {
-            "post": {
-                "security": [
-                    {
-                        "ApiKeyAuth": []
-                    },
-                    {
-                        "Timestamp": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Clam"
-                ],
-                "summary": "Update clam status",
-                "parameters": [
-                    {
-                        "description": "request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/dto.ClamUpdateStatus"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "x-panel-log": {
-                    "BeforeFunctions": [
-                        {
-                            "db": "clams",
-                            "input_column": "id",
-                            "input_value": "id",
-                            "isList": false,
-                            "output_column": "name",
-                            "output_value": "name"
-                        }
-                    ],
-                    "bodyKeys": [
-                        "id",
-                        "status"
-                    ],
-                    "formatEN": "change the status of clam [name] to [status].",
-                    "formatZH": "修改扫描规则 [name] 状态为 [status]",
-                    "paramKeys": []
                 }
             }
         },
@@ -17539,12 +17798,6 @@ const docTemplate = `{
         "dto.ClamCreate": {
             "type": "object",
             "properties": {
-                "alertCount": {
-                    "type": "integer"
-                },
-                "alertTitle": {
-                    "type": "string"
-                },
                 "description": {
                     "type": "string"
                 },
@@ -17643,12 +17896,6 @@ const docTemplate = `{
         "dto.ClamUpdate": {
             "type": "object",
             "properties": {
-                "alertCount": {
-                    "type": "integer"
-                },
-                "alertTitle": {
-                    "type": "string"
-                },
                 "description": {
                     "type": "string"
                 },
@@ -17668,17 +17915,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "spec": {
-                    "type": "string"
-                }
-            }
-        },
-        "dto.ClamUpdateStatus": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "integer"
-                },
-                "status": {
                     "type": "string"
                 }
             }
@@ -18357,6 +18593,9 @@ const docTemplate = `{
                 "cleanData": {
                     "type": "boolean"
                 },
+                "cleanRemoteData": {
+                    "type": "boolean"
+                },
                 "ids": {
                     "type": "array",
                     "items": {
@@ -18372,6 +18611,9 @@ const docTemplate = `{
             ],
             "properties": {
                 "cleanData": {
+                    "type": "boolean"
+                },
+                "cleanRemoteData": {
                     "type": "boolean"
                 },
                 "cronjobID": {
@@ -18390,12 +18632,6 @@ const docTemplate = `{
                 "type"
             ],
             "properties": {
-                "alertCount": {
-                    "type": "integer"
-                },
-                "alertTitle": {
-                    "type": "string"
-                },
                 "appID": {
                     "type": "string"
                 },
@@ -18474,12 +18710,6 @@ const docTemplate = `{
                 "type"
             ],
             "properties": {
-                "alertCount": {
-                    "type": "integer"
-                },
-                "alertTitle": {
-                    "type": "string"
-                },
                 "appID": {
                     "type": "string"
                 },
@@ -19906,17 +20136,29 @@ const docTemplate = `{
                 }
             }
         },
-        "dto.ImageRepoDelete": {
+        "dto.ImageRepoCreate": {
             "type": "object",
             "required": [
-                "ids"
+                "name"
             ],
             "properties": {
-                "ids": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                "auth": {
+                    "type": "boolean"
+                },
+                "downloadUrl": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
                 }
             }
         },
@@ -19947,15 +20189,13 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "password": {
-                    "type": "string",
-                    "maxLength": 256
+                    "type": "string"
                 },
                 "protocol": {
                     "type": "string"
                 },
                 "username": {
-                    "type": "string",
-                    "maxLength": 256
+                    "type": "string"
                 }
             }
         },
@@ -20070,9 +20310,6 @@ const docTemplate = `{
                 "captchaID": {
                     "type": "string"
                 },
-                "ignoreCaptcha": {
-                    "type": "boolean"
-                },
                 "language": {
                     "type": "string",
                     "enum": [
@@ -20091,6 +20328,17 @@ const docTemplate = `{
                 },
                 "password": {
                     "type": "string"
+                }
+            }
+        },
+        "dto.LoginSetting": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string"
+                },
+                "needCaptcha": {
+                    "type": "boolean"
                 }
             }
         },
@@ -21278,6 +21526,9 @@ const docTemplate = `{
         "dto.ProxyUpdate": {
             "type": "object",
             "properties": {
+                "proxyDockerSync": {
+                    "type": "string"
+                },
                 "proxyPasswd": {
                     "type": "string"
                 },
@@ -21981,9 +22232,6 @@ const docTemplate = `{
                 "lastCleanTime": {
                     "type": "string"
                 },
-                "licenseVerify": {
-                    "type": "string"
-                },
                 "localTime": {
                     "type": "string"
                 },
@@ -22023,6 +22271,9 @@ const docTemplate = `{
                 "port": {
                     "type": "string"
                 },
+                "proxyDockerSync": {
+                    "type": "string"
+                },
                 "proxyPasswd": {
                     "type": "string"
                 },
@@ -22060,6 +22311,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "systemIP": {
+                    "type": "string"
+                },
+                "systemStatus": {
                     "type": "string"
                 },
                 "systemVersion": {
@@ -23285,6 +23539,17 @@ const docTemplate = `{
                 }
             }
         },
+        "request.Environment": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
         "request.ExposedPort": {
             "type": "object",
             "properties": {
@@ -23502,6 +23767,12 @@ const docTemplate = `{
                 "cover": {
                     "type": "boolean"
                 },
+                "coverPaths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "name": {
                     "type": "string"
                 },
@@ -23515,7 +23786,12 @@ const docTemplate = `{
                     }
                 },
                 "type": {
-                    "type": "string"
+                    "description": "Type only accepts \"cut\" or \"copy\": the service implements exactly these\ntwo branches, and any other value (e.g. \"move\") used to fall through\nboth of them and return success without doing anything.",
+                    "type": "string",
+                    "enum": [
+                        "cut",
+                        "copy"
+                    ]
                 }
             }
         },
@@ -23565,6 +23841,9 @@ const docTemplate = `{
             "properties": {
                 "path": {
                     "type": "string"
+                },
+                "withInit": {
+                    "type": "boolean"
                 }
             }
         },
@@ -23635,7 +23914,9 @@ const docTemplate = `{
             ],
             "properties": {
                 "group": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 },
                 "mode": {
                     "type": "integer"
@@ -23650,7 +23931,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "user": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 }
             }
         },
@@ -23663,7 +23946,9 @@ const docTemplate = `{
             ],
             "properties": {
                 "group": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 },
                 "path": {
                     "type": "string"
@@ -23672,7 +23957,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "user": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 }
             }
         },
@@ -23773,6 +24060,177 @@ const docTemplate = `{
                     "enum": [
                         "supervisord"
                     ]
+                }
+            }
+        },
+        "request.McpBindDomain": {
+            "type": "object",
+            "required": [
+                "domain"
+            ],
+            "properties": {
+                "domain": {
+                    "type": "string"
+                },
+                "ipList": {
+                    "type": "string"
+                },
+                "sslID": {
+                    "type": "integer"
+                }
+            }
+        },
+        "request.McpBindDomainUpdate": {
+            "type": "object",
+            "required": [
+                "websiteID"
+            ],
+            "properties": {
+                "ipList": {
+                    "type": "string"
+                },
+                "sslID": {
+                    "type": "integer"
+                },
+                "websiteID": {
+                    "type": "integer"
+                }
+            }
+        },
+        "request.McpServerCreate": {
+            "type": "object",
+            "required": [
+                "command",
+                "name",
+                "port"
+            ],
+            "properties": {
+                "baseUrl": {
+                    "type": "string"
+                },
+                "command": {
+                    "type": "string"
+                },
+                "containerName": {
+                    "type": "string"
+                },
+                "environments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Environment"
+                    }
+                },
+                "hostIP": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "ssePath": {
+                    "type": "string"
+                },
+                "volumes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Volume"
+                    }
+                }
+            }
+        },
+        "request.McpServerDelete": {
+            "type": "object",
+            "required": [
+                "id"
+            ],
+            "properties": {
+                "id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "request.McpServerOperate": {
+            "type": "object",
+            "required": [
+                "id",
+                "operate"
+            ],
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "operate": {
+                    "type": "string"
+                }
+            }
+        },
+        "request.McpServerSearch": {
+            "type": "object",
+            "required": [
+                "page",
+                "pageSize"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "pageSize": {
+                    "type": "integer"
+                },
+                "sync": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "request.McpServerUpdate": {
+            "type": "object",
+            "required": [
+                "command",
+                "id",
+                "name",
+                "port"
+            ],
+            "properties": {
+                "baseUrl": {
+                    "type": "string"
+                },
+                "command": {
+                    "type": "string"
+                },
+                "containerName": {
+                    "type": "string"
+                },
+                "environments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Environment"
+                    }
+                },
+                "hostIP": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "ssePath": {
+                    "type": "string"
+                },
+                "volumes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Volume"
+                    }
                 }
             }
         },
@@ -24418,6 +24876,17 @@ const docTemplate = `{
                         "clear",
                         "update"
                     ]
+                }
+            }
+        },
+        "request.Volume": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string"
+                },
+                "target": {
+                    "type": "string"
                 }
             }
         },
@@ -25391,13 +25860,17 @@ const docTemplate = `{
             ],
             "properties": {
                 "group": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 },
                 "id": {
                     "type": "integer"
                 },
                 "user": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 64,
+                    "minLength": 1
                 }
             }
         },
@@ -25796,6 +26269,9 @@ const docTemplate = `{
         "response.ExistFileInfo": {
             "type": "object",
             "properties": {
+                "isDir": {
+                    "type": "boolean"
+                },
                 "modTime": {
                     "type": "string"
                 },
@@ -25972,6 +26448,111 @@ const docTemplate = `{
                 },
                 "version": {
                     "type": "string"
+                }
+            }
+        },
+        "response.McpBindDomainRes": {
+            "type": "object",
+            "properties": {
+                "acmeAccountID": {
+                    "type": "integer"
+                },
+                "allowIPs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "connUrl": {
+                    "type": "string"
+                },
+                "domain": {
+                    "type": "string"
+                },
+                "sslID": {
+                    "type": "integer"
+                },
+                "websiteID": {
+                    "type": "integer"
+                }
+            }
+        },
+        "response.McpServerDTO": {
+            "type": "object",
+            "properties": {
+                "baseUrl": {
+                    "type": "string"
+                },
+                "command": {
+                    "type": "string"
+                },
+                "containerName": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "dir": {
+                    "type": "string"
+                },
+                "dockerCompose": {
+                    "type": "string"
+                },
+                "env": {
+                    "type": "string"
+                },
+                "environments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Environment"
+                    }
+                },
+                "hostIP": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "ssePath": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "volumes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/request.Volume"
+                    }
+                },
+                "websiteID": {
+                    "type": "integer"
+                }
+            }
+        },
+        "response.McpServersRes": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/response.McpServerDTO"
+                    }
+                },
+                "total": {
+                    "type": "integer"
                 }
             }
         },

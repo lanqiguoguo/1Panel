@@ -83,7 +83,7 @@ func (b *BaseApi) UpdateSetting(c *gin.Context) {
 // @Security ApiKeyAuth
 // @Security Timestamp
 // @Router /settings/proxy/update [post]
-// @x-panel-log {"bodyKeys":["proxyUrl","proxyPort"],"paramKeys":[],"BeforeFunctions":[],"formatZH":"服务器代理配置 [proxyPort]:[proxyPort]","formatEN":"set proxy [proxyPort]:[proxyPort]."}
+// @x-panel-log {"bodyKeys":["proxyUrl","proxyPort"],"paramKeys":[],"BeforeFunctions":[],"formatZH":"服务器代理配置 [proxyUrl]:[proxyPort]","formatEN":"set proxy [proxyUrl]:[proxyPort]."}
 func (b *BaseApi) UpdateProxy(c *gin.Context) {
 	var req dto.ProxyUpdate
 	if err := helper.CheckBindAndValidate(&req, c); err != nil {

@@ -338,10 +338,6 @@ definitions:
     type: object
   dto.ClamCreate:
     properties:
-      alertCount:
-        type: integer
-      alertTitle:
-        type: string
       description:
         type: string
       infectedDir:
@@ -406,10 +402,6 @@ definitions:
     type: object
   dto.ClamUpdate:
     properties:
-      alertCount:
-        type: integer
-      alertTitle:
-        type: string
       description:
         type: string
       id:
@@ -423,13 +415,6 @@ definitions:
       path:
         type: string
       spec:
-        type: string
-    type: object
-  dto.ClamUpdateStatus:
-    properties:
-      id:
-        type: integer
-      status:
         type: string
     type: object
   dto.Clean:
@@ -886,6 +871,8 @@ definitions:
     properties:
       cleanData:
         type: boolean
+      cleanRemoteData:
+        type: boolean
       ids:
         items:
           type: integer
@@ -897,6 +884,8 @@ definitions:
     properties:
       cleanData:
         type: boolean
+      cleanRemoteData:
+        type: boolean
       cronjobID:
         type: integer
       isDelete:
@@ -906,10 +895,6 @@ definitions:
     type: object
   dto.CronjobCreate:
     properties:
-      alertCount:
-        type: integer
-      alertTitle:
-        type: string
       appID:
         type: string
       backupAccounts:
@@ -962,10 +947,6 @@ definitions:
     type: object
   dto.CronjobUpdate:
     properties:
-      alertCount:
-        type: integer
-      alertTitle:
-        type: string
       appID:
         type: string
       backupAccounts:
@@ -1930,14 +1911,22 @@ definitions:
     - repoID
     - tagName
     type: object
-  dto.ImageRepoDelete:
+  dto.ImageRepoCreate:
     properties:
-      ids:
-        items:
-          type: integer
-        type: array
+      auth:
+        type: boolean
+      downloadUrl:
+        type: string
+      name:
+        type: string
+      password:
+        type: string
+      protocol:
+        type: string
+      username:
+        type: string
     required:
-    - ids
+    - name
     type: object
   dto.ImageRepoOption:
     properties:
@@ -1957,12 +1946,10 @@ definitions:
       id:
         type: integer
       password:
-        maxLength: 256
         type: string
       protocol:
         type: string
       username:
-        maxLength: 256
         type: string
     type: object
   dto.ImageSave:
@@ -2035,8 +2022,6 @@ definitions:
         type: string
       captchaID:
         type: string
-      ignoreCaptcha:
-        type: boolean
       language:
         enum:
         - zh
@@ -2057,6 +2042,13 @@ definitions:
     - language
     - name
     - password
+    type: object
+  dto.LoginSetting:
+    properties:
+      language:
+        type: string
+      needCaptcha:
+        type: boolean
     type: object
   dto.MFALogin:
     properties:
@@ -2872,6 +2864,8 @@ definitions:
     type: object
   dto.ProxyUpdate:
     properties:
+      proxyDockerSync:
+        type: string
       proxyPasswd:
         type: string
       proxyPasswdKeep:
@@ -3342,8 +3336,6 @@ definitions:
         type: string
       lastCleanTime:
         type: string
-      licenseVerify:
-        type: string
       localTime:
         type: string
       menuTabs:
@@ -3370,6 +3362,8 @@ definitions:
         type: string
       port:
         type: string
+      proxyDockerSync:
+        type: string
       proxyPasswd:
         type: string
       proxyPasswdKeep:
@@ -3395,6 +3389,8 @@ definitions:
       sslType:
         type: string
       systemIP:
+        type: string
+      systemStatus:
         type: string
       systemVersion:
         type: string
@@ -4203,6 +4199,13 @@ definitions:
     required:
     - path
     type: object
+  request.Environment:
+    properties:
+      key:
+        type: string
+      value:
+        type: string
+    type: object
   request.ExposedPort:
     properties:
       containerPort:
@@ -4343,6 +4346,10 @@ definitions:
     properties:
       cover:
         type: boolean
+      coverPaths:
+        items:
+          type: string
+        type: array
       name:
         type: string
       newPath:
@@ -4352,6 +4359,13 @@ definitions:
           type: string
         type: array
       type:
+        description: |-
+          Type only accepts "cut" or "copy": the service implements exactly these
+          two branches, and any other value (e.g. "move") used to fall through
+          both of them and return success without doing anything.
+        enum:
+        - cut
+        - copy
         type: string
     required:
     - newPath
@@ -4387,6 +4401,8 @@ definitions:
     properties:
       path:
         type: string
+      withInit:
+        type: boolean
     required:
     - path
     type: object
@@ -4431,6 +4447,8 @@ definitions:
   request.FileRoleReq:
     properties:
       group:
+        maxLength: 64
+        minLength: 1
         type: string
       mode:
         type: integer
@@ -4441,6 +4459,8 @@ definitions:
       sub:
         type: boolean
       user:
+        maxLength: 64
+        minLength: 1
         type: string
     required:
     - group
@@ -4451,12 +4471,16 @@ definitions:
   request.FileRoleUpdate:
     properties:
       group:
+        maxLength: 64
+        minLength: 1
         type: string
       path:
         type: string
       sub:
         type: boolean
       user:
+        maxLength: 64
+        minLength: 1
         type: string
     required:
     - group
@@ -4529,6 +4553,120 @@ definitions:
         type: string
     required:
     - type
+    type: object
+  request.McpBindDomain:
+    properties:
+      domain:
+        type: string
+      ipList:
+        type: string
+      sslID:
+        type: integer
+    required:
+    - domain
+    type: object
+  request.McpBindDomainUpdate:
+    properties:
+      ipList:
+        type: string
+      sslID:
+        type: integer
+      websiteID:
+        type: integer
+    required:
+    - websiteID
+    type: object
+  request.McpServerCreate:
+    properties:
+      baseUrl:
+        type: string
+      command:
+        type: string
+      containerName:
+        type: string
+      environments:
+        items:
+          $ref: '#/definitions/request.Environment'
+        type: array
+      hostIP:
+        type: string
+      name:
+        type: string
+      port:
+        type: integer
+      ssePath:
+        type: string
+      volumes:
+        items:
+          $ref: '#/definitions/request.Volume'
+        type: array
+    required:
+    - command
+    - name
+    - port
+    type: object
+  request.McpServerDelete:
+    properties:
+      id:
+        type: integer
+    required:
+    - id
+    type: object
+  request.McpServerOperate:
+    properties:
+      id:
+        type: integer
+      operate:
+        type: string
+    required:
+    - id
+    - operate
+    type: object
+  request.McpServerSearch:
+    properties:
+      name:
+        type: string
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      sync:
+        type: boolean
+    required:
+    - page
+    - pageSize
+    type: object
+  request.McpServerUpdate:
+    properties:
+      baseUrl:
+        type: string
+      command:
+        type: string
+      containerName:
+        type: string
+      environments:
+        items:
+          $ref: '#/definitions/request.Environment'
+        type: array
+      hostIP:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      port:
+        type: integer
+      ssePath:
+        type: string
+      volumes:
+        items:
+          $ref: '#/definitions/request.Volume'
+        type: array
+    required:
+    - command
+    - id
+    - name
+    - port
     type: object
   request.NewAppInstall:
     properties:
@@ -4960,6 +5098,13 @@ definitions:
     - file
     - name
     - operate
+    type: object
+  request.Volume:
+    properties:
+      source:
+        type: string
+      target:
+        type: string
     type: object
   request.WebsiteAcmeAccountCreate:
     properties:
@@ -5618,10 +5763,14 @@ definitions:
   request.WebsiteUpdateDirPermission:
     properties:
       group:
+        maxLength: 64
+        minLength: 1
         type: string
       id:
         type: integer
       user:
+        maxLength: 64
+        minLength: 1
         type: string
     required:
     - group
@@ -5889,6 +6038,8 @@ definitions:
     type: object
   response.ExistFileInfo:
     properties:
+      isDir:
+        type: boolean
       modTime:
         type: string
       name:
@@ -6005,6 +6156,75 @@ definitions:
         type: string
       version:
         type: string
+    type: object
+  response.McpBindDomainRes:
+    properties:
+      acmeAccountID:
+        type: integer
+      allowIPs:
+        items:
+          type: string
+        type: array
+      connUrl:
+        type: string
+      domain:
+        type: string
+      sslID:
+        type: integer
+      websiteID:
+        type: integer
+    type: object
+  response.McpServerDTO:
+    properties:
+      baseUrl:
+        type: string
+      command:
+        type: string
+      containerName:
+        type: string
+      createdAt:
+        type: string
+      dir:
+        type: string
+      dockerCompose:
+        type: string
+      env:
+        type: string
+      environments:
+        items:
+          $ref: '#/definitions/request.Environment'
+        type: array
+      hostIP:
+        type: string
+      id:
+        type: integer
+      message:
+        type: string
+      name:
+        type: string
+      port:
+        type: integer
+      ssePath:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      volumes:
+        items:
+          $ref: '#/definitions/request.Volume'
+        type: array
+      websiteID:
+        type: integer
+    type: object
+  response.McpServersRes:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/response.McpServerDTO'
+        type: array
+      total:
+        type: integer
     type: object
   response.NginxAntiLeechRes:
     properties:
@@ -7304,16 +7524,6 @@ paths:
       summary: Check System isIntl
       tags:
       - Auth
-  /auth/language:
-    get:
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: string
-      summary: Load System Language
-      tags:
-      - Auth
   /auth/login:
     post:
       consumes:
@@ -7369,6 +7579,16 @@ paths:
           schema:
             $ref: '#/definitions/dto.UserLoginInfo'
       summary: User login with mfa
+      tags:
+      - Auth
+  /auth/setting:
+    get:
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.LoginSetting'
+      summary: Load System Setting for login
       tags:
       - Auth
   /containers:
@@ -8397,7 +8617,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/dto.ImageRepoDelete'
+          $ref: '#/definitions/dto.ImageRepoCreate'
       produces:
       - application/json
       responses:
@@ -8426,7 +8646,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/dto.ImageRepoDelete'
+          $ref: '#/definitions/dto.OperateByID'
       produces:
       - application/json
       responses:
@@ -8442,14 +8662,14 @@ paths:
         BeforeFunctions:
         - db: image_repos
           input_column: id
-          input_value: ids
-          isList: true
+          input_value: id
+          isList: false
           output_column: name
-          output_value: names
+          output_value: name
         bodyKeys:
-        - ids
-        formatEN: delete image repo [names]
-        formatZH: 删除镜像仓库 [names]
+        - id
+        formatEN: delete image repo [name]
+        formatZH: 删除镜像仓库 [name]
         paramKeys: []
   /containers/repo/search:
     post:
@@ -12427,6 +12647,163 @@ paths:
       summary: Load system log files
       tags:
       - Logs
+  /mcp/domain/bind:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpBindDomain'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Bind Domain for mcp server
+      tags:
+      - McpServer
+  /mcp/domain/get:
+    get:
+      consumes:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.McpBindDomainRes'
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Get bin Domain for mcp server
+      tags:
+      - McpServer
+  /mcp/domain/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpBindDomainUpdate'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Update bind Domain for mcp server
+      tags:
+      - McpServer
+  /mcp/search:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpServerSearch'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.McpServersRes'
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: List mcp servers
+      tags:
+      - McpServer
+  /mcp/server:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpServerCreate'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Create mcp server
+      tags:
+      - McpServer
+  /mcp/server/del:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpServerDelete'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Delete mcp server
+      tags:
+      - McpServer
+  /mcp/server/op:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpServerOperate'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Operate mcp server
+      tags:
+      - McpServer
+  /mcp/server/update:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/request.McpServerUpdate'
+      responses:
+        "200":
+          description: OK
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Update mcp server
+      tags:
+      - McpServer
   /openresty:
     get:
       responses:
@@ -13572,6 +13949,28 @@ paths:
         formatEN: update system port => [serverPort]
         formatZH: 修改系统端口 => [serverPort]
         paramKeys: []
+  /settings/proxy/test:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ProxyUpdate'
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      - Timestamp: []
+      summary: Test proxy connection with the given form values
+      tags:
+      - System Setting
   /settings/proxy/update:
     post:
       consumes:
@@ -13597,8 +13996,8 @@ paths:
         bodyKeys:
         - proxyUrl
         - proxyPort
-        formatEN: set proxy [proxyPort]:[proxyPort].
-        formatZH: 服务器代理配置 [proxyPort]:[proxyPort]
+        formatEN: set proxy [proxyUrl]:[proxyPort].
+        formatZH: 服务器代理配置 [proxyUrl]:[proxyPort]
         paramKeys: []
   /settings/search:
     post:
@@ -14285,40 +14684,6 @@ paths:
       summary: Page clam
       tags:
       - Clam
-  /toolbox/clam/status/update:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: request
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/dto.ClamUpdateStatus'
-      responses:
-        "200":
-          description: OK
-      security:
-      - ApiKeyAuth: []
-      - Timestamp: []
-      summary: Update clam status
-      tags:
-      - Clam
-      x-panel-log:
-        BeforeFunctions:
-        - db: clams
-          input_column: id
-          input_value: id
-          isList: false
-          output_column: name
-          output_value: name
-        bodyKeys:
-        - id
-        - status
-        formatEN: change the status of clam [name] to [status].
-        formatZH: 修改扫描规则 [name] 状态为 [status]
-        paramKeys: []
   /toolbox/clam/update:
     post:
       consumes:
