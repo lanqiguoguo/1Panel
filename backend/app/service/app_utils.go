@@ -1439,7 +1439,12 @@ func synAppInstall(containers map[string]types.Container, appInstall *model.AppI
 		}
 		appInstall.Status = constant.Error
 		appInstall.Message = buserr.WithName("ErrContainerNotFound", strings.Join(containerNames, ",")).Error()
-		_ = appInstallRepo.Save(context.Background(), appInstall)
+		if _, err := appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
+			"status":  appInstall.Status,
+			"message": appInstall.Message,
+		}); err != nil {
+			global.LOG.Errorf("update app [%s] status failed, err: %v", appInstall.Name, err)
+		}
 		return
 	}
 	notFoundNames := make([]string, 0)
@@ -1490,7 +1495,12 @@ func synAppInstall(containers map[string]types.Container, appInstall *model.AppI
 		appInstall.Message = msg
 		appInstall.Status = constant.UnHealthy
 	}
-	_ = appInstallRepo.Save(context.Background(), appInstall)
+	if _, err := appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
+		"status":  appInstall.Status,
+		"message": appInstall.Message,
+	}); err != nil {
+		global.LOG.Errorf("update app [%s] status failed, err: %v", appInstall.Name, err)
+	}
 }
 
 func getMajorVersion(version string) string {
