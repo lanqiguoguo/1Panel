@@ -132,6 +132,8 @@ const message = {
             copySuccess: 'Copied successfully',
             notSupportOperation: `This operation isn't supported`,
             requestTimeout: 'The request timed out, please try again later',
+            systemOpLost:
+                'System operation (upgrade/restore) status was lost, please refresh the page to check the result',
             infoTitle: 'Hint',
             notRecords: 'No execution record is generated for the current task',
             sureLogOut: 'Are you sure you want to log out?',

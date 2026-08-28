@@ -131,6 +131,7 @@ const message = {
             copySuccess: '复制成功',
             notSupportOperation: '不支持的当前操作',
             requestTimeout: '请求超时,请稍后重试',
+            systemOpLost: '系统操作（升级/恢复）状态已丢失，请刷新页面确认结果',
             infoTitle: '提示',
             notRecords: '当前任务未产生执行记录',
             sureLogOut: '您是否确认退出登录?',

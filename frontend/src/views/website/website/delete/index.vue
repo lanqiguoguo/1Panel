@@ -57,6 +57,7 @@ import { FormInstance } from 'element-plus';
 import { ref } from 'vue';
 import { Website } from '@/api/interface/website';
 import { MsgSuccess } from '@/utils/message';
+import { escapeHtml } from '@/utils/util';
 
 const key = 1;
 const open = ref(false);
@@ -95,7 +96,7 @@ const acceptParams = async (website: Website.WebsiteDTO) => {
     deleteInfo.value = '';
     deleteReq.value.id = website.id;
     websiteName.value = website.primaryDomain;
-    deleteHelper.value = i18n.global.t('website.deleteConfirmHelper', [website.primaryDomain]);
+    deleteHelper.value = i18n.global.t('website.deleteConfirmHelper', [escapeHtml(website.primaryDomain)]);
     type.value = website.type;
     open.value = true;
 };

@@ -649,3 +649,17 @@ export const encryptPassword = (password: string) => {
     const passwordCipher = aesEncrypt(password, aesKey);
     return `${keyCipher}:${passwordCipher}`;
 };
+
+/**
+ * escapeHtml 对字符串中的 HTML 特殊字符做实体转义。
+ * 用于把用户可控数据安全地插入到 v-html / i18n 插值模板中（如删除确认提示），
+ * 防止标签注入导致 XSS；模板自身的标签（如 <span style="color:red">）不受影响。
+ */
+export function escapeHtml(value: string): string {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}

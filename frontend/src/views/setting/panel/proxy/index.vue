@@ -45,7 +45,7 @@
                                     :placeholder="passwordPlaceholder"
                                 />
                             </el-form-item>
-                            <el-form-item v-if="form.proxyPasswd" prop="proxyPasswdKeep">
+                            <el-form-item v-if="form.hasStoredPass || form.proxyPasswd" prop="proxyPasswdKeep">
                                 <el-checkbox v-model="form.proxyPasswdKeep" true-value="true" false-value="false">
                                     {{ $t('setting.proxyRememberPwd') }}
                                 </el-checkbox>

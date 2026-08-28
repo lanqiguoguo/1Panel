@@ -49,6 +49,7 @@ import { App } from '@/api/interface/app';
 import { InstalledOp } from '@/api/modules/app';
 import i18n from '@/lang';
 import { MsgSuccess } from '@/utils/message';
+import { escapeHtml } from '@/utils/util';
 import bus from '../../bus';
 
 let deleteReq = ref({
@@ -84,7 +85,7 @@ const acceptParams = async (app: App.AppInstallDto) => {
     deleteInfo.value = '';
     deleteReq.value.installId = app.id;
     appType.value = app.appType;
-    deleteHelper.value = i18n.global.t('website.deleteConfirmHelper', [app.name]);
+    deleteHelper.value = i18n.global.t('website.deleteConfirmHelper', [escapeHtml(app.name)]);
     appInstallName.value = app.name;
     open.value = true;
 };

@@ -9,6 +9,7 @@ const GlobalStore = defineStore({
     state: (): GlobalState => ({
         isLoading: false,
         loadingText: '',
+        globalLoadingTimer: null,
         isLogin: false,
         entrance: '',
         language: '',

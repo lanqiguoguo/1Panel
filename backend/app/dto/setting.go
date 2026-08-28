@@ -7,6 +7,7 @@ type SettingInfo struct {
 	Email          string `json:"email"`
 	SystemIP       string `json:"systemIP"`
 	SystemVersion  string `json:"systemVersion"`
+	SystemStatus   string `json:"systemStatus"`
 	DockerSockPath string `json:"dockerSockPath"`
 	DeveloperMode  string `json:"developerMode"`
 

@@ -16,6 +16,7 @@ export interface ThemeConfigProp {
 export interface GlobalState {
     isLoading: boolean;
     loadingText: string;
+    globalLoadingTimer: ReturnType<typeof setInterval> | null;
     isLogin: boolean;
     entrance: string;
     language: string; // zh | en | tw
