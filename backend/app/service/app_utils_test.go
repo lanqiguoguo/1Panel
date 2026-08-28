@@ -114,6 +114,35 @@ func TestPersistInstallResult(t *testing.T) {
 	})
 }
 
+// TestUpResultMessage covers the message decision for the
+// getContainerNames-failure fallback in upApp: on the success path a stale
+// failure message kept in memory (it survives there for the retry path) must
+// never be written next to a Running status, while on the failure path the
+// real reason must survive even when getContainerNames also failed.
+func TestUpResultMessage(t *testing.T) {
+	t.Run("success + getNames failure clears the stale message", func(t *testing.T) {
+		got := upResultMessage(nil, errors.New("docker client unavailable"), "image pull timeout from a previous attempt")
+		if got != "" {
+			t.Errorf("message = %q, want empty (Running must not keep the old failure text)", got)
+		}
+	})
+
+	t.Run("failure + getNames failure keeps the real reason", func(t *testing.T) {
+		want := "pull access denied for foo"
+		got := upResultMessage(errors.New("exit status 1"), errors.New("no container"), want)
+		if got != want {
+			t.Errorf("message = %q, want the real failure reason %q", got, want)
+		}
+	})
+
+	t.Run("failure without in-memory message falls back to the getNames error", func(t *testing.T) {
+		got := upResultMessage(errors.New("exit status 1"), errors.New("docker inspect failed"), "")
+		if got != "docker inspect failed" {
+			t.Errorf("message = %q, want the getContainerNames error fallback %q", got, "docker inspect failed")
+		}
+	})
+}
+
 // TestSynAppInstallOnlyUpdatesStatusAndMessage is the regression test for the
 // P1-C race: synAppInstall used to Save the whole row, so a sync triggered
 // from the installed list could overwrite every column (container_name,

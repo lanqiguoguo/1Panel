@@ -288,17 +288,19 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 	}
 	oldHttpPort, oldHttpsPort := installed.HttpPort, installed.HttpsPort
 	var claimedHttp, claimedHttps int
+	var claimedHttpToken, claimedHttpsToken uint64
 	defer func() {
 		// checkPort registered the new ports above. Until they are persisted
 		// in the DB they must be released on any failure, otherwise a later
 		// install of the same port would be falsely rejected until the panel
-		// restarts.
+		// restarts. Only the tokens minted by this Update's own checkPort
+		// calls may drop the claims.
 		if err != nil {
-			if claimedHttp > 0 {
-				releaseAppPort(claimedHttp)
+			if claimedHttpToken != 0 {
+				releaseAppPort(claimedHttp, claimedHttpToken)
 			}
-			if claimedHttps > 0 {
-				releaseAppPort(claimedHttps)
+			if claimedHttpsToken != 0 {
+				releaseAppPort(claimedHttps, claimedHttpsToken)
 			}
 		}
 	}()
@@ -308,11 +310,11 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 		portN := int(math.Ceil(port.(float64)))
 		if portN != installed.HttpPort {
 			changePort = true
-			httpPort, err := checkPort("PANEL_APP_PORT_HTTP", req.Params)
+			httpPort, portToken, err := checkPort("PANEL_APP_PORT_HTTP", req.Params)
 			if err != nil {
 				return err
 			}
-			claimedHttp = httpPort
+			claimedHttp, claimedHttpToken = httpPort, portToken
 			installed.HttpPort = httpPort
 		}
 	}
@@ -320,11 +322,11 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 	if ok {
 		portN := int(math.Ceil(ports.(float64)))
 		if portN != installed.HttpsPort {
-			httpsPort, err := checkPort("PANEL_APP_PORT_HTTPS", req.Params)
+			httpsPort, portToken, err := checkPort("PANEL_APP_PORT_HTTPS", req.Params)
 			if err != nil {
 				return err
 			}
-			claimedHttps = httpsPort
+			claimedHttps, claimedHttpsToken = httpsPort, portToken
 			installed.HttpsPort = httpsPort
 		}
 	}
@@ -400,19 +402,25 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 		_ = fileOp.WriteFile(installed.GetComposePath(), strings.NewReader(backupDockerCompose), 0755)
 		return err
 	}
+	// The old ports are released while this install's DB row still holds them:
+	// until the Save below commits the new ports, checkPort's DB lookup rejects
+	// any concurrent claimant of the old ports, so a claim on them (if any) can
+	// only be this install's own or a stale leftover from an already-deleted
+	// install — both safe to drop unconditionally. Releasing only after the Save
+	// would instead risk deleting a fresh claim minted by another install of the
+	// old port in between.
+	if oldHttpPort > 0 && oldHttpPort != installed.HttpPort {
+		forceReleaseAppPort(oldHttpPort)
+	}
+	if oldHttpsPort > 0 && oldHttpsPort != installed.HttpsPort {
+		forceReleaseAppPort(oldHttpsPort)
+	}
 	installed.Status = constant.Running
 	if err := appInstallRepo.Save(context.Background(), &installed); err != nil {
 		return err
 	}
-	// The new ports are persisted; release the old ones so a later install of
-	// the old port passes checkPort again. The claims of the new ports are
-	// intentionally kept: the DB row now holds them.
-	if installed.HttpPort > 0 && installed.HttpPort != oldHttpPort {
-		releaseAppPort(oldHttpPort)
-	}
-	if installed.HttpsPort > 0 && installed.HttpsPort != oldHttpsPort {
-		releaseAppPort(oldHttpsPort)
-	}
+	// The claims of the new ports are intentionally kept: the DB row now
+	// holds them.
 
 	website, _ := websiteRepo.GetFirst(websiteRepo.WithAppInstallId(installed.ID))
 	if changePort && website.ID != 0 && website.Status == constant.Running {

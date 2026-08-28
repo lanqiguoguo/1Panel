@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -65,22 +66,43 @@ var (
 // itself, which is atomic via LoadOrStore. The table is in-memory only: a
 // panel restart clears it, and the DB rows of persisted installs are still
 // checked by checkPort, so a restart never leaves the table stale.
-var registeredPorts sync.Map // key: int port -> struct{}{}
+// Each claim stores an owner token so a release can only drop the claim the
+// releasing flow actually owns; forceReleaseAppPort is the sanctioned
+// unconditional cleanup for end-of-life paths covered by the DB invariant.
+var registeredPorts sync.Map // key: int port -> owner token (uint64)
+
+// appPortClaimSeq mints unique owner tokens for registeredPorts claims.
+var appPortClaimSeq atomic.Uint64
 
 // tryRegisterAppPort atomically claims port for an in-flight app install. It
-// reports false when the port was already claimed.
-func tryRegisterAppPort(port int) bool {
-	_, loaded := registeredPorts.LoadOrStore(port, struct{}{})
-	return !loaded
+// returns the claim token (needed by releaseAppPort) and reports false when
+// the port was already claimed.
+func tryRegisterAppPort(port int) (uint64, bool) {
+	token := appPortClaimSeq.Add(1)
+	if _, loaded := registeredPorts.LoadOrStore(port, token); loaded {
+		return 0, false
+	}
+	return token, true
 }
 
-// releaseAppPort frees a port previously claimed by tryRegisterAppPort. It is
-// idempotent and safe to call for ports that were never registered.
-func releaseAppPort(port int) {
+// releaseAppPort frees a port previously claimed by tryRegisterAppPort. It
+// only deletes the claim when token still owns it, so a stale token or a
+// token minted by a different install flow can never drop someone else's
+// claim; mismatching releases are silent no-ops.
+func releaseAppPort(port int, token uint64) {
+	registeredPorts.CompareAndDelete(port, token)
+}
+
+// forceReleaseAppPort unconditionally drops the claim on port. Only for paths
+// that delete the app_installs row justifying the claim: while that row
+// existed, checkPort rejected any concurrent claimant of the port, so the
+// claim (if any) belongs to the deleted install or is stale from an
+// already-deleted install — both safe to discard.
+func forceReleaseAppPort(port int) {
 	registeredPorts.Delete(port)
 }
 
-func checkPort(key string, params map[string]interface{}) (int, error) {
+func checkPort(key string, params map[string]interface{}) (int, uint64, error) {
 	port, ok := params[key]
 	if ok {
 		portN := 0
@@ -89,7 +111,7 @@ func checkPort(key string, params map[string]interface{}) (int, error) {
 		case string:
 			portN, err = strconv.Atoi(p)
 			if err != nil {
-				return portN, nil
+				return portN, 0, nil
 			}
 		case float64:
 			portN = int(math.Ceil(p))
@@ -103,17 +125,20 @@ func checkPort(key string, params map[string]interface{}) (int, error) {
 			for _, install := range oldInstalled {
 				apps = append(apps, install.App.Name)
 			}
-			return portN, buserr.WithMap(constant.ErrPortInOtherApp, map[string]interface{}{"port": portN, "apps": apps}, nil)
+			return portN, 0, buserr.WithMap(constant.ErrPortInOtherApp, map[string]interface{}{"port": portN, "apps": apps}, nil)
 		}
 		if common.ScanPort(portN) {
-			return portN, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
+			return portN, 0, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
 		}
-		if !tryRegisterAppPort(portN) {
-			return portN, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
+		token, ok := tryRegisterAppPort(portN)
+		if !ok {
+			return portN, 0, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
 		}
-		return portN, nil
+		// The token must reach the flow that will release the claim on
+		// failure; every error return below leaves no claim behind.
+		return portN, token, nil
 	}
-	return 0, nil
+	return 0, 0, nil
 }
 
 func checkPortExist(port int) error {
@@ -393,11 +418,14 @@ func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete b
 							_ = op.DeleteDir(websiteAppInstall.GetPath())
 						}()
 						_ = appInstallRepo.Delete(ctx, websiteAppInstall)
+						// Force release: the install row justifying the claim is
+						// deleted in this transaction, so any claim on the port
+						// belongs to the deleted install (see forceReleaseAppPort).
 						if websiteAppInstall.HttpPort > 0 {
-							releaseAppPort(websiteAppInstall.HttpPort)
+							forceReleaseAppPort(websiteAppInstall.HttpPort)
 						}
 						if websiteAppInstall.HttpsPort > 0 {
-							releaseAppPort(websiteAppInstall.HttpsPort)
+							forceReleaseAppPort(websiteAppInstall.HttpsPort)
 						}
 					}
 				}
@@ -428,11 +456,14 @@ func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete b
 	if commitErr := tx.Commit().Error; commitErr != nil {
 		return fmt.Errorf("commit app install deletion transaction failed: %w", commitErr)
 	}
+	// Force release: the install row justifying the claims was deleted above,
+	// so any claim on these ports belongs to this very install (see
+	// forceReleaseAppPort); no token is needed.
 	if install.HttpPort > 0 {
-		releaseAppPort(install.HttpPort)
+		forceReleaseAppPort(install.HttpPort)
 	}
 	if install.HttpsPort > 0 {
-		releaseAppPort(install.HttpsPort)
+		forceReleaseAppPort(install.HttpsPort)
 	}
 	return nil
 }
@@ -1062,19 +1093,34 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 	}
 	containerNames, err := getContainerNames(*appInstall)
 	if err != nil {
-		message := appInstall.Message
-		if message == "" {
-			message = err.Error()
-		}
-		if _, err := appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
+		// getContainerNames itself failing is worth a log: the fallback branch
+		// below otherwise hides why the container names are unknown.
+		global.LOG.Errorf("get containers of app [%s] failed, err: %v", appInstall.Name, err)
+		if _, uerr := appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
 			"status":  appInstall.Status,
-			"message": message,
-		}); err != nil {
-			global.LOG.Errorf("update app [%s] install result failed, err: %v", appInstall.Name, err)
+			"message": upResultMessage(upErr, err, appInstall.Message),
+		}); uerr != nil {
+			global.LOG.Errorf("update app [%s] install result failed, err: %v", appInstall.Name, uerr)
 		}
 		return
 	}
 	persistInstallResult(appInstall, upErr, containerNames)
+}
+
+// upResultMessage decides the message persisted when container names could not
+// be resolved: a failed up keeps its real failure reason (the in-memory
+// message, falling back to the getContainerNames error), while a successful up
+// must end with an empty message — otherwise a stale failure text from a
+// previous attempt (kept in memory for the retry case) is shown next to a
+// Running status.
+func upResultMessage(upErr, getNamesErr error, inMemoryMessage string) string {
+	if upErr != nil {
+		if inMemoryMessage != "" {
+			return inMemoryMessage
+		}
+		return getNamesErr.Error()
+	}
+	return ""
 }
 
 // persistInstallResult writes the up result back to the install row: the
