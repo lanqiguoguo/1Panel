@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -319,10 +320,12 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 		return
 	}
 	var (
-		httpPort  int
-		httpsPort int
-		appDetail model.AppDetail
-		app       model.App
+		httpPort       int
+		httpsPort      int
+		httpPortToken  uint64
+		httpsPortToken uint64
+		appDetail      model.AppDetail
+		app            model.App
 	)
 	appDetail, err = appDetailRepo.GetFirst(commonRepo.WithByID(req.AppDetailId))
 	if err != nil {
@@ -343,12 +346,13 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 			continue
 		}
 		var port int
-		if port, err = checkPort(key, req.Params); err == nil {
+		var portToken uint64
+		if port, portToken, err = checkPort(key, req.Params); err == nil {
 			if key == "PANEL_APP_PORT_HTTP" {
-				httpPort = port
+				httpPort, httpPortToken = port, portToken
 			}
 			if key == "PANEL_APP_PORT_HTTPS" {
-				httpsPort = port
+				httpsPort, httpsPortToken = port, portToken
 			}
 		} else {
 			return
@@ -371,14 +375,15 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 	}
 	// The ports registered by checkPort above only become a durable claim once
 	// the app_installs row exists. On any failure before Create the claim must
-	// be released so a later install of the same port is not rejected.
+	// be released so a later install of the same port is not rejected; only the
+	// tokens minted by this install's own checkPort calls may drop the claims.
 	defer func() {
 		if err != nil {
-			if httpPort > 0 {
-				releaseAppPort(httpPort)
+			if httpPortToken != 0 {
+				releaseAppPort(httpPort, httpPortToken)
 			}
-			if httpsPort > 0 {
-				releaseAppPort(httpsPort)
+			if httpsPortToken != 0 {
+				releaseAppPort(httpsPort, httpsPortToken)
 			}
 		}
 	}()
@@ -498,12 +503,13 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 				// The install row (status UpErr) keeps the port claimed in the
 				// DB, so the in-memory claim is released here to match; the DB
 				// lookup in checkPort still rejects a second install of the
-				// same port until the failed install is deleted.
-				if httpPort > 0 {
-					releaseAppPort(httpPort)
+				// same port until the failed install is deleted. Only the
+				// tokens minted by this install's checkPort calls are valid.
+				if httpPortToken != 0 {
+					releaseAppPort(httpPort, httpPortToken)
 				}
-				if httpsPort > 0 {
-					releaseAppPort(httpsPort)
+				if httpsPortToken != 0 {
+					releaseAppPort(httpsPort, httpsPortToken)
 				}
 			}
 		}()
@@ -855,7 +861,32 @@ var InitTypes = map[string]struct{}{
 // the lock and returns immediately instead of entering the transaction block.
 var appStoreSyncMu sync.Mutex
 
+// setAppStoreSyncStatus writes the AppStoreSyncStatus flag. The write is best
+// effort — a failure must not abort a running synchronization — but it is
+// never silent: the flag is the single-flight gate for SyncAppListFromRemote
+// and the stuck-sync indicator in GetAppUpdate, so an unwritten Syncing
+// degrades mutual exclusion and an unwritten SyncFailed makes every later
+// sync report "already syncing" until the panel restarts.
+func setAppStoreSyncStatus(settingService ISettingService, status string) {
+	if uerr := settingService.Update("AppStoreSyncStatus", status); uerr != nil {
+		global.LOG.Errorf("set AppStoreSyncStatus to %s failed, later syncs may not be gated correctly, err: %v", status, uerr)
+	}
+}
+
 func (a AppService) SyncAppListFromRemote() (err error) {
+	// The sync is launched in a bare goroutine by the API layer (no gin
+	// recovery there) and from cron jobs: an escaping panic would crash the
+	// whole process and, even where it did not, would leave AppStoreSyncStatus
+	// stuck on Syncing forever. Recover here, persist the failure flag (best
+	// effort, see setAppStoreSyncStatus) and surface the panic as a regular
+	// error instead.
+	defer func() {
+		if r := recover(); r != nil {
+			global.LOG.Errorf("panic during App Store synchronization: %v\n%s", r, debug.Stack())
+			setAppStoreSyncStatus(NewISettingService(), constant.SyncFailed)
+			err = fmt.Errorf("app store synchronization panicked: %v", r)
+		}
+	}()
 	// Acquire the lock before the initial status check: GetAppUpdate only
 	// reports Syncing based on a previous DB read, which is not atomic, so
 	// serializing here is what guarantees only one sync runs at a time.
@@ -906,8 +937,21 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		appStoreSyncMu.Unlock()
 		return nil
 	}
-	_ = settingService.Update("AppStoreSyncStatus", constant.Syncing)
+	// Best-effort claim write (see setAppStoreSyncStatus): a failure must not
+	// abort the sync, but it silently degrades the single-flight gate, so it
+	// has to show up in the logs.
+	setAppStoreSyncStatus(settingService, constant.Syncing)
 	appStoreSyncMu.Unlock()
+
+	// Registered directly after the claim so every failure from here on —
+	// including getAppList below — flips the flag off Syncing; a missing
+	// SyncFailed write would wedge all later syncs behind "already syncing".
+	defer func() {
+		if err != nil {
+			setAppStoreSyncStatus(settingService, constant.SyncFailed)
+			global.LOG.Errorf("App Store synchronization failed %v", err)
+		}
+	}()
 
 	list := &dto.AppList{}
 	if updateRes.AppList == nil {
@@ -918,13 +962,6 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 	} else {
 		list = updateRes.AppList
 	}
-
-	defer func() {
-		if err != nil {
-			_ = settingService.Update("AppStoreSyncStatus", constant.SyncFailed)
-			global.LOG.Errorf("App Store synchronization failed %v", err)
-		}
-	}()
 
 	setting, err = settingService.GetSettingInfo()
 	if err != nil {

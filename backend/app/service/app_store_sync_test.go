@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,22 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
+
+// captureLogWriter records log output; writes containing trigger panic, which
+// simulates a broken log sink so the panic escapes through the sync flow.
+type captureLogWriter struct {
+	buf     bytes.Buffer
+	trigger string
+	panics  int
+}
+
+func (w *captureLogWriter) Write(p []byte) (int, error) {
+	if w.trigger != "" && strings.Contains(string(p), w.trigger) {
+		w.panics++
+		panic("injected log write failure")
+	}
+	return w.buf.Write(p)
+}
 
 // setupAppStoreSyncTest prepares an in-memory sqlite DB with a seeded settings
 // table (mirroring setupSettingUpdateTest) so that GetSettingInfo/Update work
@@ -94,5 +112,75 @@ func TestSyncAppListFromRemoteSingleFlight(t *testing.T) {
 	}
 	if setting.AppStoreSyncStatus != constant.Syncing {
 		t.Fatalf("AppStoreSyncStatus = %s, want %s: the call entered the sync body", setting.AppStoreSyncStatus, constant.Syncing)
+	}
+}
+
+// TestSetAppStoreSyncStatusPersistsAndLogs covers the status-flag write helper:
+// a successful write must persist the flag, and a failed write must neither
+// panic nor vanish — the flag gates the single-flight check of
+// SyncAppListFromRemote and the stuck-sync indicator in GetAppUpdate, so a
+// failed write silently degrades both and must therefore be logged.
+func TestSetAppStoreSyncStatusPersistsAndLogs(t *testing.T) {
+	setupAppStoreSyncTest(t)
+	capture := &captureLogWriter{}
+	logger := logrus.New()
+	logger.SetOutput(capture)
+	logger.SetLevel(logrus.DebugLevel)
+	global.LOG = logger
+
+	svc := NewISettingService()
+	setAppStoreSyncStatus(svc, constant.SyncFailed)
+	setting, err := svc.GetSettingInfo()
+	if err != nil {
+		t.Fatalf("read settings failed: %v", err)
+	}
+	if setting.AppStoreSyncStatus != constant.SyncFailed {
+		t.Fatalf("AppStoreSyncStatus = %s, want %s after a successful write", setting.AppStoreSyncStatus, constant.SyncFailed)
+	}
+
+	// Break the settings table: the status write now fails. The helper must
+	// surface the failure in the logs instead of swallowing it (and must not
+	// panic, since the sync keeps running best-effort).
+	if err := global.DB.Migrator().DropTable(&model.Setting{}); err != nil {
+		t.Fatalf("drop settings table failed: %v", err)
+	}
+	setAppStoreSyncStatus(svc, constant.Syncing)
+	if !strings.Contains(capture.buf.String(), "may not be gated correctly") {
+		t.Errorf("failed status write was not logged, log output: %q", capture.buf.String())
+	}
+}
+
+// TestSyncAppListFromRemoteRecoversPanic verifies the recover added to
+// SyncAppListFromRemote: the sync runs in a bare goroutine started by the API
+// layer (no gin recovery), so an escaping panic would crash the process and
+// leave AppStoreSyncStatus stuck on Syncing forever. The test injects a panic
+// via a log sink that fails on the sync's first log line and asserts that the
+// panic is converted into a regular error, the failure flag is persisted and
+// the panic (with stack) is logged.
+func TestSyncAppListFromRemoteRecoversPanic(t *testing.T) {
+	setupAppStoreSyncTest(t)
+	capture := &captureLogWriter{trigger: "Starting synchronization with App Store"}
+	logger := logrus.New()
+	logger.SetOutput(capture)
+	logger.SetLevel(logrus.DebugLevel)
+	global.LOG = logger
+
+	err := (AppService{}).SyncAppListFromRemote()
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("err = %v, want the wrapped panic error", err)
+	}
+	if capture.panics == 0 {
+		t.Fatal("the injected log sink failure never panicked: the recover path was not exercised")
+	}
+	if !strings.Contains(capture.buf.String(), "panic during App Store synchronization") {
+		t.Errorf("the panic was not logged, log output: %q", capture.buf.String())
+	}
+
+	setting, err := NewISettingService().GetSettingInfo()
+	if err != nil {
+		t.Fatalf("read settings failed: %v", err)
+	}
+	if setting.AppStoreSyncStatus != constant.SyncFailed {
+		t.Fatalf("AppStoreSyncStatus = %s, want %s: a panic must not leave the flag stuck on Syncing", setting.AppStoreSyncStatus, constant.SyncFailed)
 	}
 }
