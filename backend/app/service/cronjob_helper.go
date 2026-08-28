@@ -76,7 +76,17 @@ func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 				if len(cronjob.Command) != 0 {
 					command = cronjob.Command
 				}
-				script = fmt.Sprintf("docker exec %s %s -c \"%s\"", cronjob.ContainerName, command, strings.ReplaceAll(cronjob.Script, "\"", "\\\""))
+				// Feed the script to the in-container shell over stdin
+				// (docker exec -i) instead of interpolating it into a
+				// `docker exec <c> <cmd> -c "..."` string: the old form let
+				// the HOST shell expand $(), backticks and $VAR before docker
+				// ever saw the script, so container scripts could run (partly)
+				// on the host.
+				err = u.handleShellWithStdin(cronjob.Type, cronjob.Name,
+					fmt.Sprintf("docker exec -i %s %s", cronjob.ContainerName, command),
+					cronjob.Script, record.Records)
+				u.removeExpiredLog(*cronjob)
+				break
 			}
 			err = u.handleShell(cronjob.Type, cronjob.Name, script, record.Records)
 			u.removeExpiredLog(*cronjob)
@@ -143,6 +153,22 @@ func (u *CronjobService) handleShell(cronType, cornName, script, logPath string)
 		}
 	}
 	if err := cmd.ExecCronjobWithTimeOut(script, handleDir, logPath, 24*time.Hour); err != nil {
+		return err
+	}
+	return nil
+}
+
+// handleShellWithStdin runs cmdStr the same way handleShell does, but passes
+// stdinContent to the child over stdin (used for docker exec -i so the script
+// is executed by the in-container shell and never parsed by the host shell).
+func (u *CronjobService) handleShellWithStdin(cronType, cornName, cmdStr, stdinContent, logPath string) error {
+	handleDir := fmt.Sprintf("%s/task/%s/%s", constant.DataDir, cronType, cornName)
+	if _, err := os.Stat(handleDir); err != nil && os.IsNotExist(err) {
+		if err = os.MkdirAll(handleDir, os.ModePerm); err != nil {
+			return err
+		}
+	}
+	if err := cmd.ExecCronjobWithTimeOutStdin(cmdStr, stdinContent, handleDir, logPath, 24*time.Hour); err != nil {
 		return err
 	}
 	return nil

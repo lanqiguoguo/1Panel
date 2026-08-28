@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"encoding/json"
+	"errors"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -513,6 +514,17 @@ var UpdateOnedrive = &gormigrate.Migration{
 var AddProxyDockerSync = &gormigrate.Migration{
 	ID: "20250828-add-proxy-docker-sync",
 	Migrate: func(tx *gorm.DB) error {
+		// Idempotent insert: the settings table has no unique constraint on
+		// key, and gormigrate only protects this migration while its ID stays
+		// recorded in the migrations table. If that record is lost or the
+		// migration is replayed manually, a bare Create would insert a second
+		// ProxyDockerSync row; skip when one already exists.
+		var existing model.Setting
+		if err := tx.Where("key = ?", "ProxyDockerSync").First(&existing).Error; err == nil {
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
 		if err := tx.Create(&model.Setting{Key: "ProxyDockerSync", Value: "false"}).Error; err != nil {
 			return err
 		}

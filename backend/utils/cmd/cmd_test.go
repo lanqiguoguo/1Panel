@@ -93,6 +93,58 @@ func TestExecCronjobWithTimeOutNormal(t *testing.T) {
 	}
 }
 
+// TestExecCronjobWithTimeOutStdinPipesContent verifies the stdin-aware
+// sibling byte-for-byte: stdinContent must reach the child process
+// unmodified. bash -c only parses its own argument string; the stdin data is
+// read by the child program (here: cat) without any shell word-splitting,
+// $()/backtick/$VAR expansion or quote processing on the way.
+func TestExecCronjobWithTimeOutStdinPipesContent(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "out.log")
+	script := "echo $(hostname) `echo backtick` \"quoted\" $HOME\nline2\n"
+	if err := ExecCronjobWithTimeOutStdin("cat", script, t.TempDir(), outPath, 5*time.Second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	if got := string(data); got != script {
+		t.Fatalf("stdin content was altered in transit:\n got %q\nwant %q", got, script)
+	}
+}
+
+// TestExecCronjobWithTimeOutStdinExpandsInsideTheShell verifies the script is
+// executed by the child shell (which expands $(...) on purpose), not by the
+// host bash -c wrapper that only launches it.
+func TestExecCronjobWithTimeOutStdinExpandsInsideTheShell(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "out.log")
+	if err := ExecCronjobWithTimeOutStdin("sh", "echo x-$(printf 42)", t.TempDir(), outPath, 5*time.Second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "x-42" {
+		t.Fatalf("unexpected output: %q, want %q", string(data), "x-42")
+	}
+}
+
+// TestExecCronjobWithTimeOutStdinEmptyInput runs with an empty stdin payload.
+func TestExecCronjobWithTimeOutStdinEmptyInput(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "out.log")
+	if err := ExecCronjobWithTimeOutStdin("sh", "", t.TempDir(), outPath, 5*time.Second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read out file: %v", err)
+	}
+	if len(strings.TrimSpace(string(data))) != 0 {
+		t.Fatalf("expected no output for an empty stdin script, got %q", string(data))
+	}
+}
+
 func TestExecScriptNormal(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "test.sh")

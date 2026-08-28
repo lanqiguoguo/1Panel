@@ -126,6 +126,47 @@ func ExecCronjobWithTimeOut(cmdStr, workdir, outPath string, timeout time.Durati
 	return nil
 }
 
+// ExecCronjobWithTimeOutStdin is the stdin-aware sibling of
+// ExecCronjobWithTimeOut: cmdStr is executed the same way, but stdinContent is
+// piped to the child process instead of being interpolated into cmdStr.
+//
+// It exists for the container-exec cronjob path: the script content must reach
+// the in-container shell untouched, and the host shell must never parse it
+// (interpolating it into `docker exec ... -c "..."` lets the host shell expand
+// $(), backticks and $VAR before docker ever sees the script).
+func ExecCronjobWithTimeOutStdin(cmdStr, stdinContent, workdir, outPath string, timeout time.Duration) error {
+	file, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	cmd := exec.Command("bash", "-c", cmdStr)
+	setSysProcAttr(cmd)
+	cmd.Dir = workdir
+	cmd.Stdout = file
+	cmd.Stderr = file
+	cmd.Stdin = strings.NewReader(stdinContent)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	after := time.After(timeout)
+	select {
+	case <-after:
+		killProcessGroup(cmd)
+		return buserr.New(constant.ErrCmdTimeout)
+	case err := <-done:
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func Execf(cmdStr string, a ...interface{}) (string, error) {
 	cmd := exec.Command("bash", "-c", fmt.Sprintf(cmdStr, a...))
 	var stdout, stderr bytes.Buffer
