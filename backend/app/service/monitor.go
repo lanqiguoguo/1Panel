@@ -22,10 +22,14 @@ type MonitorService struct {
 	NetIO  chan ([]net.IOCountersStat)
 }
 
-// monitorMu guards monitorCancel and global.MonitorCronID so that the
-// monitor start/stop state machine (StartMonitor, stopMonitor, startMonitor,
-// and the MonitorStatus/MonitorInterval branches in setting.go) is free of
-// data races even when the setting is toggled concurrently.
+// monitorMu guards monitorCancel and global.MonitorCronID and must be held for
+// every mutation of either field. It upholds the state-machine invariant that,
+// observed while it is held, a monitor is either fully running (both fields
+// set, and set together as one generation) or fully stopped (both cleared) —
+// never half of each. All start/stop paths (StartMonitor, stopMonitor and the
+// MonitorStatus/MonitorInterval branches in setting.go) rely on this pairing,
+// so they stay correct and race-free even when settings are toggled
+// concurrently.
 var (
 	monitorMu     sync.Mutex
 	monitorCancel context.CancelFunc
@@ -100,6 +104,16 @@ func (m *MonitorService) loadNetIO() {
 
 func (m *MonitorService) saveIODataToDB(ctx context.Context, interval float64) {
 	defer close(m.DiskIO)
+	// The monitor may have been stopped between the cron publication and the
+	// start of this goroutine, so the context can already be cancelled here.
+	// Check before entering the loop: the select below chooses randomly among
+	// ready cases, and the channel holds the first buffered sample, so without
+	// this pre-check a stopped monitor could still write one round of data.
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -159,6 +173,14 @@ func (m *MonitorService) saveIODataToDB(ctx context.Context, interval float64) {
 
 func (m *MonitorService) saveNetDataToDB(ctx context.Context, interval float64) {
 	defer close(m.NetIO)
+	// Same pre-cancel check as saveIODataToDB: a context that is already done
+	// at goroutine start must lead to an immediate exit, not to one final
+	// sample being written for a stopped monitor.
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -196,21 +218,23 @@ func (m *MonitorService) saveNetDataToDB(ctx context.Context, interval float64) 
 	}
 }
 
-// stopMonitor atomically tears down a running monitor: it cancels the
-// collection context and removes the cron job. Both are only touched while
-// holding monitorMu, and each is guarded by a nil/zero check, so calling it
-// when no monitor is running (or twice concurrently) is a safe no-op. A cron
-// entry id of 0 can therefore never reach global.Cron.Remove, and a nil
-// monitorCancel is never invoked.
+// stopMonitor tears the running monitor down inside a single monitorMu
+// critical section: it cancels the collection context and removes the cron
+// job. The guarded internals make it a safe no-op when no monitor is running,
+// so it may be called concurrently with StartMonitor (a disable racing an
+// enable simply orders itself around the atomic publication) and with itself.
 func stopMonitor() {
 	monitorMu.Lock()
 	defer monitorMu.Unlock()
 	stopMonitorLocked()
 }
 
-// stopMonitorLocked is the monitorMu-held part of stopMonitor. It is also
-// used inside startMonitor so that the replace path (stop + register) is a
-// single atomic operation with no window in between.
+// stopMonitorLocked is the monitorMu-held teardown shared by both state
+// transitions: the stop path (stopMonitor) and the replace path (startMonitor)
+// both clear the current generation through it before anything else is
+// published. The guarded clears mean a stopped monitor stays stopped (no
+// Remove(0), no nil-cancel call) and the cancel/id pair is always cleared
+// together.
 func stopMonitorLocked() {
 	if monitorCancel != nil {
 		monitorCancel()
@@ -222,22 +246,34 @@ func stopMonitorLocked() {
 	}
 }
 
-// startMonitor registers the monitor cron job and atomically publishes its
-// entry id. It stops any previously running monitor first, so a repeated call
-// never leaves a stale job behind. The previous time.AfterFunc deferred
-// registration is removed: registering synchronously here eliminates the
-// delay window in which a second StartMonitor(true, ...) could race an
-// earlier callback that would overwrite global.MonitorCronID afterwards.
-func startMonitor(service IMonitorService, interval string) error {
+// startMonitor atomically replaces the running monitor with a new generation:
+// inside one monitorMu critical section it registers the new cron job, tears
+// the previous generation down and publishes global.MonitorCronID and
+// monitorCancel together. Publishing the pair under one lock is what keeps the
+// state-machine invariant true — while monitorMu is held, a running monitor
+// always has exactly its matching cancel and a stopped one has neither — so a
+// concurrent stopMonitor can never observe half a generation and leave an
+// uncancelled context whose collector goroutines keep writing to the monitor
+// DB forever. AddJob runs first so a malformed spec fails without stopping the
+// currently running monitor; on any other outcome the old generation is torn
+// down before the new one is published.
+//
+// global.Cron.AddJob is called while monitorMu is held on purpose: robfig/cron
+// serializes AddJob/Remove on its own mutex and never invokes a job inline
+// (jobs run in their own goroutines), and the monitor job body (Run) does not
+// take monitorMu, so no lock cycle is possible.
+func startMonitor(service IMonitorService, interval string, cancel context.CancelFunc) error {
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+
 	monitorID, err := global.Cron.AddJob(fmt.Sprintf("@every %sm", interval), service)
 	if err != nil {
 		return err
 	}
 
-	monitorMu.Lock()
-	defer monitorMu.Unlock()
 	stopMonitorLocked()
 	global.MonitorCronID = monitorID
+	monitorCancel = cancel
 
 	return nil
 }
@@ -253,14 +289,13 @@ func StartMonitor(removeBefore bool, interval string) error {
 
 	service := NewIMonitorService()
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := startMonitor(service, interval); err != nil {
+	// startMonitor publishes the cron id and the cancel as one generation; a
+	// concurrent stop that lands afterwards wins, and the goroutines started
+	// below then see an already-cancelled context and exit immediately.
+	if err := startMonitor(service, interval, cancel); err != nil {
 		cancel()
 		return err
 	}
-
-	monitorMu.Lock()
-	monitorCancel = cancel
-	monitorMu.Unlock()
 
 	service.Run()
 

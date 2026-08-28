@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -218,5 +221,142 @@ func TestMonitorCronIDReadWriteNoRace(t *testing.T) {
 	wg.Wait()
 	if done.Load() == 0 {
 		t.Log("no read-modify cycles observed (all readers overlapped writers)")
+	}
+}
+
+// TestMonitorStartStopRaceInvariant hammers the start/stop state machine from
+// many goroutines and asserts the monitorMu publication invariant directly:
+// observed while monitorMu is held, (monitorCancel != nil) must always equal
+// (global.MonitorCronID != 0), i.e. a monitor is never half-published. The
+// regression this guards against is a start whose cron-id publication and
+// cancel publication happen in two separate critical sections: a concurrent
+// stop can then slip in between, see the old (nil/zero) pair, tear the cron
+// job down, and leave the start to write the cancel back and spawn collector
+// goroutines whose context is never cancelled again.
+//
+// A checker goroutine samples the pair under monitorMu continuously while
+// other goroutines alternate atomic replace-starts (startMonitor with fresh
+// contexts, different intervals) and stops; StartMonitor(false/true, ...) runs
+// concurrently on top to cover the full path including the collector
+// goroutines. Afterwards the test asserts a clean teardown (no cron entry,
+// zero id, nil cancel) and that every collector goroutine exited, by polling
+// runtime.NumGoroutine back to its baseline instead of a fixed sleep.
+func TestMonitorStartStopRaceInvariant(t *testing.T) {
+	setupMonitorConcurrentTest(t)
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	intervals := []string{"1", "2", "5"}
+	var violations atomic.Int64
+	var startErrs atomic.Int64
+
+	var hammer sync.WaitGroup
+	stopCh := make(chan struct{})
+
+	// Invariant checker: samples the published pair under monitorMu while the
+	// hammer runs. Any split publication window shows up here.
+	var checker sync.WaitGroup
+	checker.Add(1)
+	go func() {
+		defer checker.Done()
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+			monitorMu.Lock()
+			cancelLive := monitorCancel != nil
+			idLive := global.MonitorCronID != 0
+			monitorMu.Unlock()
+			if cancelLive != idLive {
+				violations.Add(1)
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+	}()
+
+	// State-machine hammerers: alternate atomic replace-starts (each with a
+	// fresh context, different intervals) and stops. These go through
+	// startMonitor/stopMonitor directly so thousands of publications can be
+	// exercised without paying StartMonitor's multi-second initial sample.
+	for i := 0; i < 6; i++ {
+		hammer.Add(1)
+		go func(seed int) {
+			defer hammer.Done()
+			for j := 0; j < 150; j++ {
+				if (seed+j)%3 == 2 {
+					stopMonitor()
+					continue
+				}
+				// The context itself is never used here (this layer spawns no
+				// collectors); only the cancel it produces is published.
+				_, cancel := context.WithCancel(context.Background())
+				interval := intervals[(seed+j)%len(intervals)]
+				if err := startMonitor(NewIMonitorService(), interval, cancel); err != nil {
+					cancel()
+					startErrs.Add(1)
+				}
+			}
+		}(i)
+	}
+
+	// Full-path layer: the exported API with enable/disable semantics; these
+	// spawn real collector goroutines whose teardown is asserted below.
+	for i := 0; i < 3; i++ {
+		hammer.Add(1)
+		go func(i int) {
+			defer hammer.Done()
+			removeBefore := i%2 == 0
+			interval := intervals[i%len(intervals)]
+			if err := StartMonitor(removeBefore, interval); err != nil {
+				t.Errorf("StartMonitor(%v, %q) failed: %v", removeBefore, interval, err)
+			}
+		}(i)
+	}
+
+	hammer.Wait()
+	close(stopCh)
+	checker.Wait()
+
+	if startErrs.Load() != 0 {
+		t.Errorf("startMonitor failed %d times with valid intervals", startErrs.Load())
+	}
+	if violations.Load() != 0 {
+		t.Errorf("invariant (monitorCancel != nil) == (MonitorCronID != 0) violated %d times during hammering", violations.Load())
+	}
+
+	// Whatever operation landed last, the quiescent state must be consistent.
+	monitorMu.Lock()
+	cancelLive := monitorCancel != nil
+	idLive := global.MonitorCronID != 0
+	monitorMu.Unlock()
+	if cancelLive != idLive {
+		t.Fatalf("after hammer: monitorCancel live = %v, MonitorCronID live = %v, want equal", cancelLive, idLive)
+	}
+
+	// A stop must then tear the whole generation down together.
+	stopMonitor()
+	stopMonitor()
+
+	monitorMu.Lock()
+	cancelLive = monitorCancel != nil
+	idLive = global.MonitorCronID != 0
+	monitorMu.Unlock()
+	entries := len(global.Cron.Entries())
+	if cancelLive || idLive || entries != 0 {
+		t.Fatalf("after stop: monitorCancel live = %v, MonitorCronID live = %v, entries = %d, want false/false/0",
+			cancelLive, idLive, entries)
+	}
+
+	// All collector goroutines must have exited: poll until the count
+	// converges back to the pre-hammer baseline (bounded, no fixed sleep).
+	deadline := time.Now().Add(10 * time.Second)
+	for runtime.NumGoroutine() > before {
+		if time.Now().After(deadline) {
+			t.Fatalf("collector goroutines leaked: baseline = %d, still %d running after 10s", before, runtime.NumGoroutine())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
