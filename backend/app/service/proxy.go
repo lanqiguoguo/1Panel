@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -112,6 +113,23 @@ func resolveProxyPassword(req dto.ProxyUpdate) string {
 	return pass
 }
 
+// maskProxyCredentials replaces any proxy userinfo ("user:pass@") embedded in
+// an error message with "***@". *url.Error renders the request/proxy URL in
+// some failure paths, and buildProxyURL injects the credentials via
+// url.UserPassword while resolveProxyPassword may bring in the decrypted
+// password stored in the settings table — so no error may be returned to the
+// caller unmasked.
+func maskProxyCredentials(err error, u *url.URL) error {
+	if err == nil || u == nil || u.User == nil {
+		return err
+	}
+	cred := u.User.String() + "@"
+	if !strings.Contains(err.Error(), cred) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), cred, "***@"))
+}
+
 // TestProxy 用表单当前值建立临时代理客户端访问固定目标，返回耗时描述。
 func (s *SettingService) TestProxy(req dto.ProxyUpdate) (string, error) {
 	req.ProxyPasswd = resolveProxyPassword(req)
@@ -129,7 +147,7 @@ func (s *SettingService) TestProxy(req dto.ProxyUpdate) (string, error) {
 	start := time.Now()
 	resp, err := client.Head(proxyTestTarget)
 	if err != nil {
-		return "", err
+		return "", maskProxyCredentials(err, u)
 	}
 	defer resp.Body.Close()
 	return fmt.Sprintf("%s -> %d ms", proxyTestTarget, time.Since(start).Milliseconds()), nil
