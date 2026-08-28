@@ -206,7 +206,9 @@ func snapPanelData(snap snapHelper, localDir, targetDir string) {
 		global.LOG.Errorf("update snapshot status to OnSaveData failed, err: %v", err)
 	}
 	sysIP, _ := settingRepo.Get(settingRepo.WithByKey("SystemIP"))
-	_ = settingRepo.Update("SystemIP", "")
+	if err := settingRepo.Update("SystemIP", ""); err != nil {
+		global.LOG.Errorf("temporarily clear SystemIP for snapshot backup failed, err: %v", err)
+	}
 	checkPointOfWal()
 	if err := handleSnapTar(dataDir, targetDir, "1panel_data.tar.gz", exclusionRules, ""); err != nil {
 		status = err.Error()
@@ -218,7 +220,9 @@ func snapPanelData(snap snapHelper, localDir, targetDir string) {
 	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_data": status}); err != nil {
 		global.LOG.Errorf("update snapshot panel_data status failed, err: %v", err)
 	}
-	_ = settingRepo.Update("SystemIP", sysIP.Value)
+	if err := settingRepo.Update("SystemIP", sysIP.Value); err != nil {
+		global.LOG.Errorf("restore SystemIP after snapshot backup failed, err: %v", err)
+	}
 }
 
 func snapCompress(snap snapHelper, rootDir string, secret string) {

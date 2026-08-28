@@ -684,7 +684,11 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 		}
 
 		command := exec.Command("/bin/bash", "-c", fmt.Sprintf("cp -rn %s/* %s || true", detailDir, install.GetPath()))
-		stdout, _ := command.CombinedOutput()
+		stdout, err := command.CombinedOutput()
+		if err != nil {
+			// 非致命：cp -rn 为尽力而为的覆盖式复制，失败不影响后续升级流程，仅记录
+			global.LOG.Warnf("upgrade app [%s] [%s] cp file failed, err: %v", install.App.Key, install.Name, err)
+		}
 		if stdout != nil {
 			global.LOG.Infof("upgrade app [%s] [%s] cp file log : %s ", install.App.Key, install.Name, string(stdout))
 		}
@@ -694,7 +698,10 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 			_ = fileOp.DeleteDir(dstScripts)
 			_ = fileOp.CreateDir(dstScripts, 0755)
 			scriptCmd := exec.Command("cp", "-rf", sourceScripts+"/.", dstScripts+"/")
-			_, _ = scriptCmd.CombinedOutput()
+			if out, err := scriptCmd.CombinedOutput(); err != nil {
+				// 非致命：scripts 复制失败时 upgrade 脚本后续会因文件缺失报错，此处仅记录
+				global.LOG.Warnf("upgrade app [%s] [%s] copy scripts failed, err: %v, output: %s", install.App.Key, install.Name, err, string(out))
+			}
 		}
 
 		var newCompose string

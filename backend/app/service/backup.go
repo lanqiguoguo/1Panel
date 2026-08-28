@@ -22,6 +22,7 @@ import (
 	fileUtils "github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
+	"gorm.io/gorm"
 )
 
 type BackupService struct{}
@@ -651,7 +652,10 @@ func StartRefreshOneDriveToken() {
 
 func (u *BackupService) Run() {
 	var backupItem model.BackupAccount
-	_ = global.DB.Where("`type` = ?", "OneDrive").First(&backupItem)
+	if err := global.DB.Where("`type` = ?", "OneDrive").First(&backupItem).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		global.LOG.Errorf("load OneDrive backup account from db failed, err: %v", err)
+		return
+	}
 	if backupItem.ID == 0 {
 		return
 	}
@@ -673,11 +677,14 @@ func (u *BackupService) Run() {
 	varMap["refresh_token"] = refreshToken
 
 	varsItem, _ := json.Marshal(varMap)
-	_ = global.DB.Model(&model.BackupAccount{}).
+	if err := global.DB.Model(&model.BackupAccount{}).
 		Where("id = ?", backupItem.ID).
 		Updates(map[string]interface{}{
 			"vars": varsItem,
-		}).Error
+		}).Error; err != nil {
+		global.LOG.Errorf("update OneDrive refresh token to db failed, err: %v", err)
+		return
+	}
 	global.LOG.Info("Successfully refreshed OneDrive token.")
 }
 

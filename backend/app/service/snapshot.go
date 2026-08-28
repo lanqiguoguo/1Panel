@@ -167,7 +167,9 @@ func (u *SnapshotService) SnapshotRecover(req dto.SnapshotRecover) error {
 	if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"recover_status": constant.StatusWaiting}); err != nil {
 		global.LOG.Errorf("update snapshot recover status to waiting failed, err: %v", err)
 	}
-	_ = settingRepo.Update("SystemStatus", "Recovering")
+	if err := settingRepo.Update("SystemStatus", "Recovering"); err != nil {
+		global.LOG.Errorf("update system status to Recovering failed, err: %v", err)
+	}
 	go u.HandleSnapshotRecover(snap, true, req)
 	return nil
 }
@@ -428,10 +430,14 @@ func updateRecoverStatus(id uint, isRecover bool, interruptStep, status, message
 		}); err != nil {
 			global.LOG.Errorf("update snap recover status failed, err: %v", err)
 		}
-		_ = settingRepo.Update("SystemStatus", "Free")
+		if err := settingRepo.Update("SystemStatus", "Free"); err != nil {
+			global.LOG.Errorf("update system status to Free after recover failed, err: %v", err)
+		}
 		return
 	}
-	_ = settingRepo.Update("SystemStatus", "Free")
+	if err := settingRepo.Update("SystemStatus", "Free"); err != nil {
+		global.LOG.Errorf("update system status to Free after rollback failed, err: %v", err)
+	}
 	if status == constant.StatusSuccess {
 		if err := snapshotRepo.Update(id, map[string]interface{}{
 			"recover_status":     "",
@@ -491,13 +497,23 @@ func rebuildAllAppInstall() error {
 	for i := 0; i < len(appInstalls); i++ {
 		wg.Add(1)
 		appInstalls[i].Status = constant.Rebuilding
-		_ = appInstallRepo.Save(context.Background(), &appInstalls[i])
+		if err := appInstallRepo.Save(context.Background(), &appInstalls[i]); err != nil {
+			global.LOG.Errorf("update app [%s] status to rebuilding failed, err: %v", appInstalls[i].Name, err)
+		}
 		go func(app model.AppInstall) {
 			defer wg.Done()
 			dockerComposePath := app.GetComposePath()
-			_, _ = compose.Up(dockerComposePath)
+			if out, err := compose.Up(dockerComposePath); err != nil {
+				if out != "" {
+					err = errors.New(out)
+				}
+				global.LOG.Errorf("compose up app [%s] after rebuild failed, err: %v", app.Name, err)
+				return
+			}
 			app.Status = constant.Running
-			_ = appInstallRepo.Save(context.Background(), &app)
+			if err := appInstallRepo.Save(context.Background(), &app); err != nil {
+				global.LOG.Errorf("update app [%s] status to running failed, err: %v", app.Name, err)
+			}
 		}(appInstalls[i])
 	}
 	wg.Wait()
