@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -21,7 +22,14 @@ type MonitorService struct {
 	NetIO  chan ([]net.IOCountersStat)
 }
 
-var monitorCancel context.CancelFunc
+// monitorMu guards monitorCancel and global.MonitorCronID so that the
+// monitor start/stop state machine (StartMonitor, stopMonitor, startMonitor,
+// and the MonitorStatus/MonitorInterval branches in setting.go) is free of
+// data races even when the setting is toggled concurrently.
+var (
+	monitorMu     sync.Mutex
+	monitorCancel context.CancelFunc
+)
 
 type IMonitorService interface {
 	Run()
@@ -188,10 +196,55 @@ func (m *MonitorService) saveNetDataToDB(ctx context.Context, interval float64) 
 	}
 }
 
+// stopMonitor atomically tears down a running monitor: it cancels the
+// collection context and removes the cron job. Both are only touched while
+// holding monitorMu, and each is guarded by a nil/zero check, so calling it
+// when no monitor is running (or twice concurrently) is a safe no-op. A cron
+// entry id of 0 can therefore never reach global.Cron.Remove, and a nil
+// monitorCancel is never invoked.
+func stopMonitor() {
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+	stopMonitorLocked()
+}
+
+// stopMonitorLocked is the monitorMu-held part of stopMonitor. It is also
+// used inside startMonitor so that the replace path (stop + register) is a
+// single atomic operation with no window in between.
+func stopMonitorLocked() {
+	if monitorCancel != nil {
+		monitorCancel()
+		monitorCancel = nil
+	}
+	if global.MonitorCronID != 0 {
+		global.Cron.Remove(cron.EntryID(global.MonitorCronID))
+		global.MonitorCronID = 0
+	}
+}
+
+// startMonitor registers the monitor cron job and atomically publishes its
+// entry id. It stops any previously running monitor first, so a repeated call
+// never leaves a stale job behind. The previous time.AfterFunc deferred
+// registration is removed: registering synchronously here eliminates the
+// delay window in which a second StartMonitor(true, ...) could race an
+// earlier callback that would overwrite global.MonitorCronID afterwards.
+func startMonitor(service IMonitorService, interval string) error {
+	monitorID, err := global.Cron.AddJob(fmt.Sprintf("@every %sm", interval), service)
+	if err != nil {
+		return err
+	}
+
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+	stopMonitorLocked()
+	global.MonitorCronID = monitorID
+
+	return nil
+}
+
 func StartMonitor(removeBefore bool, interval string) error {
 	if removeBefore {
-		monitorCancel()
-		global.Cron.Remove(cron.EntryID(global.MonitorCronID))
+		stopMonitor()
 	}
 	intervalItem, err := strconv.Atoi(interval)
 	if err != nil {
@@ -200,16 +253,15 @@ func StartMonitor(removeBefore bool, interval string) error {
 
 	service := NewIMonitorService()
 	ctx, cancel := context.WithCancel(context.Background())
+	if err := startMonitor(service, interval); err != nil {
+		cancel()
+		return err
+	}
+
+	monitorMu.Lock()
 	monitorCancel = cancel
-	now := time.Now()
-	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-	time.AfterFunc(time.Until(nextMinute), func() {
-		monitorID, err := global.Cron.AddJob(fmt.Sprintf("@every %sm", interval), service)
-		if err != nil {
-			return
-		}
-		global.MonitorCronID = monitorID
-	})
+	monitorMu.Unlock()
+
 	service.Run()
 
 	go service.saveIODataToDB(ctx, float64(intervalItem))

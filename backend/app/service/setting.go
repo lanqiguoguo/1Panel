@@ -28,7 +28,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/systemctl"
 	"github.com/gin-gonic/gin"
-	"github.com/robfig/cron/v3"
 )
 
 type SettingService struct{}
@@ -126,6 +125,13 @@ func (u *SettingService) Update(key, value string) error {
 		return fmt.Errorf("setting key %s is not allowed", key)
 	}
 	switch key {
+	// The global.MonitorCronID checks below are fast-path filters only: they
+	// are allowed to go stale because startMonitor/stopMonitor serialize all
+	// actual mutations of monitorCancel and global.MonitorCronID under
+	// monitorMu. startMonitor re-checks under the lock (via stopMonitorLocked)
+	// before publishing a new entry id, so a concurrent double-start can never
+	// leave two cron jobs or a dangling cancel; stopMonitor is idempotent, so
+	// a concurrent disable can never Remove(0) or call a nil cancel.
 	case "MonitorStatus":
 		if value == "enable" && global.MonitorCronID == 0 {
 			interval, err := settingRepo.Get(settingRepo.WithByKey("MonitorInterval"))
@@ -137,9 +143,7 @@ func (u *SettingService) Update(key, value string) error {
 			}
 		}
 		if value == "disable" && global.MonitorCronID != 0 {
-			monitorCancel()
-			global.Cron.Remove(cron.EntryID(global.MonitorCronID))
-			global.MonitorCronID = 0
+			stopMonitor()
 		}
 	case "MonitorInterval":
 		status, err := settingRepo.Get(settingRepo.WithByKey("MonitorStatus"))
