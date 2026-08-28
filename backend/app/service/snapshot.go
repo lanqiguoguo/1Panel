@@ -21,6 +21,7 @@ import (
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
 	"github.com/shirou/gopsutil/v3/host"
+	"gorm.io/gorm"
 )
 
 type SnapshotService struct {
@@ -201,21 +202,53 @@ func (u *SnapshotService) readFromJson(path string) (SnapshotJson, error) {
 	return snap, nil
 }
 
-// buildSnapshotName builds a snapshot name from the version, os and timestamp.
-// To avoid name collisions (the timestamp has second-level precision, so two
-// snapshot creations within the same second would produce the same name and
-// overwrite each other's files), an existing record with the same name is
-// detected first and a random suffix is appended.
+// snapshotNameMu serializes snapshot name allocation. Naming is check-then-act
+// by nature: the same-second duplicate detection is a DB read and the snapshot
+// row is only persisted afterwards, so two concurrent creations in the same
+// second could both observe the name as free. The timestamp has second-level
+// precision (and the cronjob path's random suffix is only appended by the
+// caller, not guaranteed unique either), so without mutual exclusion the rows
+// would collide — at best the second insert fails on the unique name
+// constraint, at worst both rows exist and the tarballs overwrite each other.
+// Both creation paths (manual SnapshotCreate and cronjob) funnel through
+// HandleSnapshot, so wrapping the dedup read and the row insert in one
+// critical section here covers them all.
+var snapshotNameMu sync.Mutex
+
+// buildSnapshotName builds a snapshot name from the version, os and timestamp
+// and appends a random suffix when a snapshot with that name already exists.
+// It must run under snapshotNameMu together with the snapshot row insert (see
+// allocateSnapshot): on its own the duplicate check is still check-then-act.
 func buildSnapshotName(version, os, timeNow string, isCronjob bool) string {
 	name := fmt.Sprintf("1panel_%s_%s_%s", version, os, timeNow)
 	if isCronjob {
 		name = fmt.Sprintf("snapshot_1panel_%s_%s_%s", version, os, timeNow)
 	}
-	existing, _ := snapshotRepo.Get(commonRepo.WithByName(name))
+	existing, err := snapshotRepo.Get(commonRepo.WithByName(name))
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		// Keep the previous "treat unreadable DB as no duplicate" behaviour,
+		// but log it: the insert below is what will surface the real problem
+		// (e.g. via the unique name constraint).
+		global.LOG.Errorf("check existing snapshot name %s failed, err: %v", name, err)
+	}
 	if existing.ID == 0 {
 		return name
 	}
 	return fmt.Sprintf("%s-%s", name, common.RandStrAndNum(4))
+}
+
+// allocateSnapshot picks a unique name for snap and persists the snapshot row
+// inside one snapshotNameMu critical section, so the duplicate-name check and
+// the row insert cannot interleave with a concurrent creation (see
+// snapshotNameMu for why both must be atomic together).
+func allocateSnapshot(version, os, timeNow string, isCronjob bool, snap *model.Snapshot) error {
+	snapshotNameMu.Lock()
+	defer snapshotNameMu.Unlock()
+	snap.Name = buildSnapshotName(version, os, timeNow, isCronjob)
+	if err := snapshotRepo.Create(snap); err != nil {
+		return fmt.Errorf("create snapshot record failed, err: %v", err)
+	}
+	return nil
 }
 
 func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto.SnapshotCreate, timeNow string, secret string) (string, error) {
@@ -232,19 +265,15 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 	if req.ID == 0 {
 		versionItem, _ := settingRepo.Get(settingRepo.WithByKey("SystemVersion"))
 
-		name := buildSnapshotName(versionItem.Value, loadOs(), timeNow, isCronjob)
-		rootDir = path.Join(localDir, "system", name)
-
 		snap = model.Snapshot{
-			Name:            name,
 			Description:     req.Description,
 			From:            req.From,
 			DefaultDownload: req.DefaultDownload,
 			Version:         versionItem.Value,
 			Status:          constant.StatusWaiting,
 		}
-		if err := snapshotRepo.Create(&snap); err != nil {
-			return "", fmt.Errorf("create snapshot record failed, err: %v", err)
+		if err := allocateSnapshot(versionItem.Value, loadOs(), timeNow, isCronjob, &snap); err != nil {
+			return "", err
 		}
 		snapStatus.SnapID = snap.ID
 		if err := snapshotRepo.CreateStatus(&snapStatus); err != nil {
@@ -259,7 +288,13 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusWaiting}); err != nil {
 			global.LOG.Errorf("update snapshot status to waiting failed, err: %v", err)
 		}
-		snapStatus, _ = snapshotRepo.GetStatus(snap.ID)
+		snapStatus, err = snapshotRepo.GetStatus(snap.ID)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			// A missing status row (record not found) is expected on a retry
+			// and handled by the CreateStatus below; any other read failure
+			// must not pass silently, it would create a duplicate status row.
+			global.LOG.Errorf("query status of snapshot %d failed, err: %v", snap.ID, err)
+		}
 		if snapStatus.ID == 0 {
 			snapStatus.SnapID = snap.ID
 			if err := snapshotRepo.CreateStatus(&snapStatus); err != nil {
@@ -267,8 +302,8 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 				return "", fmt.Errorf("create snapshot status failed, err: %v", err)
 			}
 		}
-		rootDir = path.Join(localDir, fmt.Sprintf("system/%s", snap.Name))
 	}
+	rootDir = path.Join(localDir, "system", snap.Name)
 
 	var wg sync.WaitGroup
 	itemHelper := snapHelper{SnapID: snap.ID, Status: &snapStatus, Wg: &wg, FileOp: files.NewFileOp(), Ctx: context.Background()}
@@ -307,41 +342,60 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 	if !isCronjob {
 		go func() {
 			wg.Wait()
-			if !checkIsAllDone(snap.ID) {
+			allDone, err := checkIsAllDone(snap.ID)
+			if err != nil {
+				// A status read that still fails after retries must not be
+				// read as "not done": the zero value would look unfinished
+				// and either re-run a healthy phase or fail the snapshot
+				// without a reason.
+				markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+				return
+			}
+			if !allDone {
 				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
 					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
 				}
 				return
 			}
-			statusItem, _ := snapshotRepo.GetStatus(snap.ID)
+			statusItem, err := loadSnapStatus(snap.ID, "panel_data")
+			if err != nil {
+				markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+				return
+			}
 			if statusItem.PanelData != constant.StatusDone {
 				snapPanelData(itemHelper, localDir, backupPanelDir)
 			}
-			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			statusItem, err = loadSnapStatus(snap.ID, "panel_data")
+			if err != nil {
+				markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+				return
+			}
 			if statusItem.PanelData != constant.StatusDone {
-				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-				}
+				markSnapshotFailed(snap.ID, fmt.Sprintf("panel data phase failed: %s", statusItem.PanelData))
 				return
 			}
 			if statusItem.Compress != constant.StatusDone {
 				snapCompress(itemHelper, rootDir, secret)
 			}
-			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			statusItem, err = loadSnapStatus(snap.ID, "compress")
+			if err != nil {
+				markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+				return
+			}
 			if statusItem.Compress != constant.StatusDone {
-				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-				}
+				markSnapshotFailed(snap.ID, fmt.Sprintf("compress phase failed: %s", statusItem.Compress))
 				return
 			}
 			if statusItem.Upload != constant.StatusDone {
 				snapUpload(itemHelper, req.From, fmt.Sprintf("%s.tar.gz", rootDir))
 			}
-			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			statusItem, err = loadSnapStatus(snap.ID, "upload")
+			if err != nil {
+				markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+				return
+			}
 			if statusItem.Upload != constant.StatusDone {
-				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-				}
+				markSnapshotFailed(snap.ID, fmt.Sprintf("upload phase failed: %s", statusItem.Upload))
 				return
 			}
 			if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusSuccess}); err != nil {
@@ -351,7 +405,13 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 		return "", nil
 	}
 	wg.Wait()
-	if !checkIsAllDone(snap.ID) {
+	allDone, err := checkIsAllDone(snap.ID)
+	if err != nil {
+		markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+		loadSnapLog(snap.ID, logPath)
+		return snap.Name, fmt.Errorf("query status of snapshot %s failed, err: %v", snap.Name, err)
+	}
+	if !allDone {
 		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
 			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
 		}
@@ -360,31 +420,40 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 	}
 	loadSnapLog(snap.ID, logPath)
 	snapPanelData(itemHelper, localDir, backupPanelDir)
-	statusItem, _ := snapshotRepo.GetStatus(snap.ID)
+	statusItem, err := loadSnapStatus(snap.ID, "panel_data")
+	if err != nil {
+		markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+		loadSnapLog(snap.ID, logPath)
+		return snap.Name, fmt.Errorf("query status of snapshot %s failed, err: %v", snap.Name, err)
+	}
 	if statusItem.PanelData != constant.StatusDone {
-		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-		}
+		markSnapshotFailed(snap.ID, fmt.Sprintf("panel data phase failed: %s", statusItem.PanelData))
 		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s 1panel data failed", snap.Name)
 	}
 	loadSnapLog(snap.ID, logPath)
 	snapCompress(itemHelper, rootDir, secret)
-	statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+	statusItem, err = loadSnapStatus(snap.ID, "compress")
+	if err != nil {
+		markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+		loadSnapLog(snap.ID, logPath)
+		return snap.Name, fmt.Errorf("query status of snapshot %s failed, err: %v", snap.Name, err)
+	}
 	if statusItem.Compress != constant.StatusDone {
-		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-		}
+		markSnapshotFailed(snap.ID, fmt.Sprintf("compress phase failed: %s", statusItem.Compress))
 		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s compress failed", snap.Name)
 	}
 	loadSnapLog(snap.ID, logPath)
 	snapUpload(itemHelper, req.From, fmt.Sprintf("%s.tar.gz", rootDir))
-	statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+	statusItem, err = loadSnapStatus(snap.ID, "upload")
+	if err != nil {
+		markSnapshotFailed(snap.ID, fmt.Sprintf("status query failed: %v", err))
+		loadSnapLog(snap.ID, logPath)
+		return snap.Name, fmt.Errorf("query status of snapshot %s failed, err: %v", snap.Name, err)
+	}
 	if statusItem.Upload != constant.StatusDone {
-		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
-			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
-		}
+		markSnapshotFailed(snap.ID, fmt.Sprintf("upload phase failed: %s", statusItem.Upload))
 		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s upload failed", snap.Name)
 	}
@@ -520,13 +589,69 @@ func rebuildAllAppInstall() error {
 	return nil
 }
 
-func checkIsAllDone(snapID uint) bool {
-	status, err := snapshotRepo.GetStatus(snapID)
+// snapshotStatusRetries bounds the short retry loop of loadSnapStatus: the
+// phase sequencing below reads the status row from the database, and a
+// transient query error (e.g. sqlite busy) must not be mistaken for a phase
+// that never ran.
+const snapshotStatusRetries = 3
+
+// snapshotStatusRetryInterval is the wait between loadSnapStatus attempts. Var
+// instead of const so tests can shrink the backoff.
+var snapshotStatusRetryInterval = time.Second
+
+// snapshotGetStatusFn indirections snapshotRepo.GetStatus so tests can inject
+// transient query failures (same pattern as restartDockerFn in image_repo.go).
+var snapshotGetStatusFn = func(snapID uint) (model.SnapshotStatus, error) {
+	return snapshotRepo.GetStatus(snapID)
+}
+
+// loadSnapStatus reads the status row of snapID, retrying briefly and logging
+// every failed attempt. Callers branch on the returned status to decide
+// whether a snapshot phase must (re-)run or the snapshot failed; a swallowed
+// query error would return a zero-value status where every field looks
+// "not done", re-running a finished phase or marking a healthy snapshot
+// failed. When all attempts fail, the error is returned so the caller can
+// fail the snapshot with an explicit "status query failed" reason instead of
+// mis-reading the zero value as a phase outcome.
+func loadSnapStatus(snapID uint, phase string) (model.SnapshotStatus, error) {
+	for attempt := 1; attempt <= snapshotStatusRetries; attempt++ {
+		status, err := snapshotGetStatusFn(snapID)
+		if err == nil {
+			return status, nil
+		}
+		global.LOG.Errorf("query status of snapshot %d (phase %s) failed, attempt %d/%d, err: %v", snapID, phase, attempt, snapshotStatusRetries, err)
+		if attempt < snapshotStatusRetries {
+			timer := time.NewTimer(snapshotStatusRetryInterval)
+			<-timer.C
+		}
+	}
+	return model.SnapshotStatus{}, errors.New("status query kept failing after retries")
+}
+
+// markSnapshotFailed records the terminal StatusFailed of a snapshot run
+// together with a human readable reason. The message matters: a bare
+// StatusFailed row gives the user nothing to act on. message is capped at the
+// model column width (256).
+func markSnapshotFailed(snapID uint, message string) {
+	if runes := []rune(message); len(runes) > 256 {
+		message = string(runes[:256])
+	}
+	if err := snapshotRepo.Update(snapID, map[string]interface{}{"status": constant.StatusFailed, "message": message}); err != nil {
+		global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+	}
+}
+
+// checkIsAllDone reports whether every backup phase of snapID recorded
+// StatusDone. The status read retries briefly and its error is propagated:
+// the caller must neither treat a failed read as "not done" (the zero value
+// would mark a healthy snapshot failed) nor silently as "done".
+func checkIsAllDone(snapID uint) (bool, error) {
+	status, err := loadSnapStatus(snapID, "final check")
 	if err != nil {
-		return false
+		return false, err
 	}
 	isOK, _ := checkAllDone(status)
-	return isOK
+	return isOK, nil
 }
 
 func checkAllDone(status model.SnapshotStatus) (bool, string) {
@@ -552,7 +677,13 @@ func checkAllDone(status model.SnapshotStatus) (bool, string) {
 // human readable progress log. Reading from the database keeps the log in sync
 // with the per-worker DB status updates instead of a shared in-memory status.
 func loadSnapLog(snapID uint, logPath string) {
-	status, _ := snapshotRepo.GetStatus(snapID)
+	status, err := snapshotRepo.GetStatus(snapID)
+	if err != nil {
+		// Rendering the progress file from a zero-value status would report
+		// every phase as blank, so skip the file and log why instead.
+		global.LOG.Errorf("load status of snapshot %d for progress log failed, err: %v", snapID, err)
+		return
+	}
 	logs := ""
 	logs += fmt.Sprintf("Write 1Panel basic information: %s \n", status.PanelInfo)
 	logs += fmt.Sprintf("Backup 1Panel system files: %s \n", status.Panel)

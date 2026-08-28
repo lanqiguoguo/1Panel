@@ -191,3 +191,49 @@ func TestAppPortClaimOwnership(t *testing.T) {
 		releaseAppPort(23182, token)
 	})
 }
+
+// TestResetAppPortClaims is the regression test for stale port claims after a
+// snapshot recover/rollback: those flows replace the whole app_installs table
+// with the snapshot's rows and restart the panel into the recovered database,
+// so no in-flight claim may survive the restore — a surviving claim would make
+// the panel falsely reject new installs on the recovered apps' ports until the
+// restart.
+func TestResetAppPortClaims(t *testing.T) {
+	const (
+		portA = 23183
+		portB = 23184
+	)
+	for _, port := range []int{portA, portB} {
+		forceReleaseAppPort(port)
+		defer forceReleaseAppPort(port)
+	}
+
+	// precondition: two live claims like installs in flight when a recover
+	// replaces app_installs
+	for _, port := range []int{portA, portB} {
+		if _, ok := tryRegisterAppPort(port); !ok {
+			t.Fatalf("claim of port %d failed", port)
+		}
+	}
+	if _, loaded := registeredPorts.Load(portA); !loaded {
+		t.Fatal("precondition failed: portA claim missing")
+	}
+
+	resetAppPortClaims()
+
+	for _, port := range []int{portA, portB} {
+		if _, loaded := registeredPorts.Load(port); loaded {
+			t.Fatalf("port %d claim survived resetAppPortClaims", port)
+		}
+	}
+	// the table must stay fully usable afterwards: a fresh claim of a port
+	// won immediately, and releasing it with its own token works
+	token, ok := tryRegisterAppPort(portA)
+	if !ok {
+		t.Fatal("claim after reset failed")
+	}
+	releaseAppPort(portA, token)
+	if _, loaded := registeredPorts.Load(portA); loaded {
+		t.Fatal("release after reset did not drop the fresh claim")
+	}
+}

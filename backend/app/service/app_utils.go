@@ -102,6 +102,22 @@ func forceReleaseAppPort(port int) {
 	registeredPorts.Delete(port)
 }
 
+// resetAppPortClaims drops every port claim at once. Only for snapshot
+// recover/rollback completion: those flows replace the whole app_installs
+// table with the snapshot's rows and restart the panel into the recovered
+// database, so each in-flight claim loses the install that justified it — the
+// same reasoning as forceReleaseAppPort but applied to the entire table.
+// Without the reset a surviving claim would make the panel falsely reject new
+// installs on the recovered apps' ports until the restart. Must only run
+// after the data restore succeeded; on earlier failures app_installs was
+// never replaced and live claims still match it.
+func resetAppPortClaims() {
+	registeredPorts.Range(func(key, _ interface{}) bool {
+		registeredPorts.Delete(key)
+		return true
+	})
+}
+
 func checkPort(key string, params map[string]interface{}) (int, uint64, error) {
 	port, ok := params[key]
 	if ok {

@@ -85,7 +85,7 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 	}
 	if req.IsNew || snap.InterruptStep == "DaemonJson" {
 		fileOp := files.NewFileOp()
-		if err := recoverDaemonJson(snapFileDir, fileOp); err != nil {
+		if err := recoverDaemonJson(snapFileDir, "/etc/docker", fileOp); err != nil {
 			updateRecoverStatus(snap.ID, isRecover, "DaemonJson", constant.StatusFailed, err.Error())
 			return
 		}
@@ -160,6 +160,16 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 		global.LOG.Debug("recover 1panel data from snapshot file successful!")
 		req.IsNew = true
 	}
+	// Reaching here means the data untar replaced the whole app_installs table
+	// with the snapshot's rows (and the panel restarts into the recovered
+	// database right after), so every in-flight port claim minted against the
+	// previous database lost the install that justified it. Dropping them is
+	// the same reasoning as forceReleaseAppPort but for all ports at once;
+	// keeping them would make the panel reject new installs on the recovered
+	// apps' ports until the restart. Only the success path runs this: on any
+	// earlier failure the database was never replaced and live claims (and
+	// their protection) still refer to the untouched app_installs.
+	resetAppPortClaims()
 	_ = rebuildAllAppInstall()
 	restartCompose(path.Join(snapJson.BaseDir, "1panel/docker/compose"))
 
@@ -273,24 +283,41 @@ func recoverAppData(src string) error {
 	return err
 }
 
-func recoverDaemonJson(src string, fileOp files.FileOp) error {
-	daemonJsonPath := "/etc/docker/daemon.json"
+// recoverDaemonJson restores the snapshot's docker daemon.json (when the
+// snapshot carries one) and restarts docker so the daemon runs against the
+// restored configuration. The copy and the restart share daemonJsonMu with
+// every other daemon.json writer (see applyRegistriesChange for the full
+// rationale): dockerd reads the whole file on restart, so a concurrent writer
+// interleaving between our copy and our restart could get its change silently
+// overwritten by the restored file — or have the restart pick up a config
+// nobody meant to ship. waitForDockerActive keeps the recovery from moving on
+// to app rebuilds while the daemon is still coming back.
+//
+// When the snapshot has no daemon.json but the host does, no copy happens yet
+// docker is still restarted. That asymmetry is pre-existing behaviour, kept
+// deliberately: after a full system restore the restart pins the daemon to
+// whatever config is on disk at this point; skipping it would silently change
+// recovery semantics, so it is documented here rather than "fixed" in passing.
+func recoverDaemonJson(src, daemonJsonDir string, fileOp files.FileOp) error {
+	daemonJsonPath := path.Join(daemonJsonDir, "daemon.json")
 	_, errSrc := os.Stat(path.Join(src, "docker/daemon.json"))
 	_, errPath := os.Stat(daemonJsonPath)
 	if os.IsNotExist(errSrc) && os.IsNotExist(errPath) {
 		global.LOG.Debug("the daemon.json file does not exist, nothing happens.")
 		return nil
 	}
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	if errSrc == nil {
-		if err := fileOp.CopyFile(path.Join(src, "docker/daemon.json"), "/etc/docker"); err != nil {
+		if err := fileOp.CopyFile(path.Join(src, "docker/daemon.json"), daemonJsonDir); err != nil {
 			return fmt.Errorf("recover docker daemon.json failed, err: %v", err)
 		}
 	}
 
-	if err := restartDocker(); err != nil {
+	if err := restartDockerFn(); err != nil {
 		return err
 	}
-	return nil
+	return waitForDockerActiveFn()
 }
 
 func recoverPanel(src string, dst string) error {
