@@ -144,7 +144,7 @@ func (u *DockerService) LoadDockerConf() *dto.DaemonJsonConf {
 func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile()
+	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -251,25 +251,31 @@ func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
 	}
 	return nil
 }
-func createIfNotExistDaemonJsonFile() error {
-	if _, err := os.Stat(constant.DaemonJsonPath); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(path.Dir(constant.DaemonJsonPath), os.ModePerm); err != nil {
-			return err
-		}
-		var daemonFile *os.File
-		daemonFile, err = os.Create(constant.DaemonJsonPath)
-		if err != nil {
-			return err
-		}
-		defer daemonFile.Close()
+
+// createIfNotExistDaemonJsonFile ensures filePath (normally
+// constant.DaemonJsonPath; injectable so tests can run against a temp file)
+// and its parent directory exist. A newly created file — and an existing
+// zero-byte one, e.g. left behind by an earlier failed write — is seeded with
+// "{}": every writer unmarshals the file right after this call, and
+// json.Unmarshal on an empty file fails with "unexpected end of JSON input".
+func createIfNotExistDaemonJsonFile(filePath string) error {
+	info, err := os.Stat(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	return nil
+	if err == nil && info.Size() > 0 {
+		return nil
+	}
+	if err := os.MkdirAll(path.Dir(filePath), os.ModePerm); err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, []byte("{}"), 0644)
 }
 
 func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile()
+	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -306,7 +312,7 @@ func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile()
+	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -358,7 +364,7 @@ func (u *DockerService) UpdateConfByFile(req dto.DaemonJsonUpdateByFile) error {
 		}
 		return nil
 	}
-	err := createIfNotExistDaemonJsonFile()
+	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}

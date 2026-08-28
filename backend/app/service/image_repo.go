@@ -86,11 +86,8 @@ func (u *ImageRepoService) Create(req dto.ImageRepoCreate) error {
 	}
 
 	if req.Protocol == "http" {
-		if err := u.handleRegistries(req.DownloadUrl, "", "create"); err != nil {
+		if err := u.applyRegistriesChange(constant.DaemonJsonPath, req.DownloadUrl, "", "create"); err != nil {
 			return fmt.Errorf("create registry %s failed, err: %v", req.DownloadUrl, err)
-		}
-		if err := stopBeforeUpdateRepo(); err != nil {
-			return err
 		}
 	}
 	if req.Auth {
@@ -121,18 +118,9 @@ func (u *ImageRepoService) Delete(req dto.OperateByID) error {
 	if itemRepo.Protocol == "https" {
 		return imageRepoRepo.Delete(commonRepo.WithByID(req.ID))
 	}
-	if err := u.handleRegistries("", itemRepo.DownloadUrl, "delete"); err != nil {
+	if err := u.removeInsecureRegistry(constant.DaemonJsonPath, itemRepo.DownloadUrl, req.ID); err != nil {
 		return fmt.Errorf("delete registry %s failed, err: %v", itemRepo.DownloadUrl, err)
 	}
-	if err := validateDockerConfig(); err != nil {
-		return err
-	}
-	if err := imageRepoRepo.Delete(commonRepo.WithByID(req.ID)); err != nil {
-		return err
-	}
-	go func() {
-		_ = restartDocker()
-	}()
 	return nil
 }
 
@@ -147,30 +135,22 @@ func (u *ImageRepoService) Update(req dto.ImageRepoUpdate) error {
 	if err != nil {
 		return err
 	}
-	needRestart := false
+	// The branches are mutually exclusive; applyRegistriesChange bundles the
+	// daemon.json write, validation and restart into one locked critical
+	// section, so no separate restart step is needed afterwards.
 	if repo.Protocol == "http" && req.Protocol == "https" {
-		if err := u.handleRegistries("", repo.DownloadUrl, "delete"); err != nil {
+		if err := u.applyRegistriesChange(constant.DaemonJsonPath, "", repo.DownloadUrl, "delete"); err != nil {
 			return fmt.Errorf("delete registry %s failed, err: %v", repo.DownloadUrl, err)
 		}
-		needRestart = true
 	}
-	if repo.Protocol == "http" && req.Protocol == "http" {
-		if repo.DownloadUrl != req.DownloadUrl {
-			if err := u.handleRegistries(req.DownloadUrl, repo.DownloadUrl, "update"); err != nil {
-				return fmt.Errorf("update registry %s => %s failed, err: %v", repo.DownloadUrl, req.DownloadUrl, err)
-			}
-			needRestart = true
+	if repo.Protocol == "http" && req.Protocol == "http" && repo.DownloadUrl != req.DownloadUrl {
+		if err := u.applyRegistriesChange(constant.DaemonJsonPath, req.DownloadUrl, repo.DownloadUrl, "update"); err != nil {
+			return fmt.Errorf("update registry %s => %s failed, err: %v", repo.DownloadUrl, req.DownloadUrl, err)
 		}
 	}
 	if repo.Protocol == "https" && req.Protocol == "http" {
-		if err := u.handleRegistries(req.DownloadUrl, "", "create"); err != nil {
+		if err := u.applyRegistriesChange(constant.DaemonJsonPath, req.DownloadUrl, "", "create"); err != nil {
 			return fmt.Errorf("create registry %s failed, err: %v", req.DownloadUrl, err)
-		}
-		needRestart = true
-	}
-	if needRestart {
-		if err := stopBeforeUpdateRepo(); err != nil {
-			return err
 		}
 	}
 	if repo.Auth {
@@ -204,18 +184,78 @@ func (u *ImageRepoService) CheckConn(host, user, password string) error {
 	return errors.New(string(stdout))
 }
 
-func (u *ImageRepoService) handleRegistries(newHost, delHost, handle string) error {
-	// daemon.json is a single shared config file: serialize with the other
-	// writers (docker.go UpdateConf/applyDaemonJsonProxies etc.) so a
-	// concurrent read-modify-write cannot be lost.
+// Indirections over the docker control-plane steps, for tests only: unit
+// tests cannot restart the host docker daemon, so they stub these to observe
+// call order and lock coverage. Production code must always see the real
+// validateDockerConfig/restartDocker through these defaults.
+var (
+	validateDockerConfigFn = validateDockerConfig
+	restartDockerFn        = restartDocker
+	waitForDockerActiveFn  = waitForDockerActive
+)
+
+// applyRegistriesChange performs the full daemon.json lifecycle of an
+// insecure-registries change under ONE daemonJsonMu critical section:
+// read-modify-write, dockerd config validation, daemon restart and the
+// wait-for-active poll. The write must be mutually exclusive with the other
+// daemon.json writers (docker.go UpdateConf/UpdateLogOption/UpdateIpv6Option/
+// UpdateConfByFile/applyDaemonJsonProxies all hold daemonJsonMu across
+// write+validate+restart): dockerd --validate and the restart read the whole
+// file, so a writer interleaved between our write and our restart could make
+// the validation run against (or the restart apply) a config nobody meant to
+// ship. The restart is deliberately synchronous under the lock, matching
+// applyDaemonJsonProxies which holds the lock for restart + waitDockerAlive;
+// an async restart would let the next writer rewrite/validate the file while
+// the daemon is still reloading the previous content.
+func (u *ImageRepoService) applyRegistriesChange(filePath, newHost, delHost, handle string) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile()
+	if err := u.handleRegistriesLocked(filePath, newHost, delHost, handle); err != nil {
+		return err
+	}
+	if err := validateDockerConfigFn(); err != nil {
+		return err
+	}
+	if err := restartDockerFn(); err != nil {
+		return err
+	}
+	return waitForDockerActiveFn()
+}
+
+// removeInsecureRegistry is the delete-path variant of applyRegistriesChange:
+// same locked write+validate, then the repo row is removed and the restart
+// runs inside the same critical section. A failed restart must not fail the
+// deletion — the daemon.json entry and the row are already gone — but it must
+// not be silent either: the daemon keeps serving with the deleted registry
+// until a manual restart.
+func (u *ImageRepoService) removeInsecureRegistry(filePath, host string, id uint) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
+	if err := u.handleRegistriesLocked(filePath, "", host, "delete"); err != nil {
+		return err
+	}
+	if err := validateDockerConfigFn(); err != nil {
+		return err
+	}
+	if err := imageRepoRepo.Delete(commonRepo.WithByID(id)); err != nil {
+		return err
+	}
+	if err := restartDockerFn(); err != nil {
+		global.LOG.Errorf("restart docker after deleting insecure registry %s failed, err: %v", host, err)
+	}
+	return nil
+}
+
+// handleRegistriesLocked performs the insecure-registries read-modify-write on
+// the daemon.json at filePath. The caller must hold daemonJsonMu (see
+// applyRegistriesChange for why the lock must also cover validate/restart).
+func (u *ImageRepoService) handleRegistriesLocked(filePath, newHost, delHost, handle string) error {
+	err := createIfNotExistDaemonJsonFile(filePath)
 	if err != nil {
 		return err
 	}
 	daemonMap := make(map[string]interface{})
-	file, err := os.ReadFile(constant.DaemonJsonPath)
+	file, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
 	}
@@ -251,39 +291,29 @@ func (u *ImageRepoService) handleRegistries(newHost, delHost, handle string) err
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(constant.DaemonJsonPath, newJson, 0640); err != nil {
+	if err := os.WriteFile(filePath, newJson, 0640); err != nil {
 		return err
 	}
 	return nil
 }
 
-func stopBeforeUpdateRepo() error {
-	if err := validateDockerConfig(); err != nil {
-		return err
-	}
-	if err := restartDocker(); err != nil {
-		return err
-	}
+// waitForDockerActive polls `systemctl is-active docker` until the daemon
+// answers again after a restart (30s timeout).
+func waitForDockerActive() error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	if err := func() error {
-		for range ticker.C {
-			select {
-			case <-ctx.Done():
-				cancel()
-				return errors.New("the docker service cannot be restarted")
-			default:
-				stdout, err := cmd.Exec("systemctl is-active docker")
-				if string(stdout) == "active\n" && err == nil {
-					global.LOG.Info("docker restart with new conf successful!")
-					return nil
-				}
+	defer cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("the docker service cannot be restarted")
+		case <-ticker.C:
+			stdout, err := cmd.Exec("systemctl is-active docker")
+			if string(stdout) == "active\n" && err == nil {
+				global.LOG.Info("docker restart with new conf successful!")
+				return nil
 			}
 		}
-		return nil
-	}(); err != nil {
-		return err
 	}
-	return nil
 }
