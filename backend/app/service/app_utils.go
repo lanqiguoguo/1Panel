@@ -1017,10 +1017,16 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 	}
 	containerNames, err := getContainerNames(*appInstall)
 	if err != nil {
-		_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
+		message := appInstall.Message
+		if message == "" {
+			message = err.Error()
+		}
+		if _, err := appInstallRepo.UpdateFieldsByID(appInstall.ID, map[string]interface{}{
 			"status":  appInstall.Status,
-			"message": err.Error(),
-		})
+			"message": message,
+		}); err != nil {
+			global.LOG.Errorf("update app [%s] install result failed, err: %v", appInstall.Name, err)
+		}
 		return
 	}
 	persistInstallResult(appInstall, upErr, containerNames)
@@ -1043,7 +1049,9 @@ func persistInstallResult(appInstall *model.AppInstall, upErr error, containerNa
 	if len(containerNames) > 0 {
 		fields["container_name"] = strings.Join(containerNames, ",")
 	}
-	_, _ = appInstallRepo.UpdateFieldsByID(appInstall.ID, fields)
+	if _, err := appInstallRepo.UpdateFieldsByID(appInstall.ID, fields); err != nil {
+		global.LOG.Errorf("persist install result of app [%s] failed, err: %v", appInstall.Name, err)
+	}
 }
 
 func rebuildApp(appInstall model.AppInstall) error {
