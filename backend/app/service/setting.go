@@ -263,9 +263,16 @@ func (u *SettingService) UpdateProxy(req dto.ProxyUpdate) error {
 	if err := settingRepo.Update("ProxyUser", req.ProxyUser); err != nil {
 		return err
 	}
-	pass, _ := encrypt.StringEncrypt(req.ProxyPasswd)
-	if err := settingRepo.Update("ProxyPasswd", pass); err != nil {
-		return err
+	// The proxy form sends an empty password with ProxyPasswdKeep == "true" to
+	// mean "keep the stored password" (see the frontend buildReq in
+	// setting/panel/proxy/index.vue). Skip the write in that case so the stored
+	// encrypted password survives; an empty password without the keep flag
+	// still clears it, and a non-empty password always replaces it.
+	if req.ProxyPasswd != "" || req.ProxyPasswdKeep != "true" {
+		pass, _ := encrypt.StringEncrypt(req.ProxyPasswd)
+		if err := settingRepo.Update("ProxyPasswd", pass); err != nil {
+			return err
+		}
 	}
 	if err := settingRepo.Update("ProxyPasswdKeep", req.ProxyPasswdKeep); err != nil {
 		return err

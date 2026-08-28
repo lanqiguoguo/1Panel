@@ -18,8 +18,10 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/init/cache/badger_db"
 	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
+	httpUtil "github.com/1Panel-dev/1Panel/backend/utils/http"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/glebarez/sqlite"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -487,5 +489,199 @@ func TestHandlePasswordExpiredEncryptedEnvelope(t *testing.T) {
 	}
 	if err := checkPassword(buildPasswordEnvelope(t, &privateKey.PublicKey, "expired-new-password")); err != nil {
 		t.Fatalf("login checkPassword rejected the new password: %v", err)
+	}
+}
+
+// ---- proxy update flow (empty password means "keep" per the frontend form) ----
+
+const storedProxyPassword = "proxy-passwd-old"
+
+// setupProxyUpdateTest extends setupSettingUpdateTest with a stored proxy
+// configuration (including an encrypted password) plus the EncryptKey storage
+// key StringEncrypt/StringDecrypt rely on.
+func setupProxyUpdateTest(t *testing.T) {
+	t.Helper()
+	setupSettingUpdateTest(t)
+
+	// StringEncrypt/StringDecrypt cache the storage key in global config;
+	// clear it so the value seeded below is used and restore it afterwards.
+	prevKey := global.CONF.System.EncryptKey
+	global.CONF.System.EncryptKey = ""
+	t.Cleanup(func() { global.CONF.System.EncryptKey = prevKey })
+
+	// UpdateProxy ends with RefreshProxy, whose loadAndApplyProxy logs.
+	if global.LOG == nil {
+		global.LOG = logrus.New()
+	}
+
+	if err := global.DB.Create(&model.Setting{Key: "EncryptKey", Value: testEncryptKey}).Error; err != nil {
+		t.Fatalf("seed setting EncryptKey failed: %v", err)
+	}
+	storedPass, err := encrypt.StringEncrypt(storedProxyPassword)
+	if err != nil {
+		t.Fatalf("encrypt stored proxy password failed: %v", err)
+	}
+	seeds := []model.Setting{
+		{Key: "ProxyType", Value: "http"},
+		{Key: "ProxyUrl", Value: "10.0.0.1"},
+		{Key: "ProxyPort", Value: "8888"},
+		{Key: "ProxyUser", Value: "proxy-user"},
+		{Key: "ProxyPasswd", Value: storedPass},
+		{Key: "ProxyPasswdKeep", Value: "true"},
+	}
+	for i := range seeds {
+		if err := global.DB.Create(&seeds[i]).Error; err != nil {
+			t.Fatalf("seed setting %s failed: %v", seeds[i].Key, err)
+		}
+	}
+
+	// UpdateProxy ends with RefreshProxy, which stores the proxy on the shared
+	// outbound transport; reset it so later tests keep direct connectivity.
+	t.Cleanup(func() { httpUtil.SetProxyURL(nil) })
+}
+
+// proxySettingValue reads a raw setting value from the DB.
+func proxySettingValue(t *testing.T, key string) string {
+	t.Helper()
+	got, err := settingRepo.Get(settingRepo.WithByKey(key))
+	if err != nil {
+		t.Fatalf("read setting %s failed: %v", key, err)
+	}
+	return got.Value
+}
+
+// proxyStoredPasswdPlaintext decrypts the stored ProxyPasswd setting.
+func proxyStoredPasswdPlaintext(t *testing.T) string {
+	t.Helper()
+	stored := proxySettingValue(t, "ProxyPasswd")
+	if stored == "" {
+		return ""
+	}
+	plaintext, err := encrypt.StringDecrypt(stored)
+	if err != nil {
+		t.Fatalf("decrypt stored proxy password failed: %v", err)
+	}
+	return plaintext
+}
+
+// TestUpdateProxyKeepPassword covers the form's "leave empty to keep the
+// stored password" promise: an empty submitted password with
+// ProxyPasswdKeep == "true" must not touch the stored encrypted password,
+// while the other fields (url/port/user) are updated as submitted.
+func TestUpdateProxyKeepPassword(t *testing.T) {
+	setupProxyUpdateTest(t)
+	u := &SettingService{}
+	storedEncrypted := proxySettingValue(t, "ProxyPasswd")
+
+	err := u.UpdateProxy(dto.ProxyUpdate{
+		ProxyType:       "http",
+		ProxyUrl:        "10.0.0.2",
+		ProxyPort:       "9999",
+		ProxyUser:       "proxy-user",
+		ProxyPasswd:     "",
+		ProxyPasswdKeep: "true",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProxy with empty password and keep=true failed: %v", err)
+	}
+
+	if got := proxySettingValue(t, "ProxyPasswd"); got != storedEncrypted {
+		t.Errorf("stored ProxyPasswd changed to %q, want unchanged %q", got, storedEncrypted)
+	}
+	if got := proxyStoredPasswdPlaintext(t); got != storedProxyPassword {
+		t.Errorf("decrypted stored ProxyPasswd = %q, want %q", got, storedProxyPassword)
+	}
+	if got := proxySettingValue(t, "ProxyUrl"); got != "10.0.0.2" {
+		t.Errorf("ProxyUrl = %q, want 10.0.0.2", got)
+	}
+	if got := proxySettingValue(t, "ProxyPort"); got != "9999" {
+		t.Errorf("ProxyPort = %q, want 9999", got)
+	}
+	if got := proxySettingValue(t, "ProxyUser"); got != "proxy-user" {
+		t.Errorf("ProxyUser = %q, want proxy-user", got)
+	}
+	if got := proxySettingValue(t, "ProxyPasswdKeep"); got != "true" {
+		t.Errorf("ProxyPasswdKeep = %q, want true", got)
+	}
+}
+
+// TestUpdateProxyClearPassword ensures clearing stays possible: an empty
+// password without the keep flag (the form sends keep=false when the user
+// unchecks "remember password") must wipe the stored password.
+func TestUpdateProxyClearPassword(t *testing.T) {
+	setupProxyUpdateTest(t)
+	u := &SettingService{}
+
+	err := u.UpdateProxy(dto.ProxyUpdate{
+		ProxyType:       "http",
+		ProxyUrl:        "10.0.0.1",
+		ProxyPort:       "8888",
+		ProxyUser:       "proxy-user",
+		ProxyPasswd:     "",
+		ProxyPasswdKeep: "false",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProxy with empty password and keep=false failed: %v", err)
+	}
+
+	if got := proxySettingValue(t, "ProxyPasswd"); got != "" {
+		t.Errorf("stored ProxyPasswd = %q, want empty", got)
+	}
+	if got := proxySettingValue(t, "ProxyPasswdKeep"); got != "false" {
+		t.Errorf("ProxyPasswdKeep = %q, want false", got)
+	}
+}
+
+// TestUpdateProxyReplacePassword ensures a non-empty password always replaces
+// the stored encrypted value.
+func TestUpdateProxyReplacePassword(t *testing.T) {
+	setupProxyUpdateTest(t)
+	u := &SettingService{}
+	storedEncrypted := proxySettingValue(t, "ProxyPasswd")
+
+	err := u.UpdateProxy(dto.ProxyUpdate{
+		ProxyType:       "http",
+		ProxyUrl:        "10.0.0.1",
+		ProxyPort:       "8888",
+		ProxyUser:       "proxy-user",
+		ProxyPasswd:     "proxy-passwd-new",
+		ProxyPasswdKeep: "true",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProxy with a new password failed: %v", err)
+	}
+
+	storedEncryptedNew := proxySettingValue(t, "ProxyPasswd")
+	if storedEncryptedNew == storedEncrypted {
+		t.Error("stored ProxyPasswd was not replaced by the new password")
+	}
+	if got := proxyStoredPasswdPlaintext(t); got != "proxy-passwd-new" {
+		t.Errorf("decrypted stored ProxyPasswd = %q, want proxy-passwd-new", got)
+	}
+}
+
+// TestUpdateProxyDisableClearsPassword guards the disable path: switching the
+// proxy off (empty type) blanks ProxyPasswdKeep, so the stored password must
+// still be wiped even though the submitted password is empty.
+func TestUpdateProxyDisableClearsPassword(t *testing.T) {
+	setupProxyUpdateTest(t)
+	u := &SettingService{}
+
+	err := u.UpdateProxy(dto.ProxyUpdate{
+		ProxyType:       "",
+		ProxyUrl:        "",
+		ProxyPort:       "",
+		ProxyUser:       "",
+		ProxyPasswd:     "",
+		ProxyPasswdKeep: "",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProxy with empty type failed: %v", err)
+	}
+
+	for _, key := range []string{"ProxyType", "ProxyUrl", "ProxyPort", "ProxyUser", "ProxyPasswd", "ProxyPasswdKeep"} {
+		if got := proxySettingValue(t, key); got != "" {
+			t.Errorf("setting %s = %q after disabling the proxy, want empty", key, got)
+		}
 	}
 }
