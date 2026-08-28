@@ -20,6 +20,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/ssl"
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/certificate"
 	legoLogger "github.com/go-acme/lego/v4/log"
 	"github.com/jinzhu/gorm"
 	"log"
@@ -31,12 +32,27 @@ import (
 	"time"
 )
 
-// sslApplyMu 保护 lego 库的包级全局 Logger（github.com/go-acme/lego/v4/log.Logger）。
-// client.ObtainSSL 内部无法注入 per-call logger，所有 lego 日志都走该全局变量；
-// 并发证书申请（各自在 goroutine 中执行 ObtainSSL）会互相覆盖它，导致日志串写、
-// 写入已关闭的文件句柄甚至 panic。因此并发证书申请必须串行使用它：任意时刻只允许
-// 一个申请 goroutine 持有并写入 lego 全局 Logger，其余申请在 sslApplyMu 上等待。
+// sslApplyMu guards the lego library's package-level global Logger
+// (github.com/go-acme/lego/v4/log.Logger). client.ObtainSSL logs through that
+// global and offers no per-call injection, so concurrent certificate
+// applications (each running ObtainSSL in its own goroutine) would otherwise
+// overwrite it, interleaving log output, writing into an already-closed file
+// or panicking. Only the narrow section in obtainWithLegoLock — log file
+// creation, logger installation, the start message, client.ObtainSSL and its
+// error handling — touches the global; every other step of an application
+// (certificate parsing, saving, shell execution, PEM deployment, nginx and
+// system reload) runs on the per-apply local logger and must execute OUTSIDE
+// this mutex so one slow application cannot serialize all others.
 var sslApplyMu sync.Mutex
+
+// originalLegoLogger is the lego package's default Logger (log.New(os.Stderr,
+// ...)) captured at package initialization. Every holder of sslApplyMu
+// restores legoLogger.Logger to this value BEFORE releasing the lock, so that
+// code outside the critical section — including the next waiter that has not
+// installed its own logger yet — never observes a per-apply logger whose
+// backing file may already be closed (later lego log lines would then be
+// silently dropped, and log.Logger may panic on a nil writer).
+var originalLegoLogger = legoLogger.Logger
 
 type WebsiteSSLService struct {
 }
@@ -309,38 +325,26 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 	}
 
 	go func() {
-		// 串行化 lego 全局 Logger 的使用：从创建 per-域名 logFile、覆盖
-		// legoLogger.Logger 到 ObtainSSL 全程与 handleError 中的
-		// legoLogger.Logger.Println，都必须持有 sslApplyMu，保证任意时刻
-		// 只有一个证书申请 goroutine 在使用 lego 全局 Logger。
-		sslApplyMu.Lock()
-		logFile, _ := os.OpenFile(path.Join(constant.SSLLogDir, fmt.Sprintf("%s-ssl-%d.log", websiteSSL.PrimaryDomain, websiteSSL.ID)), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-		// 后注册的 defer 先执行：sslApplyMu.Unlock 在 logFile.Close 之前执行，
-		// 释放锁时前一个 goroutine 的日志句柄仍在用（且下一个持锁者会立刻
-		// 用自己新建的 logger 覆盖 legoLogger.Logger），随后 logFile 才关闭。
-		defer logFile.Close()
-		defer sslApplyMu.Unlock()
-		logger := log.New(logFile, "", log.LstdFlags)
-		legoLogger.Logger = logger
-		if !apply.DisableLog {
-			startMsg := i18n.GetMsgWithMap("ApplySSLStart", map[string]interface{}{"domain": strings.Join(domains, ","), "type": i18n.GetMsgByKey(websiteSSL.Provider)})
-			if websiteSSL.Provider == constant.DNSAccount {
-				startMsg = startMsg + i18n.GetMsgWithMap("DNSAccountName", map[string]interface{}{"name": dnsAccount.Name, "type": dnsAccount.Type})
-			}
-			legoLogger.Logger.Println(startMsg)
+		logFile, logger, resource, ok := obtainWithLegoLock(websiteSSL, dnsAccount, apply, client, domains, privateKey)
+		if logFile != nil {
+			defer logFile.Close()
 		}
-		resource, err := client.ObtainSSL(domains, privateKey)
-		if err != nil {
-			handleError(websiteSSL, err)
+		if !ok {
 			return
 		}
+		// sslApplyMu is NOT held from here on. Everything below only writes
+		// through the per-apply local logger — certificate parsing, DB saves,
+		// ExecShellWithTimeOut (up to 30 minutes), createPemFile, nginx reload
+		// and reloadSystemSSL never touch the lego global Logger — so a slow
+		// step here can no longer delay concurrent certificate applications
+		// waiting on sslApplyMu.
 		websiteSSL.PrivateKey = string(resource.PrivateKey)
 		websiteSSL.Pem = string(resource.Certificate)
 		websiteSSL.CertURL = resource.CertURL
 		certBlock, _ := pem.Decode(resource.Certificate)
 		cert, err := x509.ParseCertificate(certBlock.Bytes)
 		if err != nil {
-			handleError(websiteSSL, err)
+			handleError(websiteSSL, err, logger)
 			return
 		}
 		websiteSSL.ExpireDate = cert.NotAfter
@@ -394,14 +398,82 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 	return nil
 }
 
-func handleError(websiteSSL *model.WebsiteSSL, err error) {
+// obtainWithLegoLock runs the ONLY part of a certificate application that must
+// touch the lego package-level Logger, and it runs it under sslApplyMu:
+// opening the per-certificate log file, installing the local logger as
+// legoLogger.Logger (client.ObtainSSL logs through that global internally and
+// cannot be injected per call), printing the start message, client.ObtainSSL
+// itself and, on its failure, handleError. Production code reaches the global
+// nowhere else — printSSLLog, saveCertificateFile, ExecShellWithTimeOut,
+// createPemFile and reloadSystemSSL all work on the local logger passed down
+// by the caller — which is why this critical section can stop right after
+// ObtainSSL: parsing, saving, shell execution, PEM deployment and nginx/system
+// reload are done by the caller WITHOUT holding sslApplyMu.
+//
+// On success it returns the per-apply log file (closed later by the caller,
+// once the whole post-lock phase has finished writing to it), the local
+// logger and the obtained resource. When ObtainSSL fails, the failure is
+// recorded via handleError and the log file is closed here, because no
+// post-lock phase will run; the caller then gets ok == false.
+//
+// Defers execute in LIFO order, so the restore below (registered after the
+// Unlock defer) runs BEFORE sslApplyMu.Unlock: the global Logger is back to
+// the safe package default while the mutex is still held, so waiters and all
+// lock-free code always see a valid logger — and the restore still happens if
+// client.ObtainSSL panics.
+func obtainWithLegoLock(websiteSSL *model.WebsiteSSL, dnsAccount *model.WebsiteDnsAccount, apply request.WebsiteSSLApply, client *ssl.AcmeClient, domains []string, privateKey crypto.PrivateKey) (*os.File, *log.Logger, *certificate.Resource, bool) {
+	sslApplyMu.Lock()
+	defer sslApplyMu.Unlock()
+	defer func() { legoLogger.Logger = originalLegoLogger }()
+
+	logFile, logger := newSSLLogFile(path.Join(constant.SSLLogDir, fmt.Sprintf("%s-ssl-%d.log", websiteSSL.PrimaryDomain, websiteSSL.ID)))
+	legoLogger.Logger = logger
+	if !apply.DisableLog {
+		startMsg := i18n.GetMsgWithMap("ApplySSLStart", map[string]interface{}{"domain": strings.Join(domains, ","), "type": i18n.GetMsgByKey(websiteSSL.Provider)})
+		if websiteSSL.Provider == constant.DNSAccount {
+			startMsg = startMsg + i18n.GetMsgWithMap("DNSAccountName", map[string]interface{}{"name": dnsAccount.Name, "type": dnsAccount.Type})
+		}
+		logger.Println(startMsg)
+	}
+	resource, err := client.ObtainSSL(domains, privateKey)
+	if err != nil {
+		handleError(websiteSSL, err, logger)
+		_ = logFile.Close()
+		return nil, nil, nil, false
+	}
+	return logFile, logger, &resource, true
+}
+
+// newSSLLogFile opens (and truncates) the per-certificate apply log file at
+// logPath and returns it together with a *log.Logger writing to it. If the
+// file cannot be created it reports the reason to global.LOG and falls back to
+// a logger on os.Stderr, so callers always get a usable writer: a logger built
+// from a nil file (log.New(nil, ...)) would panic on its first write.
+func newSSLLogFile(logPath string) (*os.File, *log.Logger) {
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	if err != nil {
+		global.LOG.Errorf("failed to open ssl apply log file [%s], fallback to stderr, err: %v", logPath, err)
+		return nil, log.New(os.Stderr, "", log.LstdFlags)
+	}
+	return logFile, log.New(logFile, "", log.LstdFlags)
+}
+
+// handleError marks a certificate application as failed and persists the
+// error. It takes the application's local logger explicitly instead of using
+// the lego package-level Logger, because it runs both inside the locked
+// section (client.ObtainSSL failure) and outside of it (certificate parsing
+// failure after the lock was released), where the global may already point at
+// another applicant's file or at a closed one.
+func handleError(websiteSSL *model.WebsiteSSL, err error, logger *log.Logger) {
 	if websiteSSL.Status == constant.SSLInit || websiteSSL.Status == constant.SSLError {
 		websiteSSL.Status = constant.Error
 	} else {
 		websiteSSL.Status = constant.SSLApplyError
 	}
 	websiteSSL.Message = err.Error()
-	legoLogger.Logger.Println(i18n.GetErrMsg("ApplySSLFailed", map[string]interface{}{"domain": websiteSSL.PrimaryDomain, "detail": err.Error()}))
+	if logger != nil {
+		logger.Println(i18n.GetErrMsg("ApplySSLFailed", map[string]interface{}{"domain": websiteSSL.PrimaryDomain, "detail": err.Error()}))
+	}
 	_ = websiteSSLRepo.Save(websiteSSL)
 }
 
