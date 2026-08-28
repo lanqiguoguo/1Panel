@@ -281,11 +281,27 @@ func (a *AppInstallService) Operate(req request.AppInstalledOperate) error {
 	}
 }
 
-func (a *AppInstallService) Update(req request.AppInstalledUpdate) error {
+func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 	installed, err := appInstallRepo.GetFirst(commonRepo.WithByID(req.InstallId))
 	if err != nil {
 		return err
 	}
+	oldHttpPort, oldHttpsPort := installed.HttpPort, installed.HttpsPort
+	var claimedHttp, claimedHttps int
+	defer func() {
+		// checkPort registered the new ports above. Until they are persisted
+		// in the DB they must be released on any failure, otherwise a later
+		// install of the same port would be falsely rejected until the panel
+		// restarts.
+		if err != nil {
+			if claimedHttp > 0 {
+				releaseAppPort(claimedHttp)
+			}
+			if claimedHttps > 0 {
+				releaseAppPort(claimedHttps)
+			}
+		}
+	}()
 	changePort := false
 	port, ok := req.Params["PANEL_APP_PORT_HTTP"]
 	if ok {
@@ -296,6 +312,7 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) error {
 			if err != nil {
 				return err
 			}
+			claimedHttp = httpPort
 			installed.HttpPort = httpPort
 		}
 	}
@@ -307,6 +324,7 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) error {
 			if err != nil {
 				return err
 			}
+			claimedHttps = httpsPort
 			installed.HttpsPort = httpsPort
 		}
 	}
@@ -383,7 +401,18 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) error {
 		return err
 	}
 	installed.Status = constant.Running
-	_ = appInstallRepo.Save(context.Background(), &installed)
+	if err := appInstallRepo.Save(context.Background(), &installed); err != nil {
+		return err
+	}
+	// The new ports are persisted; release the old ones so a later install of
+	// the old port passes checkPort again. The claims of the new ports are
+	// intentionally kept: the DB row now holds them.
+	if installed.HttpPort > 0 && installed.HttpPort != oldHttpPort {
+		releaseAppPort(oldHttpPort)
+	}
+	if installed.HttpsPort > 0 && installed.HttpsPort != oldHttpsPort {
+		releaseAppPort(oldHttpsPort)
+	}
 
 	website, _ := websiteRepo.GetFirst(websiteRepo.WithAppInstallId(installed.ID))
 	if changePort && website.ID != 0 && website.Status == constant.Running {

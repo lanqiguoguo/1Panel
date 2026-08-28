@@ -56,6 +56,30 @@ var (
 	Delete DatabaseOp = "delete"
 )
 
+// registeredPorts tracks host ports that checkPort validated as free and that
+// are claimed by an in-flight app install or port change but not yet visible
+// as a running container. checkPort is a check-then-act: between the DB lookup
+// / ScanPort and the compose up a concurrent install could grab the same port.
+// Registering the port when the check passes and releasing it when the install
+// fails or the app is deleted shrinks that race window to the table update
+// itself, which is atomic via LoadOrStore. The table is in-memory only: a
+// panel restart clears it, and the DB rows of persisted installs are still
+// checked by checkPort, so a restart never leaves the table stale.
+var registeredPorts sync.Map // key: int port -> struct{}{}
+
+// tryRegisterAppPort atomically claims port for an in-flight app install. It
+// reports false when the port was already claimed.
+func tryRegisterAppPort(port int) bool {
+	_, loaded := registeredPorts.LoadOrStore(port, struct{}{})
+	return !loaded
+}
+
+// releaseAppPort frees a port previously claimed by tryRegisterAppPort. It is
+// idempotent and safe to call for ports that were never registered.
+func releaseAppPort(port int) {
+	registeredPorts.Delete(port)
+}
+
 func checkPort(key string, params map[string]interface{}) (int, error) {
 	port, ok := params[key]
 	if ok {
@@ -83,9 +107,11 @@ func checkPort(key string, params map[string]interface{}) (int, error) {
 		}
 		if common.ScanPort(portN) {
 			return portN, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
-		} else {
-			return portN, nil
 		}
+		if !tryRegisterAppPort(portN) {
+			return portN, buserr.WithDetail(constant.ErrPortInUsed, portN, nil)
+		}
+		return portN, nil
 	}
 	return 0, nil
 }
@@ -367,6 +393,12 @@ func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete b
 							_ = op.DeleteDir(websiteAppInstall.GetPath())
 						}()
 						_ = appInstallRepo.Delete(ctx, websiteAppInstall)
+						if websiteAppInstall.HttpPort > 0 {
+							releaseAppPort(websiteAppInstall.HttpPort)
+						}
+						if websiteAppInstall.HttpsPort > 0 {
+							releaseAppPort(websiteAppInstall.HttpsPort)
+						}
 					}
 				}
 			}
@@ -395,6 +427,12 @@ func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete b
 	_ = op.DeleteDir(appDir)
 	if commitErr := tx.Commit().Error; commitErr != nil {
 		return fmt.Errorf("commit app install deletion transaction failed: %w", commitErr)
+	}
+	if install.HttpPort > 0 {
+		releaseAppPort(install.HttpPort)
+	}
+	if install.HttpsPort > 0 {
+		releaseAppPort(install.HttpsPort)
 	}
 	return nil
 }

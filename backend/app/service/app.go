@@ -369,6 +369,19 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 		HttpsPort:   httpsPort,
 		App:         app,
 	}
+	// The ports registered by checkPort above only become a durable claim once
+	// the app_installs row exists. On any failure before Create the claim must
+	// be released so a later install of the same port is not rejected.
+	defer func() {
+		if err != nil {
+			if httpPort > 0 {
+				releaseAppPort(httpPort)
+			}
+			if httpsPort > 0 {
+				releaseAppPort(httpsPort)
+			}
+		}
+	}()
 	composeMap := make(map[string]interface{})
 	if req.EditCompose {
 		if err = yaml.Unmarshal([]byte(req.DockerCompose), &composeMap); err != nil {
@@ -469,6 +482,10 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 	if err = appInstallRepo.Create(ctx, appInstall); err != nil {
 		return
 	}
+	// From here on the install row exists in the DB, so the registered ports
+	// stay claimed: checkPort's DB lookup already rejects a second install of
+	// the same port. The claim is released when the app is deleted
+	// (deleteAppInstall).
 	if err = createLink(ctx, app, appInstall, req.Params); err != nil {
 		return
 	}
@@ -478,6 +495,16 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 				appInstall.Status = constant.UpErr
 				appInstall.Message = err.Error()
 				_ = appInstallRepo.Save(context.Background(), appInstall)
+				// The install row (status UpErr) keeps the port claimed in the
+				// DB, so the in-memory claim is released here to match; the DB
+				// lookup in checkPort still rejects a second install of the
+				// same port until the failed install is deleted.
+				if httpPort > 0 {
+					releaseAppPort(httpPort)
+				}
+				if httpsPort > 0 {
+					releaseAppPort(httpsPort)
+				}
 			}
 		}()
 		if err = copyData(app, appDetail, appInstall, req); err != nil {
