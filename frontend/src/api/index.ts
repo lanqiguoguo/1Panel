@@ -86,17 +86,12 @@ class RequestHttp {
                     if (!globalStore.globalLoadingTimer) {
                         let failCount = 0;
                         const timer = setInterval(async () => {
+                            let res: any;
                             try {
-                                const res = await http.post<any>(`/settings/search`);
-                                failCount = 0;
-                                if (res.data.systemStatus === 'Free') {
-                                    clearInterval(timer);
-                                    globalStore.globalLoadingTimer = null;
-                                    globalStore.setGlobalLoading(false);
-                                }
+                                res = await http.post<any>(`/settings/search`);
                             } catch {
-                                // 面板升级/重启期间的短暂中断属正常，重置失败计数后继续轮询；
-                                // 但若持续失败（服务崩溃），3 分钟后放弃并提示用户刷新页面。
+                                // 连接失败/超时/5xx（服务可能崩溃）才累计失败次数，
+                                // 连续达到上限（6 次 × 30s = 3 分钟）即停止轮询并提示。
                                 failCount++;
                                 if (failCount >= 6) {
                                     clearInterval(timer);
@@ -104,6 +99,16 @@ class RequestHttp {
                                     globalStore.setGlobalLoading(false);
                                     MsgError(i18n.global.t('commons.msg.systemOpLost'));
                                 }
+                                return;
+                            }
+                            // 能拿到应答说明服务活着。操作期间轮询请求被 407 拦截时，
+                            // 拦截器返回 undefined——这是"仍在升级/恢复中"的正常状态，
+                            // 不计失败，继续轮询；只有 systemStatus 回到 Free 才清除。
+                            failCount = 0;
+                            if (res?.data?.systemStatus === 'Free') {
+                                clearInterval(timer);
+                                globalStore.globalLoadingTimer = null;
+                                globalStore.setGlobalLoading(false);
                             }
                         }, 30000);
                         globalStore.globalLoadingTimer = timer;
