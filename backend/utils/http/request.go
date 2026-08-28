@@ -25,6 +25,13 @@ func SetProxyURL(u *url.URL) {
 // NewTransport 返回统一的出站 Transport：
 // 代理优先级为面板设置 > 环境变量，环回地址始终直连，启用证书校验。
 func NewTransport() *http.Transport {
+	return NewTransportWith(10*time.Second, 5*time.Second)
+}
+
+// NewTransportWith returns the unified outbound transport with configurable
+// timeouts; proxy priority is panel settings > environment variables,
+// loopback addresses are always direct, and TLS verification is enabled.
+func NewTransportWith(responseHeaderTimeout, tlsHandshakeTimeout time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
 			if host := req.URL.Hostname(); host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -39,8 +46,8 @@ func NewTransport() *http.Transport {
 			Timeout:   60 * time.Second,
 			KeepAlive: 60 * time.Second,
 		}).DialContext,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		IdleConnTimeout:       15 * time.Second,
 	}
 }

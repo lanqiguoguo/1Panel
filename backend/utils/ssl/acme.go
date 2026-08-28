@@ -9,12 +9,14 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	httpUtil "github.com/1Panel-dev/1Panel/backend/utils/http"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type domainError struct {
@@ -148,8 +150,22 @@ func NewRegisterClient(acmeAccount *model.WebsiteAcmeAccount) (*AcmeClient, erro
 	return acmeClient, nil
 }
 
+// newACMEHTTPClient returns an HTTP client for ACME API traffic that honors
+// the panel proxy (panel settings > environment variables > direct) and uses
+// timeouts generous enough for slow CA operations such as order finalize.
+func newACMEHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   2 * time.Minute,
+		Transport: httpUtil.NewTransportWith(30*time.Second, 30*time.Second),
+	}
+}
+
 func newConfig(user *AcmeUser, accountType string) *lego.Config {
 	config := lego.NewConfig(user)
+	// Route all ACME API calls through the unified panel transport so the
+	// configured panel proxy is honored; lego's default client would only
+	// pick up proxies from environment variables.
+	config.HTTPClient = newACMEHTTPClient()
 	switch accountType {
 	case "letsencrypt":
 		config.CADirURL = "https://acme-v02.api.letsencrypt.org/directory"
@@ -179,7 +195,7 @@ func getZeroSSLEabCredentials(email string) (*zeroSSLRes, error) {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := newACMEHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
