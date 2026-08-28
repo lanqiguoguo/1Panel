@@ -1423,6 +1423,7 @@ const message = {
         proxyPasswdUnchanged: '留空则保持原密码不变',
         proxyTest: '测试连接',
         proxyTestSuccess: '连接成功：',
+        proxyTestFailed: '代理连接测试失败',
         proxyAddrRequired: '请先填写代理地址',
         proxyUrl: '代理地址',
         proxyPort: '代理端口',

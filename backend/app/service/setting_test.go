@@ -686,3 +686,45 @@ func TestUpdateProxyDisableClearsPassword(t *testing.T) {
 		}
 	}
 }
+
+// TestTestProxyKeepPassword covers the keep semantics TestProxy relies on via
+// resolveProxyPassword: an empty submitted password with ProxyPasswdKeep ==
+// "true" must resolve to the decrypted stored password, so "test connection"
+// uses the same credentials as the saved configuration. No network involved.
+func TestTestProxyKeepPassword(t *testing.T) {
+	setupProxyUpdateTest(t)
+
+	t.Run("empty password with keep=true resolves to stored plaintext", func(t *testing.T) {
+		got := resolveProxyPassword(dto.ProxyUpdate{
+			ProxyType:       "http",
+			ProxyUrl:        "10.0.0.1",
+			ProxyPort:       "8888",
+			ProxyUser:       "proxy-user",
+			ProxyPasswd:     "",
+			ProxyPasswdKeep: "true",
+		})
+		if got != storedProxyPassword {
+			t.Errorf("resolveProxyPassword = %q, want stored plaintext %q", got, storedProxyPassword)
+		}
+	})
+
+	t.Run("empty password with keep=false stays empty", func(t *testing.T) {
+		got := resolveProxyPassword(dto.ProxyUpdate{
+			ProxyPasswd:     "",
+			ProxyPasswdKeep: "false",
+		})
+		if got != "" {
+			t.Errorf("resolveProxyPassword = %q, want empty", got)
+		}
+	})
+
+	t.Run("non-empty password is returned as-is", func(t *testing.T) {
+		got := resolveProxyPassword(dto.ProxyUpdate{
+			ProxyPasswd:     "proxy-passwd-new",
+			ProxyPasswdKeep: "true",
+		})
+		if got != "proxy-passwd-new" {
+			t.Errorf("resolveProxyPassword = %q, want proxy-passwd-new", got)
+		}
+	})
+}

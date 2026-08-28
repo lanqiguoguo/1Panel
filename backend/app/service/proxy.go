@@ -95,8 +95,26 @@ func loadAndApplyProxy() {
 	}
 }
 
+// resolveProxyPassword 解析表单提交的代理密码，与保存路径的 keep 语义一致：
+// 密码为空且 ProxyPasswdKeep == "true" 时，回退读取 settings 表已存（加密）
+// 的 ProxyPasswd 并解密；解密失败不硬报错，仅记录日志（保持调用方既有行为）。
+func resolveProxyPassword(req dto.ProxyUpdate) string {
+	pass := req.ProxyPasswd
+	if pass == "" && req.ProxyPasswdKeep == "true" {
+		if stored, err := settingRepo.Get(settingRepo.WithByKey("ProxyPasswd")); err == nil && stored.Value != "" {
+			if plain, derr := encrypt.StringDecrypt(stored.Value); derr == nil {
+				pass = plain
+			} else {
+				global.LOG.Errorf("decrypt stored proxy password for test failed: %v", derr)
+			}
+		}
+	}
+	return pass
+}
+
 // TestProxy 用表单当前值建立临时代理客户端访问固定目标，返回耗时描述。
 func (s *SettingService) TestProxy(req dto.ProxyUpdate) (string, error) {
+	req.ProxyPasswd = resolveProxyPassword(req)
 	u, err := buildProxyURL(req.ProxyType, req.ProxyUrl, req.ProxyPort, req.ProxyUser, req.ProxyPasswd)
 	if err != nil {
 		return "", err

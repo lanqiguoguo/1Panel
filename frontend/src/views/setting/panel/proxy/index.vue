@@ -217,6 +217,7 @@ const onTest = async () => {
         })
         .catch(() => {
             testLoading.value = false;
+            MsgError(i18n.global.t('setting.proxyTestFailed'));
         });
 };
 

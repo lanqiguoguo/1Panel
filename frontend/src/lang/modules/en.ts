@@ -1497,6 +1497,7 @@ const message = {
         proxyPasswdUnchanged: 'Leave empty to keep the current password',
         proxyTest: 'Test Connection',
         proxyTestSuccess: 'Connected:',
+        proxyTestFailed: 'Proxy connection test failed',
         proxyAddrRequired: 'Please fill in the proxy address first',
         proxyUrl: 'Proxy Address',
         proxyPort: 'Proxy Port',
