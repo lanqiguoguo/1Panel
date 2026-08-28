@@ -30,26 +30,32 @@ type snapHelper struct {
 
 func snapJson(snap snapHelper, snapJson SnapshotJson, targetDir string) {
 	defer snap.Wg.Done()
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_info": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_info": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot panel_info status to running failed, err: %v", err)
+	}
 	status := constant.StatusDone
 	remarkInfo, _ := json.MarshalIndent(snapJson, "", "\t")
 	if err := os.WriteFile(fmt.Sprintf("%s/snapshot.json", targetDir), remarkInfo, 0640); err != nil {
 		status = err.Error()
 	}
-	snap.Status.PanelInfo = status
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_info": status})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_info": status}); err != nil {
+		global.LOG.Errorf("update snapshot panel_info status failed, err: %v", err)
+	}
 }
 
 func snapPanel(snap snapHelper, targetDir string) {
 	defer snap.Wg.Done()
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot panel status to running failed, err: %v", err)
+	}
 	status := constant.StatusDone
 	h, err := systemctl.DefaultHandler("1panel")
 
 	if err != nil {
 		status = fmt.Sprintf("initialize service handle failed: %v", err)
-		snap.Status.Panel = status
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status}); err != nil {
+			global.LOG.Errorf("update snapshot panel status failed, err: %v", err)
+		}
 		return
 	}
 
@@ -57,8 +63,9 @@ func snapPanel(snap snapHelper, targetDir string) {
 	servicePath, err := h.GetServicePath()
 	if err != nil {
 		status = fmt.Sprintf("get service path failed: %v", err)
-		snap.Status.Panel = status
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status}); err != nil {
+			global.LOG.Errorf("update snapshot panel status failed, err: %v", err)
+		}
 		return
 	}
 
@@ -79,39 +86,48 @@ func snapPanel(snap snapHelper, targetDir string) {
 	if err := common.CopyDirs(initScriptDir, path.Join(targetDir, "initscript")); err != nil { // copy init script to targetDir
 		status = err.Error()
 	}
-	snap.Status.Panel = status
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel": status}); err != nil {
+		global.LOG.Errorf("update snapshot panel status failed, err: %v", err)
+	}
 }
 
 func snapDaemonJson(snap snapHelper, targetDir string) {
 	defer snap.Wg.Done()
 	status := constant.StatusDone
 	if !snap.FileOp.Stat("/etc/docker/daemon.json") {
-		snap.Status.DaemonJson = status
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": status})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": status}); err != nil {
+			global.LOG.Errorf("update snapshot daemon_json status failed, err: %v", err)
+		}
 		return
 	}
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot daemon_json status to running failed, err: %v", err)
+	}
 	if err := common.CopyFile("/etc/docker/daemon.json", targetDir); err != nil {
 		status = err.Error()
 	}
-	snap.Status.DaemonJson = status
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": status})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"daemon_json": status}); err != nil {
+		global.LOG.Errorf("update snapshot daemon_json status failed, err: %v", err)
+	}
 }
 
 func snapAppData(snap snapHelper, targetDir string) {
 	defer snap.Wg.Done()
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot app_data status to running failed, err: %v", err)
+	}
 	appInstalls, err := appInstallRepo.ListBy()
 	if err != nil {
-		snap.Status.AppData = err.Error()
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": err.Error()})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": err.Error()}); err != nil {
+			global.LOG.Errorf("update snapshot app_data status failed, err: %v", err)
+		}
 		return
 	}
 	runtimes, err := runtimeRepo.List()
 	if err != nil {
-		snap.Status.AppData = err.Error()
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": err.Error()})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": err.Error()}); err != nil {
+			global.LOG.Errorf("update snapshot app_data status failed, err: %v", err)
+		}
 		return
 	}
 	imageRegex := regexp.MustCompile(`image:\s*(.*)`)
@@ -143,28 +159,35 @@ func snapAppData(snap snapHelper, targetDir string) {
 		global.LOG.Debugf("docker save %s | gzip -c > %s", strings.Join(imageSaveList, " "), path.Join(targetDir, "docker_image.tar"))
 		std, err := cmd.Execf("docker save %s | gzip -c > %s", strings.Join(imageSaveList, " "), path.Join(targetDir, "docker_image.tar"))
 		if err != nil {
-			snap.Status.AppData = err.Error()
-			_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": std})
+			if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": std}); err != nil {
+				global.LOG.Errorf("update snapshot app_data status failed, err: %v", err)
+			}
 			return
 		}
 	}
-	snap.Status.AppData = constant.StatusDone
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": constant.StatusDone})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": constant.StatusDone}); err != nil {
+		global.LOG.Errorf("update snapshot app_data status failed, err: %v", err)
+	}
 }
 
 func snapBackup(snap snapHelper, localDir, targetDir string) {
 	defer snap.Wg.Done()
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"backup_data": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"backup_data": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot backup_data status to running failed, err: %v", err)
+	}
 	status := constant.StatusDone
 	if err := handleSnapTar(localDir, targetDir, "1panel_backup.tar.gz", "./system;./system_snapshot;", ""); err != nil {
 		status = err.Error()
 	}
-	snap.Status.BackupData = status
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"backup_data": status})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"backup_data": status}); err != nil {
+		global.LOG.Errorf("update snapshot backup_data status failed, err: %v", err)
+	}
 }
 
 func snapPanelData(snap snapHelper, localDir, targetDir string) {
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_data": constant.Running})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_data": constant.Running}); err != nil {
+		global.LOG.Errorf("update snapshot panel_data status to running failed, err: %v", err)
+	}
 	status := constant.StatusDone
 	dataDir := path.Join(global.CONF.System.BaseDir, "1panel")
 	exclusionRules := "./tmp;./log;./cache;./db/1Panel.db-*;"
@@ -179,41 +202,50 @@ func snapPanelData(snap snapHelper, localDir, targetDir string) {
 		}
 		exclusionRules += ("." + strings.ReplaceAll(ignore, dataDir, "") + ";")
 	}
-	_ = snapshotRepo.Update(snap.SnapID, map[string]interface{}{"status": "OnSaveData"})
+	if err := snapshotRepo.Update(snap.SnapID, map[string]interface{}{"status": "OnSaveData"}); err != nil {
+		global.LOG.Errorf("update snapshot status to OnSaveData failed, err: %v", err)
+	}
 	sysIP, _ := settingRepo.Get(settingRepo.WithByKey("SystemIP"))
 	_ = settingRepo.Update("SystemIP", "")
 	checkPointOfWal()
 	if err := handleSnapTar(dataDir, targetDir, "1panel_data.tar.gz", exclusionRules, ""); err != nil {
 		status = err.Error()
 	}
-	_ = snapshotRepo.Update(snap.SnapID, map[string]interface{}{"status": constant.StatusWaiting})
+	if err := snapshotRepo.Update(snap.SnapID, map[string]interface{}{"status": constant.StatusWaiting}); err != nil {
+		global.LOG.Errorf("update snapshot status to waiting failed, err: %v", err)
+	}
 
-	snap.Status.PanelData = status
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_data": status})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"panel_data": status}); err != nil {
+		global.LOG.Errorf("update snapshot panel_data status failed, err: %v", err)
+	}
 	_ = settingRepo.Update("SystemIP", sysIP.Value)
 }
 
 func snapCompress(snap snapHelper, rootDir string, secret string) {
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": constant.StatusRunning})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": constant.StatusRunning}); err != nil {
+		global.LOG.Errorf("update snapshot compress status to running failed, err: %v", err)
+	}
 	tmpDir := path.Join(global.CONF.System.TmpDir, "system")
 	fileName := fmt.Sprintf("%s.tar.gz", path.Base(rootDir))
 	if err := handleSnapTar(rootDir, tmpDir, fileName, "", secret); err != nil {
-		snap.Status.Compress = err.Error()
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": err.Error()})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": err.Error()}); err != nil {
+			global.LOG.Errorf("update snapshot compress status failed, err: %v", err)
+		}
 		return
 	}
 
 	stat, err := os.Stat(path.Join(tmpDir, fileName))
 	if err != nil {
-		snap.Status.Compress = err.Error()
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": err.Error()})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": err.Error()}); err != nil {
+			global.LOG.Errorf("update snapshot compress status failed, err: %v", err)
+		}
 		return
 	}
 	size := common.LoadSizeUnit2F(float64(stat.Size()))
 	global.LOG.Debugf("compress successful! size of file: %s", size)
-	snap.Status.Compress = constant.StatusDone
-	snap.Status.Size = size
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": constant.StatusDone, "size": size})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"compress": constant.StatusDone, "size": size}); err != nil {
+		global.LOG.Errorf("update snapshot compress status failed, err: %v", err)
+	}
 
 	global.LOG.Debugf("remove snapshot file %s", rootDir)
 	_ = os.RemoveAll(rootDir)
@@ -221,11 +253,14 @@ func snapCompress(snap snapHelper, rootDir string, secret string) {
 
 func snapUpload(snap snapHelper, accounts string, file string) {
 	source := path.Join(global.CONF.System.TmpDir, "system", path.Base(file))
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": constant.StatusUploading})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": constant.StatusUploading}); err != nil {
+		global.LOG.Errorf("update snapshot upload status to uploading failed, err: %v", err)
+	}
 	accountMap, err := loadClientMap(accounts)
 	if err != nil {
-		snap.Status.Upload = err.Error()
-		_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": err.Error()})
+		if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": err.Error()}); err != nil {
+			global.LOG.Errorf("update snapshot upload status failed, err: %v", err)
+		}
 		return
 	}
 	targetAccounts := strings.Split(accounts, ",")
@@ -233,14 +268,16 @@ func snapUpload(snap snapHelper, accounts string, file string) {
 		global.LOG.Debugf("start upload snapshot to %s, path: %s", item, path.Join(accountMap[item].backupPath, "system_snapshot", path.Base(file)))
 		if _, err := accountMap[item].client.Upload(source, path.Join(accountMap[item].backupPath, "system_snapshot", path.Base(file))); err != nil {
 			global.LOG.Debugf("upload to %s failed, err: %v", item, err)
-			snap.Status.Upload = err.Error()
-			_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": err.Error()})
+			if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": err.Error()}); err != nil {
+				global.LOG.Errorf("update snapshot upload status failed, err: %v", err)
+			}
 			return
 		}
 		global.LOG.Debugf("upload to %s successful", item)
 	}
-	snap.Status.Upload = constant.StatusDone
-	_ = snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": constant.StatusDone})
+	if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"upload": constant.StatusDone}); err != nil {
+		global.LOG.Errorf("update snapshot upload status failed, err: %v", err)
+	}
 
 	global.LOG.Debugf("remove snapshot file %s", source)
 	_ = os.Remove(source)

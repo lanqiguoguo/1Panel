@@ -385,6 +385,11 @@ const onSubmitDelete = async () => {
         .then(() => {
             loading.value = false;
             MsgSuccess(i18n.global.t('commons.msg.deleteSuccess'));
+            // If the status dialog is watching a deleted snapshot, close it so
+            // its polling stops hitting the removed record.
+            if (snapStatusRef.value) {
+                snapStatusRef.value.close();
+            }
             search();
         })
         .catch(() => {

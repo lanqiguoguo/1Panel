@@ -189,6 +189,18 @@ const onClose = async () => {
     dialogVisible.value = false;
 };
 
+// close stops the status polling and hides the dialog. It is called by the
+// parent when the snapshot being watched is deleted, so the polling loop does
+// not keep hitting a removed record (which would surface a persistent
+// "record not found" error until the page is refreshed).
+const close = () => {
+    if (timer) {
+        clearInterval(Number(timer));
+        timer = null;
+    }
+    dialogVisible.value = false;
+};
+
 const onRetry = async () => {
     loading.value = true;
     await snapshotCreate({
@@ -210,17 +222,23 @@ const onRetry = async () => {
 const onWatch = () => {
     timer = setInterval(async () => {
         if (keepLoadStatus()) {
-            const res = await loadSnapStatus(snapID.value);
-            status.panel = res.data.panel;
-            status.panelInfo = res.data.panelInfo;
-            status.daemonJson = res.data.daemonJson;
-            status.appData = res.data.appData;
-            status.panelData = res.data.panelData;
-            status.backupData = res.data.backupData;
+            try {
+                const res = await loadSnapStatus(snapID.value);
+                status.panel = res.data.panel;
+                status.panelInfo = res.data.panelInfo;
+                status.daemonJson = res.data.daemonJson;
+                status.appData = res.data.appData;
+                status.panelData = res.data.panelData;
+                status.backupData = res.data.backupData;
 
-            status.compress = res.data.compress;
-            status.size = res.data.size;
-            status.upload = res.data.upload;
+                status.compress = res.data.compress;
+                status.size = res.data.size;
+                status.upload = res.data.upload;
+            } catch {
+                // The snapshot may have been deleted while this dialog was
+                // open; stop polling instead of surfacing an error every tick.
+                close();
+            }
         }
     }, 1000 * 3);
 };
@@ -320,6 +338,7 @@ onBeforeUnmount(() => {
 });
 defineExpose({
     acceptParams,
+    close,
 });
 </script>
 <style scoped lang="scss">

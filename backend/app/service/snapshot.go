@@ -15,6 +15,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
+	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/jinzhu/copier"
@@ -163,7 +164,9 @@ func (u *SnapshotService) SnapshotRecover(req dto.SnapshotRecover) error {
 		_ = os.MkdirAll(baseDir, os.ModePerm)
 	}
 
-	_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"recover_status": constant.StatusWaiting})
+	if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"recover_status": constant.StatusWaiting}); err != nil {
+		global.LOG.Errorf("update snapshot recover status to waiting failed, err: %v", err)
+	}
 	_ = settingRepo.Update("SystemStatus", "Recovering")
 	go u.HandleSnapshotRecover(snap, true, req)
 	return nil
@@ -196,6 +199,23 @@ func (u *SnapshotService) readFromJson(path string) (SnapshotJson, error) {
 	return snap, nil
 }
 
+// buildSnapshotName builds a snapshot name from the version, os and timestamp.
+// To avoid name collisions (the timestamp has second-level precision, so two
+// snapshot creations within the same second would produce the same name and
+// overwrite each other's files), an existing record with the same name is
+// detected first and a random suffix is appended.
+func buildSnapshotName(version, os, timeNow string, isCronjob bool) string {
+	name := fmt.Sprintf("1panel_%s_%s_%s", version, os, timeNow)
+	if isCronjob {
+		name = fmt.Sprintf("snapshot_1panel_%s_%s_%s", version, os, timeNow)
+	}
+	existing, _ := snapshotRepo.Get(commonRepo.WithByName(name))
+	if existing.ID == 0 {
+		return name
+	}
+	return fmt.Sprintf("%s-%s", name, common.RandStrAndNum(4))
+}
+
 func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto.SnapshotCreate, timeNow string, secret string) (string, error) {
 	localDir, err := loadLocalDir()
 	if err != nil {
@@ -210,10 +230,7 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 	if req.ID == 0 {
 		versionItem, _ := settingRepo.Get(settingRepo.WithByKey("SystemVersion"))
 
-		name := fmt.Sprintf("1panel_%s_%s_%s", versionItem.Value, loadOs(), timeNow)
-		if isCronjob {
-			name = fmt.Sprintf("snapshot_1panel_%s_%s_%s", versionItem.Value, loadOs(), timeNow)
-		}
+		name := buildSnapshotName(versionItem.Value, loadOs(), timeNow, isCronjob)
 		rootDir = path.Join(localDir, "system", name)
 
 		snap = model.Snapshot{
@@ -224,19 +241,29 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 			Version:         versionItem.Value,
 			Status:          constant.StatusWaiting,
 		}
-		_ = snapshotRepo.Create(&snap)
+		if err := snapshotRepo.Create(&snap); err != nil {
+			return "", fmt.Errorf("create snapshot record failed, err: %v", err)
+		}
 		snapStatus.SnapID = snap.ID
-		_ = snapshotRepo.CreateStatus(&snapStatus)
+		if err := snapshotRepo.CreateStatus(&snapStatus); err != nil {
+			global.LOG.Errorf("create snapshot status failed, err: %v", err)
+			return "", fmt.Errorf("create snapshot status failed, err: %v", err)
+		}
 	} else {
 		snap, err = snapshotRepo.Get(commonRepo.WithByID(req.ID))
 		if err != nil {
 			return "", err
 		}
-		_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusWaiting})
+		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusWaiting}); err != nil {
+			global.LOG.Errorf("update snapshot status to waiting failed, err: %v", err)
+		}
 		snapStatus, _ = snapshotRepo.GetStatus(snap.ID)
 		if snapStatus.ID == 0 {
 			snapStatus.SnapID = snap.ID
-			_ = snapshotRepo.CreateStatus(&snapStatus)
+			if err := snapshotRepo.CreateStatus(&snapStatus); err != nil {
+				global.LOG.Errorf("create snapshot status failed, err: %v", err)
+				return "", fmt.Errorf("create snapshot status failed, err: %v", err)
+			}
 		}
 		rootDir = path.Join(localDir, fmt.Sprintf("system/%s", snap.Name))
 	}
@@ -253,7 +280,7 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 		BackupDataDir: localDir,
 		PanelDataDir:  path.Join(global.CONF.System.BaseDir, "1panel"),
 	}
-	loadLogByStatus(snapStatus, logPath)
+	loadSnapLog(snap.ID, logPath)
 	if snapStatus.PanelInfo != constant.StatusDone {
 		wg.Add(1)
 		go snapJson(itemHelper, jsonItem, rootDir)
@@ -279,63 +306,90 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 		go func() {
 			wg.Wait()
 			if !checkIsAllDone(snap.ID) {
-				_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
+				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+				}
 				return
 			}
-			if snapStatus.PanelData != constant.StatusDone {
+			statusItem, _ := snapshotRepo.GetStatus(snap.ID)
+			if statusItem.PanelData != constant.StatusDone {
 				snapPanelData(itemHelper, localDir, backupPanelDir)
 			}
-			if snapStatus.PanelData != constant.StatusDone {
-				_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
+			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			if statusItem.PanelData != constant.StatusDone {
+				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+				}
 				return
 			}
-			if snapStatus.Compress != constant.StatusDone {
+			if statusItem.Compress != constant.StatusDone {
 				snapCompress(itemHelper, rootDir, secret)
 			}
-			if snapStatus.Compress != constant.StatusDone {
-				_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
+			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			if statusItem.Compress != constant.StatusDone {
+				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+				}
 				return
 			}
-			if snapStatus.Upload != constant.StatusDone {
+			if statusItem.Upload != constant.StatusDone {
 				snapUpload(itemHelper, req.From, fmt.Sprintf("%s.tar.gz", rootDir))
 			}
-			if snapStatus.Upload != constant.StatusDone {
-				_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
+			statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+			if statusItem.Upload != constant.StatusDone {
+				if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+					global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+				}
 				return
 			}
-			_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusSuccess})
+			if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusSuccess}); err != nil {
+				global.LOG.Errorf("update snapshot status to success failed, err: %v", err)
+			}
 		}()
 		return "", nil
 	}
 	wg.Wait()
 	if !checkIsAllDone(snap.ID) {
-		_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
-		loadLogByStatus(snapStatus, logPath)
+		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+		}
+		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s backup failed", snap.Name)
 	}
-	loadLogByStatus(snapStatus, logPath)
+	loadSnapLog(snap.ID, logPath)
 	snapPanelData(itemHelper, localDir, backupPanelDir)
-	if snapStatus.PanelData != constant.StatusDone {
-		_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
-		loadLogByStatus(snapStatus, logPath)
+	statusItem, _ := snapshotRepo.GetStatus(snap.ID)
+	if statusItem.PanelData != constant.StatusDone {
+		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+		}
+		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s 1panel data failed", snap.Name)
 	}
-	loadLogByStatus(snapStatus, logPath)
+	loadSnapLog(snap.ID, logPath)
 	snapCompress(itemHelper, rootDir, secret)
-	if snapStatus.Compress != constant.StatusDone {
-		_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
-		loadLogByStatus(snapStatus, logPath)
+	statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+	if statusItem.Compress != constant.StatusDone {
+		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+		}
+		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s compress failed", snap.Name)
 	}
-	loadLogByStatus(snapStatus, logPath)
+	loadSnapLog(snap.ID, logPath)
 	snapUpload(itemHelper, req.From, fmt.Sprintf("%s.tar.gz", rootDir))
-	if snapStatus.Upload != constant.StatusDone {
-		_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed})
-		loadLogByStatus(snapStatus, logPath)
+	statusItem, _ = snapshotRepo.GetStatus(snap.ID)
+	if statusItem.Upload != constant.StatusDone {
+		if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusFailed}); err != nil {
+			global.LOG.Errorf("update snapshot status to failed failed, err: %v", err)
+		}
+		loadSnapLog(snap.ID, logPath)
 		return snap.Name, fmt.Errorf("snapshot %s upload failed", snap.Name)
 	}
-	_ = snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusSuccess})
-	loadLogByStatus(snapStatus, logPath)
+	if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"status": constant.StatusSuccess}); err != nil {
+		global.LOG.Errorf("update snapshot status to success failed, err: %v", err)
+	}
+	loadSnapLog(snap.ID, logPath)
 	return snap.Name, nil
 }
 
@@ -478,7 +532,11 @@ func checkAllDone(status model.SnapshotStatus) (bool, string) {
 	return true, ""
 }
 
-func loadLogByStatus(status model.SnapshotStatus, logPath string) {
+// loadSnapLog reads the latest snapshot status from the database and writes a
+// human readable progress log. Reading from the database keeps the log in sync
+// with the per-worker DB status updates instead of a shared in-memory status.
+func loadSnapLog(snapID uint, logPath string) {
+	status, _ := snapshotRepo.GetStatus(snapID)
 	logs := ""
 	logs += fmt.Sprintf("Write 1Panel basic information: %s \n", status.PanelInfo)
 	logs += fmt.Sprintf("Backup 1Panel system files: %s \n", status.Panel)

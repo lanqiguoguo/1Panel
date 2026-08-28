@@ -194,6 +194,19 @@ func backupBeforeRecover(snap model.Snapshot) error {
 	_ = os.MkdirAll(path.Join(baseDir, "1panel"), os.ModePerm)
 	_ = os.MkdirAll(path.Join(baseDir, "docker"), os.ModePerm)
 
+	// The snapshot workers only persist their progress to the database (they no
+	// longer write the shared in-memory status), so give them a dedicated
+	// status row to report through and read it back afterwards. snap_id 0 is
+	// never used by real snapshot records, keeping this out of the way.
+	if err := snapshotRepo.CreateStatus(&status); err != nil {
+		return fmt.Errorf("create backup status failed, err: %v", err)
+	}
+	defer func() {
+		if err := snapshotRepo.DeleteStatus(status.SnapID); err != nil {
+			global.LOG.Errorf("delete backup status failed, err: %v", err)
+		}
+	}()
+
 	wg.Add(4)
 	itemHelper.Wg = &wg
 	go snapJson(itemHelper, jsonItem, baseDir)
@@ -201,15 +214,27 @@ func backupBeforeRecover(snap model.Snapshot) error {
 	go snapDaemonJson(itemHelper, path.Join(baseDir, "docker"))
 	go snapBackup(itemHelper, global.CONF.System.Backup, path.Join(baseDir, "1panel"))
 	wg.Wait()
-	itemHelper.Status.AppData = constant.StatusDone
+	// app data is not part of the pre-recover backup; mark it done like the
+	// original in-memory flow did so checkAllDone passes.
+	if err := snapshotRepo.UpdateStatus(status.ID, map[string]interface{}{"app_data": constant.StatusDone}); err != nil {
+		global.LOG.Errorf("update backup status app_data failed, err: %v", err)
+	}
 
-	allDone, msg := checkAllDone(status)
+	statusItem, err := snapshotRepo.GetStatus(status.SnapID)
+	if err != nil {
+		return fmt.Errorf("load backup status failed, err: %v", err)
+	}
+	allDone, msg := checkAllDone(statusItem)
 	if !allDone {
 		return errors.New(msg)
 	}
 	snapPanelData(itemHelper, global.CONF.System.BaseDir, path.Join(baseDir, "1panel"))
-	if status.PanelData != constant.StatusDone {
-		return errors.New(status.PanelData)
+	statusItem, err = snapshotRepo.GetStatus(status.SnapID)
+	if err != nil {
+		return fmt.Errorf("load backup status failed, err: %v", err)
+	}
+	if statusItem.PanelData != constant.StatusDone {
+		return errors.New(statusItem.PanelData)
 	}
 	return nil
 }
