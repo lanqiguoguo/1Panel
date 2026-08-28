@@ -92,7 +92,10 @@ type FileWget struct {
 }
 
 type FileMove struct {
-	Type       string   `json:"type" validate:"required"`
+	// Type only accepts "cut" or "copy": the service implements exactly these
+	// two branches, and any other value (e.g. "move") used to fall through
+	// both of them and return success without doing anything.
+	Type       string   `json:"type" validate:"required,oneof=cut copy"`
 	OldPaths   []string `json:"oldPaths" validate:"required"`
 	NewPath    string   `json:"newPath" validate:"required"`
 	Name       string   `json:"name"`
