@@ -205,6 +205,11 @@ func (u *ImageRepoService) CheckConn(host, user, password string) error {
 }
 
 func (u *ImageRepoService) handleRegistries(newHost, delHost, handle string) error {
+	// daemon.json is a single shared config file: serialize with the other
+	// writers (docker.go UpdateConf/applyDaemonJsonProxies etc.) so a
+	// concurrent read-modify-write cannot be lost.
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	err := createIfNotExistDaemonJsonFile()
 	if err != nil {
 		return err

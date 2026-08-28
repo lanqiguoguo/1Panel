@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -21,6 +22,13 @@ import (
 )
 
 type DockerService struct{}
+
+// daemonJsonMu serializes every daemon.json read-modify-write + validate +
+// restart critical section (UpdateConf, UpdateLogOption, UpdateIpv6Option,
+// UpdateConfByFile, applyDaemonJsonProxies): daemon.json is a single-file
+// global config, so writers must be mutually exclusive to prevent concurrent
+// writes overwriting each other and rollbacks reading a half-written file.
+var daemonJsonMu sync.Mutex
 
 type IDockerService interface {
 	UpdateConf(req dto.SettingUpdate) error
@@ -134,6 +142,8 @@ func (u *DockerService) LoadDockerConf() *dto.DaemonJsonConf {
 }
 
 func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	err := createIfNotExistDaemonJsonFile()
 	if err != nil {
 		return err
@@ -257,6 +267,8 @@ func createIfNotExistDaemonJsonFile() error {
 }
 
 func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	err := createIfNotExistDaemonJsonFile()
 	if err != nil {
 		return err
@@ -292,6 +304,8 @@ func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 }
 
 func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	err := createIfNotExistDaemonJsonFile()
 	if err != nil {
 		return err
@@ -335,6 +349,8 @@ func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
 }
 
 func (u *DockerService) UpdateConfByFile(req dto.DaemonJsonUpdateByFile) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	if len(req.File) == 0 {
 		_ = os.Remove(constant.DaemonJsonPath)
 		if err := restartDocker(); err != nil {
@@ -630,6 +646,8 @@ func rollbackDaemonJson(filePath string, backup daemonJsonBackup, cause error) e
 // failure (write/validate/restart/ping) the previous file state is restored
 // (with one more restart attempt) and a wrapped error is returned.
 func applyDaemonJsonProxies(filePath string, proxies map[string]interface{}) error {
+	daemonJsonMu.Lock()
+	defer daemonJsonMu.Unlock()
 	backup, err := backupDaemonJson(filePath)
 	if err != nil {
 		return fmt.Errorf("backup %s failed: %w", filePath, err)
