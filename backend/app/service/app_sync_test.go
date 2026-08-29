@@ -335,3 +335,16 @@ func TestDownloadAppAssetsVersionsExceedTasks(t *testing.T) {
 		t.Fatal("downloadAppAssets deadlocked: versions outnumber tasks")
 	}
 }
+
+// TestIsV2OnlyApp verifies the store-key guard: the V2-only PHP must be
+// skipped while the V1 variants stay.
+func TestIsV2OnlyApp(t *testing.T) {
+	if !isV2OnlyApp("php") {
+		t.Fatal("key 'php' must be treated as V2-only")
+	}
+	for _, key := range []string{"php5", "php7", "php8", "node", "go", "java", "python", "dotnet", "mysql", "redis"} {
+		if isV2OnlyApp(key) {
+			t.Fatalf("key %q must not be treated as V2-only", key)
+		}
+	}
+}

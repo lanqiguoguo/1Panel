@@ -1004,6 +1004,16 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 	global.LOG.Infof("Starting synchronization of application details...")
 	iconMap, composeMap := downloadAppAssets(list.Apps, oldApps, baseRemoteUrl, setting.SystemVersion, transport, nil)
 	for _, l := range list.Apps {
+		// The store's unversioned PHP (key "php", versions 5/7/8) ships the V2
+		// package layout: no build/config.json, docker-compose.yml at the
+		// version root, form fields in data.yml. The V1 runtime flow
+		// (handlePHP/handleParams) only consumes the legacy layout of the
+		// php5/php7/php8 apps, so keep those and skip this V2-only app. The
+		// skip leaves its old row TakeDown, which the teardown below deletes
+		// when nothing is installed on it.
+		if isV2OnlyApp(l.AppProperty.Key) {
+			continue
+		}
 		app := appsMap[l.AppProperty.Key]
 		app.GpuSupport = l.AppProperty.GpuSupport
 
@@ -1211,4 +1221,14 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 
 	global.LOG.Infof("Synchronization with the App Store was successful!")
 	return
+}
+
+// isV2OnlyApp reports whether a store app is only consumable by 1Panel v2.
+// The unversioned PHP (key "php") ships the V2 package layout (no
+// build/config.json, compose at the version root, form fields in data.yml),
+// which the V1 runtime flow cannot consume; the V1 variants php5/php7/php8
+// keep the legacy layout and must stay. Skipping the key here lets the sync
+// teardown take its old row down (or delete it when nothing is installed).
+func isV2OnlyApp(key string) bool {
+	return key == "php"
 }

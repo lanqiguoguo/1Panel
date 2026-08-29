@@ -1233,6 +1233,14 @@ func getApps(oldApps []model.App, items []dto.AppDefine) map[string]model.App {
 	for _, item := range items {
 		config := item.AppProperty
 		key := config.Key
+		// The store's unversioned PHP (key "php") ships the V2 package layout
+		// that the V1 runtime flow cannot consume; leave its old row in the
+		// TakeDown state set above so the sync teardown deletes it (or shelves
+		// it when something is installed). The V1 variants php5/php7/php8 keep
+		// the legacy layout and are processed normally.
+		if isV2OnlyApp(key) {
+			continue
+		}
 		app, ok := apps[key]
 		if !ok {
 			app = model.App{}
