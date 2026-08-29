@@ -29,7 +29,6 @@ RAW_BASE="https://raw.githubusercontent.com/lanqiguoguo/1Panel/main"
 PKG_BASE="https://github.com/lanqiguoguo/1Panel/releases/download/packages"
 
 LOG_FILE="$(pwd)/install.log"
-PASSWORD_MASK="**********"
 
 REQUESTED_VERSION=""
 VERSION=""
@@ -43,6 +42,10 @@ LOCAL_IP=""
 PUBLIC_IP=""
 PROXY_URL="${PANEL_PROXY:-}"
 LOCAL_PKG=""
+
+# Keep an environment-supplied bootstrap password in the shell only.  Child
+# commands must not inherit it where it could be inspected through /proc.
+export -n PANEL_PASSWORD 2>/dev/null || true
 
 function log_msg() {
     local color=$1 message=$2 timestamp
@@ -398,8 +401,22 @@ function set_password() {
     local default_password
     default_password=$(head -c 16 /dev/urandom | md5sum | head -c 10)
     while true; do
-        read -r -s -p "$(text TXT_SET_PANEL_PASSWORD "set admin password (default is") $default_password): " PANEL_PASSWORD
-        echo
+        local tty_fd
+        if ! exec {tty_fd}<>/dev/tty 2>/dev/null; then
+            log_err "PANEL_PASSWORD must be set for non-interactive installs"
+            exit 1
+        fi
+        local password_prompt
+        password_prompt="$(text TXT_SET_PANEL_PASSWORD "set admin password (default is") $default_password): "
+        printf '%s' "$password_prompt" >&"$tty_fd"
+        if ! IFS= read -r -s PANEL_PASSWORD <&"$tty_fd"; then
+            printf '\n' >&"$tty_fd"
+            exec {tty_fd}>&-
+            log_err "failed to read panel password"
+            exit 1
+        fi
+        printf '\n' >&"$tty_fd"
+        exec {tty_fd}>&-
         if [[ -z "$PANEL_PASSWORD" ]]; then PANEL_PASSWORD=$default_password; fi
         if ! [[ "$PANEL_PASSWORD" =~ ^[a-zA-Z0-9_!@#$%*,.?]{8,30}$ ]]; then
             log_err "$(text TXT_INPUT_PASSWORD_RULE "invalid password format")"
@@ -589,12 +606,18 @@ function show_result() {
     log_info "external: http://$PUBLIC_IP:$PANEL_PORT/$PANEL_ENTRANCE"
     log_info "internal: http://$LOCAL_IP:$PANEL_PORT/$PANEL_ENTRANCE"
     log_info "$(text TXT_PANEL_USER "username") $PANEL_USERNAME"
-    log_info "$(text TXT_PANEL_PASSWORD "password") $PANEL_PASSWORD"
+    # Passwords must bypass stdout because installer output is commonly piped
+    # through tee.  If there is no controlling terminal (for example, a
+    # non-interactive install with PANEL_PASSWORD), do not print the secret.
+    local tty_fd
+    if exec {tty_fd}>/dev/tty 2>/dev/null; then
+        local timestamp password_label
+        timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+        password_label=$(text TXT_PANEL_PASSWORD "password")
+        printf '%b[1Panel %s] %s %s%b\n' "$BLUE" "$timestamp" "$password_label" "$PANEL_PASSWORD" "$NC" >&"$tty_fd"
+        exec {tty_fd}>&-
+    fi
     log_warn "$(text TXT_REMEMBER_YOUR_PASSWORD "keep your credentials safe")"
-    # mask the password in the log file but keep the real value inside 1pctl:
-    # the backend reads ORIGINAL_* params from there on every start
-    awk -v pwd="$PANEL_PASSWORD" -v mask="$PASSWORD_MASK" '{gsub(pwd, mask); print}' \
-        "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
 }
 
 function do_install() {
