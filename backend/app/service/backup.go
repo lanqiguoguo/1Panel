@@ -200,6 +200,17 @@ func (u *BackupService) LoadOneDriveInfo() (dto.OneDriveInfo, error) {
 }
 
 func (u *BackupService) DownloadRecord(info dto.DownloadRecord) (string, error) {
+	fileDir, err := sanitizeBackupDir(info.FileDir)
+	if err != nil {
+		return "", err
+	}
+	fileName, err := fileUtils.SanitizeFilename(info.FileName)
+	if err != nil {
+		return "", err
+	}
+	info.FileDir = fileDir
+	info.FileName = fileName
+
 	if info.Source == "LOCAL" {
 		localDir, err := loadLocalDir()
 		if err != nil {
@@ -247,6 +258,39 @@ func (u *BackupService) DownloadRecord(info dto.DownloadRecord) (string, error) 
 		}
 	}
 	return targetPath, nil
+}
+
+// sanitizeBackupDir validates a backup record's relative directory path and
+// returns it unchanged on success. Backup FileDir values are relative paths
+// that may span multiple levels (e.g. "system/mysql", "app/wordpress"),
+// so unlike SanitizeFilename it permits "/" as a separator while rejecting
+// anything that could escape the backup root: empty names, "." and "..",
+// absolute paths, Windows drive prefixes, backslashes, and path segments
+// that are empty, "." or "..".
+func sanitizeBackupDir(s string) (string, error) {
+	if s == "" || s == "." || s == ".." {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	if strings.HasPrefix(s, "/") {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	if strings.Contains(s, "\\") {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	// Windows drive prefix, e.g. "C:" or "c:".
+	if len(s) >= 2 && isASCIIAlpha(s[0]) && s[1] == ':' {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	return s, nil
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 func (u *BackupService) Create(req dto.BackupOperate) error {
