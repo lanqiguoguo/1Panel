@@ -495,10 +495,19 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 		return
 	}
 	go func() {
+		// gErr is the goroutine's own error. It must never touch the named
+		// return value err: Install returns while this goroutine may still be
+		// running, and its deferred handlers read err, so writing the shared
+		// variable from here would be a data race and could make Install's
+		// sync-path cleanup (handleAppInstallErr) run against a directory this
+		// goroutine is still working on. Failures here are handled entirely by
+		// this goroutine's own defer: status UpErr + message persisted and the
+		// in-memory port claims released, without deleting the install dir.
+		var gErr error
 		defer func() {
-			if err != nil {
+			if gErr != nil {
 				appInstall.Status = constant.UpErr
-				appInstall.Message = err.Error()
+				appInstall.Message = gErr.Error()
 				_ = appInstallRepo.Save(context.Background(), appInstall)
 				// The install row (status UpErr) keeps the port claimed in the
 				// DB, so the in-memory claim is released here to match; the DB
@@ -513,10 +522,10 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 				}
 			}
 		}()
-		if err = copyData(app, appDetail, appInstall, req); err != nil {
+		if gErr = copyData(app, appDetail, appInstall, req); gErr != nil {
 			return
 		}
-		if err = runScript(appInstall, "init"); err != nil {
+		if gErr = runScript(appInstall, "init"); gErr != nil {
 			return
 		}
 		upApp(appInstall, req.PullImage)
