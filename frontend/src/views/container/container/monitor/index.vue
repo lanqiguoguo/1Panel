@@ -227,7 +227,7 @@ const handleClose = async () => {
 };
 
 onBeforeUnmount(() => {
-    handleClose;
+    handleClose();
 });
 
 defineExpose({

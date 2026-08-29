@@ -419,14 +419,16 @@ const onLoadBaseInfo = async (isInit: boolean, range: string) => {
         timer = setInterval(async () => {
             try {
                 if (!isCurrentActive.value) {
-                    throw new Error('jump out');
+                    // Component is being torn down; the timer is cleared in
+                    // onBeforeUnmount, nothing else to do here.
+                    return;
                 }
                 if (isActive.value && !globalStore.isOnRestart) {
                     await loadAppCurrentInfo();
                 }
             } catch {
-                clearInterval(Number(timer));
-                timer = null;
+                // A single failed refresh (network blip, backend 5xx) must not
+                // kill the polling forever; the next tick retries.
             }
         }, 3000);
     }

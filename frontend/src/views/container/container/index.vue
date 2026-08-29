@@ -398,7 +398,15 @@ const goDashboard = async (port: any) => {
         MsgWarning(i18n.global.t('commons.msg.errPort'));
         return;
     }
-    let portEx = port.match(/:(\d+)/)[1];
+    // Port strings look like "0.0.0.0:8080->80/tcp" or "[::1]:8080->80/tcp".
+    // The host port is the last :digits before the -> separator; matching any
+    // :digits picks the first group inside an IPv6 address (e.g. ":1" of
+    // "::1") and opens the wrong port.
+    let portEx = port.split('->')[0].match(/:(\d+)$/)?.[1];
+    if (!portEx) {
+        MsgWarning(i18n.global.t('commons.msg.errPort'));
+        return;
+    }
 
     let matches = port.match(new RegExp(':', 'g'));
     let ip = matches && matches.length > 1 ? 'ipv6' : 'ipv4';
@@ -438,7 +446,6 @@ const search = async (column?: any) => {
         excludeAppStore: !includeAppStore.value,
     };
     loading.value = true;
-    loadStats();
     await searchContainer(params)
         .then((res) => {
             loading.value = false;
@@ -447,7 +454,12 @@ const search = async (column?: any) => {
         })
         .catch(() => {
             loading.value = false;
+            return;
         });
+    // Load stats only after data.value has been replaced: loadStats annotates
+    // the current rows with hasLoad/cpuPercent, and running it before the
+    // search swap left the new page stuck on the loading spinner.
+    loadStats();
 };
 
 const refresh = async () => {

@@ -198,13 +198,13 @@ const getContent = async (pre: boolean) => {
             onCloseLog();
         }
         if (end.value) {
-            if ((logs.value.length = 0)) {
+            if (logs.value.length === 0) {
                 logs.value = newLogs;
             } else {
                 logs.value = pre ? [...newLogs, ...lastLogs.value] : [...lastLogs.value, ...newLogs];
             }
         } else {
-            if ((logs.value.length = 0)) {
+            if (logs.value.length === 0) {
                 logs.value = newLogs;
             } else {
                 logs.value = pre ? [...newLogs, ...logs.value] : [...logs.value, ...newLogs];
