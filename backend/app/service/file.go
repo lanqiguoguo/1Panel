@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
@@ -482,6 +483,9 @@ func (f *FileService) ReadLogByLine(req request.FileReadByLineReq) (*response.Fi
 	logFilePath := ""
 	switch req.Type {
 	case constant.TypeWebsite:
+		if req.Name != constant.AccessLog && req.Name != constant.ErrorLog {
+			return nil, buserr.New(constant.ErrCmdIllegal)
+		}
 		website, err := websiteRepo.GetFirst(commonRepo.WithByID(req.ID))
 		if err != nil {
 			return nil, err
@@ -490,30 +494,49 @@ func (f *FileService) ReadLogByLine(req request.FileReadByLineReq) (*response.Fi
 		if err != nil {
 			return nil, err
 		}
-		sitePath := path.Join(nginx.SiteDir, "sites", website.Alias)
-		logFilePath = path.Join(sitePath, "log", req.Name)
+		logFilePath, err = safeLogPath(path.Join(nginx.SiteDir, "sites"), website.Alias, "log", req.Name)
+		if err != nil {
+			return nil, err
+		}
 	case constant.TypePhp:
 		php, err := runtimeRepo.GetFirst(commonRepo.WithByID(req.ID))
 		if err != nil {
 			return nil, err
 		}
-		logFilePath = php.GetLogPath()
+		logFilePath, err = safeLogPath(constant.RuntimeDir, php.Type, php.Name, "build.log")
+		if err != nil {
+			return nil, err
+		}
 	case constant.TypeSSL:
 		ssl, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.ID))
 		if err != nil {
 			return nil, err
 		}
-		logFilePath = ssl.GetLogPath()
+		logFilePath, err = safeLogPath(constant.SSLLogDir, fmt.Sprintf("%s-ssl-%d.log", ssl.PrimaryDomain, ssl.ID))
+		if err != nil {
+			return nil, err
+		}
 	case constant.TypeSystem:
 		fileName := ""
 		if len(req.Name) == 0 || req.Name == time.Now().Format("2006-01-02") {
 			fileName = "1Panel.log"
 		} else {
+			if _, err := time.Parse("2006-01-02", req.Name); err != nil {
+				return nil, buserr.New(constant.ErrCmdIllegal)
+			}
 			fileName = "1Panel-" + req.Name + ".log"
 		}
-		logFilePath = path.Join(global.CONF.System.DataDir, "log", fileName)
+		logDir := path.Join(global.CONF.System.DataDir, "log")
+		var err error
+		logFilePath, err = safeLogPath(logDir, fileName)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := os.Stat(logFilePath); err != nil {
-			fileGzPath := path.Join(global.CONF.System.DataDir, "log", fileName+".gz")
+			fileGzPath, pathErr := safeLogPath(logDir, fileName+".gz")
+			if pathErr != nil {
+				return nil, pathErr
+			}
 			if _, err := os.Stat(fileGzPath); err != nil {
 				return nil, buserr.New("ErrHttpReqNotFound")
 			}
@@ -522,13 +545,34 @@ func (f *FileService) ReadLogByLine(req request.FileReadByLineReq) (*response.Fi
 			}
 		}
 	case "image-pull", "image-push", "image-build", "compose-create":
-		logFilePath = path.Join(global.CONF.System.TmpDir, fmt.Sprintf("docker_logs/%s", req.Name))
+		if !validDockerLogName(req.Type, req.Name) {
+			return nil, buserr.New(constant.ErrCmdIllegal)
+		}
+		var err error
+		logFilePath, err = safeLogPath(path.Join(global.CONF.System.TmpDir, "docker_logs"), req.Name)
+		if err != nil {
+			return nil, err
+		}
 	case "ollama-model":
-		logFilePath = path.Join(global.CONF.System.DataDir, "log", "AITools", req.Name)
+		var err error
+		logFilePath, err = safeNestedLogPath(path.Join(global.CONF.System.DataDir, "log", "AITools"), req.Name)
+		if err != nil {
+			return nil, err
+		}
 	case "mysql-slow-logs":
-		logFilePath = path.Join(global.CONF.System.DataDir, fmt.Sprintf("apps/mysql/%s/data/1Panel-slow.log", req.Name))
+		var err error
+		logFilePath, err = safeLogPath(path.Join(global.CONF.System.DataDir, "apps", "mysql"), req.Name, "data", "1Panel-slow.log")
+		if err != nil {
+			return nil, err
+		}
 	case "mariadb-slow-logs":
-		logFilePath = path.Join(global.CONF.System.DataDir, fmt.Sprintf("apps/mariadb/%s/db/data/1Panel-slow.log", req.Name))
+		var err error
+		logFilePath, err = safeLogPath(path.Join(global.CONF.System.DataDir, "apps", "mariadb"), req.Name, "db", "data", "1Panel-slow.log")
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, buserr.New(constant.ErrCmdIllegal)
 	}
 
 	lines, isEndOfFile, total, err := files.ReadFileByLine(logFilePath, req.Page, req.PageSize, req.Latest)
@@ -553,6 +597,99 @@ func (f *FileService) ReadLogByLine(req request.FileReadByLineReq) (*response.Fi
 	return res, nil
 }
 
+// safeLogPath builds a log path from server-controlled roots and path
+// components. User-provided log names must remain a single filesystem
+// component, and the normalized result is checked against the intended root
+// so traversal cannot redirect the read to another file.
+func safeLogPath(root string, components ...string) (string, error) {
+	if root == "" || len(components) == 0 {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+
+	for _, component := range components {
+		if !validLogPathComponent(component) {
+			return "", buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+
+	cleanRoot := filepath.Clean(root)
+	candidate := filepath.Clean(filepath.Join(append([]string{cleanRoot}, components...)...))
+	rootAbs, err := filepath.Abs(cleanRoot)
+	if err != nil {
+		return "", err
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(rootAbs, candidateAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+
+	return candidate, nil
+}
+
+// safeNestedLogPath is used for Ollama model names. Ollama accepts model
+// namespaces (for example, "library/model:tag"), so slash-separated names
+// are allowed only when every segment is safe and the normalized path stays
+// below the model log root.
+func safeNestedLogPath(root, name string) (string, error) {
+	if name == "" || filepath.IsAbs(name) || path.IsAbs(name) || strings.Contains(name, `\`) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	components := strings.Split(name, "/")
+	if len(components) == 0 {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	return safeLogPath(root, components...)
+}
+
+func validDockerLogName(logType, name string) bool {
+	prefixes := map[string]string{
+		"image-pull":     "image_pull",
+		"image-push":     "image_push",
+		"image-build":    "image_build",
+		"compose-create": "compose_create",
+	}
+	prefix, ok := prefixes[logType]
+	if !ok || !validLogPathComponent(name) || !strings.HasPrefix(name, prefix+"_") || !strings.HasSuffix(name, ".log") {
+		return false
+	}
+
+	const timestampLength = len("20060102150405")
+	stampStart := len(name) - len(".log") - timestampLength
+	if stampStart <= len(prefix)+1 || name[stampStart-1] != '_' {
+		return false
+	}
+	for _, value := range name[stampStart : stampStart+timestampLength] {
+		if value < '0' || value > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validLogPathComponent(component string) bool {
+	if component == "" || component == "." || component == ".." {
+		return false
+	}
+	if filepath.IsAbs(component) || path.IsAbs(component) || strings.ContainsAny(component, `/\\`) || strings.ContainsRune(component, '\x00') {
+		return false
+	}
+	// Reject drive-prefixed names even when this service is running on Unix;
+	// this keeps Windows-style paths from becoming valid if the code is reused
+	// on Windows and rejects inputs such as "C:passwd" as well as "C:/...".
+	if len(component) >= 2 && isASCIIAlpha(component[0]) && component[1] == ':' {
+		return false
+	}
+	for _, r := range component {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 func (f *FileService) BatchCheckFiles(req request.FilePathsCheck) []response.ExistFileInfo {
 	fileList := make([]response.ExistFileInfo, 0, len(req.Paths))
 	for _, filePath := range req.Paths {
