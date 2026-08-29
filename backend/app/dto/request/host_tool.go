@@ -26,7 +26,7 @@ type HostToolConfig struct {
 }
 
 type SupervisorProcessConfig struct {
-	Name     string `json:"name"`
+	Name     string `json:"name" validate:"required"`
 	Operate  string `json:"operate"`
 	Command  string `json:"command"`
 	User     string `json:"user"`

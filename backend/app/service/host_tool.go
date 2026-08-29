@@ -307,7 +307,30 @@ func (h *HostToolService) GetToolLog(req request.HostToolLogReq) (string, error)
 	return string(oldContent), nil
 }
 
+// validSupervisorName reports whether name matches the frontend rule
+// ^[a-zA-Z0-9]{1}[a-zA-Z0-9_-]{0,127}$ and is safe to embed in log paths,
+// ini file names and supervisorctl arguments.
+func validSupervisorName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	if c := name[0]; !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (h *HostToolService) OperateSupervisorProcess(req request.SupervisorProcessConfig) error {
+	if !validSupervisorName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		supervisordDir = path.Join(global.CONF.System.BaseDir, "1panel", "tools", "supervisord")
 		logDir         = path.Join(supervisordDir, "log")
@@ -447,6 +470,9 @@ func (h *HostToolService) GetSupervisorProcessConfig() ([]response.SupervisorPro
 }
 
 func (h *HostToolService) OperateSupervisorProcessFile(req request.SupervisorProcessFileReq) (string, error) {
+	if !validSupervisorName(req.Name) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		fileOp     = files.NewFileOp()
 		group      = fmt.Sprintf("program:%s", req.Name)
@@ -501,7 +527,7 @@ func (h *HostToolService) OperateSupervisorProcessFile(req request.SupervisorPro
 			if req.Content == "" {
 				return "", buserr.New("ErrConfigIsNull")
 			}
-			if err := fileOp.WriteFile(configPath, strings.NewReader(req.Content), 0755); err != nil {
+			if err := fileOp.WriteFile(configPath, strings.NewReader(req.Content), 0640); err != nil {
 				return "", err
 			}
 			return "", operateSupervisorCtl("update", "", req.Name)
