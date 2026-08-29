@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
@@ -40,6 +41,9 @@ func (u *DBCommonService) LoadBaseInfo(req dto.OperationWithNameAndType) (*dto.D
 }
 
 func (u *DBCommonService) LoadDatabaseFile(req dto.OperationWithNameAndType) (string, error) {
+	if err := sanitizeDBInstanceName(req.Name); err != nil {
+		return "", err
+	}
 	filePath := ""
 	switch req.Type {
 	case "mysql-conf":
@@ -50,6 +54,8 @@ func (u *DBCommonService) LoadDatabaseFile(req dto.OperationWithNameAndType) (st
 		filePath = path.Join(global.CONF.System.DataDir, fmt.Sprintf("apps/postgresql/%s/data/postgresql.conf", req.Name))
 	case "redis-conf":
 		filePath = path.Join(global.CONF.System.DataDir, fmt.Sprintf("apps/redis/%s/conf/redis.conf", req.Name))
+	default:
+		return "", buserr.New(constant.ErrCmdIllegal)
 	}
 	if _, err := os.Stat(filePath); err != nil {
 		return "", buserr.New("ErrHttpReqNotFound")
@@ -59,6 +65,25 @@ func (u *DBCommonService) LoadDatabaseFile(req dto.OperationWithNameAndType) (st
 		return "", err
 	}
 	return string(content), nil
+}
+
+// sanitizeDBInstanceName validates a database app instance name used to build
+// a config file path. Instance names are single directory segments (e.g.
+// "mysql-abc123", "redis-xyz"), so any path separator, traversal segment,
+// empty name, or Windows drive prefix is rejected to prevent path traversal
+// when the name is interpolated into a file path.
+func sanitizeDBInstanceName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	// Windows drive prefix, e.g. "C:" or "c:".
+	if len(name) >= 2 && isASCIIAlpha(name[0]) && name[1] == ':' {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return nil
 }
 
 func (u *DBCommonService) UpdateConfByFile(req dto.DBConfUpdateByFile) error {
