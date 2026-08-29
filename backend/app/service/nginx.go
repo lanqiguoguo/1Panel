@@ -84,13 +84,24 @@ func (n NginxService) GetStatus() (response.NginxStatus, error) {
 	}
 	var status response.NginxStatus
 	resArray := strings.Split(string(content), " ")
-	status.Active = resArray[2]
-	status.Accepts = resArray[7]
-	status.Handled = resArray[8]
-	status.Requests = resArray[9]
-	status.Reading = resArray[11]
-	status.Writing = resArray[13]
-	status.Waiting = resArray[15]
+	// nginx_status output is "Active connections: N \n server accepts handled
+	// requests ... Reading Writing Waiting". Indexing it without a length check
+	// panics when the page is not the expected format (e.g. a proxy error page
+	// or a customized status module), so guard every access and leave the
+	// fields empty instead.
+	index := func(i int) string {
+		if i < len(resArray) {
+			return resArray[i]
+		}
+		return ""
+	}
+	status.Active = index(2)
+	status.Accepts = index(7)
+	status.Handled = index(8)
+	status.Requests = index(9)
+	status.Reading = index(11)
+	status.Writing = index(13)
+	status.Waiting = index(15)
 	return status, nil
 }
 

@@ -76,11 +76,17 @@ func (m *MonitorService) Run() {
 	}
 	cpuCount, _ := cpu.Counts(false)
 
-	loadInfo, _ := load.Avg()
-	itemModel.CpuLoad1 = loadInfo.Load1
-	itemModel.CpuLoad5 = loadInfo.Load5
-	itemModel.CpuLoad15 = loadInfo.Load15
-	itemModel.LoadUsage = loadInfo.Load1 / (float64(cpuCount*2) * 0.75) * 100
+	// load.Avg can return a nil value on an error (gopsutil returns nil with a
+	// non-nil error on some platforms), which would panic on the field access
+	// below; a cpuCount of 0 would also divide by zero. Guard both so a
+	// collection failure degrades to zeroed load fields instead of a panic.
+	loadInfo, err := load.Avg()
+	if err == nil && loadInfo != nil && cpuCount > 0 {
+		itemModel.CpuLoad1 = loadInfo.Load1
+		itemModel.CpuLoad5 = loadInfo.Load5
+		itemModel.CpuLoad15 = loadInfo.Load15
+		itemModel.LoadUsage = loadInfo.Load1 / (float64(cpuCount*2) * 0.75) * 100
+	}
 
 	memoryInfo, _ := mem.VirtualMemory()
 	itemModel.Memory = memoryInfo.UsedPercent
