@@ -63,9 +63,6 @@ const GlobalStore = defineStore({
         setLoadingText(text: string) {
             this.loadingText = i18n.global.t('commons.loadingText.' + text);
         },
-        setCsrfToken(token: string) {
-            this.csrfToken = token;
-        },
         updateLanguage(language: any) {
             if (language === 'pt-BR') {
                 language = 'pt-br';

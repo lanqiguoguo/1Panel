@@ -149,7 +149,7 @@
                                 {{ $t('ssl.nameserverHelper') }}
                             </span>
                         </el-form-item>
-                        <el-form-item :label="$t('ssl.nameserver') + '2'" prop="nameserver1">
+                        <el-form-item :label="$t('ssl.nameserver') + '2'" prop="nameserver2">
                             <el-input v-model.trim="ssl.nameserver2"></el-input>
                             <span class="input-help">
                                 {{ $t('ssl.nameserverHelper') }}

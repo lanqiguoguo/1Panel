@@ -253,6 +253,11 @@ const mfaLoginForm = reactive({
     authMethod: 'session',
 });
 
+// Tracks the last MFA code that was submitted so the @input auto-login does
+// not re-fire the request for an unchanged code (e.g. after a failed attempt
+// the user deletes and retypes the same digits).
+let lastMfaSubmitted = '';
+
 const captcha = reactive({
     captchaID: '',
     imagePath: '',
@@ -374,7 +379,14 @@ const login = (formEl: FormInstance | undefined) => {
 
 const mfaLogin = async (auto: boolean) => {
     if (isLoggingIn) return;
+    // The code input fires this on every keystroke; only submit when the code
+    // is complete AND different from the last one submitted, so retyping or
+    // editing after a failed attempt does not spam the mfalogin endpoint.
+    if (auto && (mfaLoginForm.code.length !== 6 || mfaLoginForm.code === lastMfaSubmitted)) {
+        return;
+    }
     if ((!auto && mfaLoginForm.code) || (auto && mfaLoginForm.code.length === 6)) {
+        lastMfaSubmitted = mfaLoginForm.code;
         isLoggingIn = true;
         mfaLoginForm.name = loginForm.name;
         mfaLoginForm.password = encryptPassword(loginForm.password);

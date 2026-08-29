@@ -163,13 +163,15 @@ const searchLogs = async () => {
 };
 
 const onDownload = async () => {
-    logSearch.tail = 0;
     let msg = i18n.global.t('container.downLogHelper1', [logSearch.container]);
     ElMessageBox.confirm(msg, i18n.global.t('file.download'), {
         confirmButtonText: i18n.global.t('commons.button.confirm'),
         cancelButtonText: i18n.global.t('commons.button.cancel'),
         type: 'info',
     }).then(async () => {
+        // Only mutate tail after the user confirmed: setting it before the
+        // dialog made a cancelled download flip the live log view to "all".
+        logSearch.tail = 0;
         let params = {
             container: logSearch.containerID,
             since: logSearch.mode,
