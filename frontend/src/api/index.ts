@@ -54,23 +54,23 @@ class RequestHttp {
                 }
                 if (data.code == ResultEnum.NOTFOUND) {
                     globalStore.errStatus = 'err-found';
-                    return;
+                    return Promise.reject(data);
                 }
                 if (data.code == ResultEnum.ERRIP) {
                     globalStore.errStatus = 'err-ip';
-                    return;
+                    return Promise.reject(data);
                 }
                 if (data.code == ResultEnum.ERRDOMAIN) {
                     globalStore.errStatus = 'err-domain';
-                    return;
+                    return Promise.reject(data);
                 }
                 if (data.code == ResultEnum.UNSAFETY) {
                     globalStore.errStatus = 'err-unsafe';
-                    return;
+                    return Promise.reject(data);
                 }
                 if (data.code == ResultEnum.EXPIRED) {
                     router.push({ name: 'Expired' });
-                    return;
+                    return Promise.reject(data);
                 }
                 if (data.code == ResultEnum.ERRGLOBALLOADDING) {
                     globalStore.setGlobalLoading(true);

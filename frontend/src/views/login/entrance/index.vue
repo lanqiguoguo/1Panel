@@ -26,6 +26,24 @@
                 <div v-if="errStatus === 'err-found'">
                     <ErrFound />
                 </div>
+                <div
+                    v-if="
+                        errStatus === 'err-ip' ||
+                        errStatus === 'err-domain' ||
+                        errStatus === 'err-unsafe' ||
+                        errStatus === 'err-entrance'
+                    "
+                    class="login-background"
+                >
+                    <div class="login-wrapper">
+                        <div class="entrance-error">
+                            <h2>{{ entranceErrTitle }}</h2>
+                            <p>{{ entranceErrDetail }}</p>
+                            <p class="entrance-helper">{{ $t('commons.msg.errHelper') }}</p>
+                            <code>1pctl user-info</code>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -35,15 +53,41 @@
 import LoginForm from '../components/login-form.vue';
 import ErrCode from '@/components/error-message/error_code.vue';
 import ErrFound from '@/components/error-message/404.vue';
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { GlobalStore } from '@/store';
 import { useTheme } from '@/hooks/use-theme';
+import i18n from '@/lang';
 const { switchTheme } = useTheme();
 const globalStore = GlobalStore();
 
 const screenWidth = ref(null);
 const errStatus = ref('x');
 const init = ref(false);
+
+// The interceptor sets err-ip/err-domain/err-unsafe/err-entrance when the
+// request was rejected by the IP/domain/entrance restrictions. Previously the
+// entrance page only rendered code-* and err-found, so these states showed a
+// blank page with no explanation.
+const entranceErrTitle = computed(() => {
+    switch (errStatus.value) {
+        case 'err-ip':
+            return i18n.global.t('commons.msg.errIP1');
+        case 'err-domain':
+            return i18n.global.t('commons.msg.errDomain1');
+        case 'err-unsafe':
+            return i18n.global.t('commons.msg.notSafe');
+        case 'err-entrance':
+            return i18n.global.t('commons.msg.safeEntrance1');
+        default:
+            return '';
+    }
+});
+const entranceErrDetail = computed(() => {
+    if (errStatus.value === 'err-entrance') {
+        return i18n.global.t('commons.msg.safeEntrance2');
+    }
+    return '';
+});
 
 const mySafetyCode = defineProps({
     code: {
@@ -193,5 +237,34 @@ html.dark .login-background {
 html.dark .login-background .login-container {
     background-color: rgba(36, 38, 51, 0.85);
     box-shadow: 2px 4px 22px rgba(0, 0, 0, 0.45);
+}
+
+.entrance-error {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 60px 40px;
+    text-align: center;
+    color: #fff;
+    h2 {
+        font-size: 22px;
+        margin-bottom: 16px;
+    }
+    p {
+        font-size: 14px;
+        line-height: 1.8;
+        color: rgba(255, 255, 255, 0.75);
+    }
+    .entrance-helper {
+        margin-top: 24px;
+        color: rgba(255, 255, 255, 0.55);
+    }
+    code {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 6px 14px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        font-size: 13px;
+    }
 }
 </style>
