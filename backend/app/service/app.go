@@ -1198,8 +1198,16 @@ func (a AppService) SyncAppListFromRemote() (err error) {
 		return
 	}
 
-	_ = settingService.Update("AppStoreSyncStatus", constant.SyncSuccess)
-	_ = settingService.Update("AppStoreLastModified", strconv.Itoa(list.LastModified))
+	// These two writes are what release the single-flight gate: if
+	// AppStoreSyncStatus stays on Syncing every later sync short-circuits as
+	// "already syncing" and update checks silently never run again. They must
+	// therefore go through setAppStoreSyncStatus (which logs failures) instead
+	// of being discarded, and a LastModified write failure has to be logged
+	// for the same reason.
+	setAppStoreSyncStatus(settingService, constant.SyncSuccess)
+	if uerr := settingService.Update("AppStoreLastModified", strconv.Itoa(list.LastModified)); uerr != nil {
+		global.LOG.Errorf("persist AppStoreLastModified after successful sync failed, err: %v", uerr)
+	}
 
 	global.LOG.Infof("Synchronization with the App Store was successful!")
 	return
