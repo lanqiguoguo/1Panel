@@ -725,42 +725,57 @@ func (u *ContainerService) ContainerLogs(wsConn *websocket.Conn, containerType, 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	exitCh := make(chan struct{})
+	// The websocket reader must treat a client disconnect (ReadMessage error)
+	// the same as the explicit "close conn" message: both mean streaming
+	// should stop. Previously a disconnect error was discarded, so the docker
+	// logs -f process, the stdout reader and this handler goroutine leaked
+	// forever. Killing the child makes the stdout reader observe an error/EOF
+	// and exit, so cmd.Wait below returns without needing an extra channel.
 	go func() {
-		_, wsData, _ := wsConn.ReadMessage()
-		if string(wsData) == "close conn" {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-			exitCh <- struct{}{}
+		for {
+			_, wsData, err := wsConn.ReadMessage()
+			if err != nil || string(wsData) == "close conn" {
+				_ = cmd.Process.Signal(syscall.SIGTERM)
+				return
+			}
 		}
 	}()
 
 	go func() {
 		buffer := make([]byte, 1024)
 		for {
-			select {
-			case <-exitCh:
+			n, err := stdout.Read(buffer)
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				global.LOG.Errorf("read bytes from log failed, err: %v", err)
 				return
-			default:
-				n, err := stdout.Read(buffer)
-				if err != nil {
-					if err == io.EOF {
-						return
-					}
-					global.LOG.Errorf("read bytes from log failed, err: %v", err)
-					return
-				}
-				if !utf8.Valid(buffer[:n]) {
-					continue
-				}
-				if err = wsConn.WriteMessage(websocket.TextMessage, buffer[:n]); err != nil {
-					global.LOG.Errorf("send message with log to ws failed, err: %v", err)
-					return
-				}
+			}
+			if !utf8.Valid(buffer[:n]) {
+				continue
+			}
+			if err = wsConn.WriteMessage(websocket.TextMessage, buffer[:n]); err != nil {
+				global.LOG.Errorf("send message with log to ws failed, err: %v", err)
+				return
 			}
 		}
 	}()
-	_ = cmd.Wait()
-	return nil
+	// Wait for the log stream with a timeout so a daemon that ignores SIGTERM
+	// after a disconnect cannot hang the handler forever; the Wait goroutine
+	// always exits once the process is gone.
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		return nil
+	}
 }
 
 func (u *ContainerService) DownloadContainerLogs(containerType, container, since, tail string, c *gin.Context) error {
