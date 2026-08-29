@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -699,18 +700,51 @@ const (
 	decompressMaxTotalSize = 4 * 1024 * 1024 * 1024
 )
 
+// errUnsafeArchive marks archive validation failures. Callers must not fall
+// back to an extractor that does not enforce the same member checks.
+var errUnsafeArchive = errors.New("unsafe archive")
+
 // checkArchivePath verifies that an entry name extracted from an archive stays
 // inside dst. Absolute paths, paths containing ".." components and symbolic
 // link entries are rejected to prevent path traversal and symlink escapes.
 func checkArchivePath(fileName string, info fs.FileInfo) error {
 	if info != nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("archive entry is a symlink: %s", fileName)
+		return fmt.Errorf("%w: archive entry is a symlink: %s", errUnsafeArchive, fileName)
 	}
 	cleanName := filepath.Clean(filepath.FromSlash(fileName))
 	if cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanName) {
-		return fmt.Errorf("invalid archive entry path: %s", fileName)
+		return fmt.Errorf("%w: invalid archive entry path: %s", errUnsafeArchive, fileName)
 	}
 	return nil
+}
+
+func archiveEntryPath(dst, fileName string, info fs.FileInfo, linkTarget string) (string, error) {
+	if err := checkArchivePath(fileName, info); err != nil {
+		return "", err
+	}
+	if linkTarget != "" {
+		return "", fmt.Errorf("%w: archive entry is a link: %s", errUnsafeArchive, fileName)
+	}
+	filePath := filepath.Join(dst, filepath.Clean(filepath.FromSlash(fileName)))
+	// Double check the joined path still lies inside dst.
+	if !strings.HasPrefix(filePath, filepath.Clean(dst)+string(filepath.Separator)) && filePath != filepath.Clean(dst) {
+		return "", fmt.Errorf("%w: archive entry escapes destination: %s", errUnsafeArchive, fileName)
+	}
+	return filePath, nil
+}
+
+func archiveEntryName(archFile archiver.File) (string, error) {
+	fileName := archFile.NameInArchive
+	if header, ok := archFile.Header.(cZip.FileHeader); ok {
+		if header.NonUTF8 && header.Flags == 0 {
+			decoded, err := decodeGBK(fileName)
+			if err != nil {
+				return "", err
+			}
+			fileName = decoded
+		}
+	}
+	return fileName, nil
 }
 
 func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType) error {
@@ -726,27 +760,17 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 		if isIgnoreFile(archFile.Name()) {
 			return nil
 		}
-		fileName := archFile.NameInArchive
-		var err error
-		if header, ok := archFile.Header.(cZip.FileHeader); ok {
-			if header.NonUTF8 && header.Flags == 0 {
-				fileName, err = decodeGBK(fileName)
-				if err != nil {
-					return err
-				}
-			}
-		}
-		if err := checkArchivePath(fileName, archFile.FileInfo); err != nil {
+		fileName, err := archiveEntryName(archFile)
+		if err != nil {
 			return err
 		}
-		filePath := filepath.Join(dst, filepath.Clean(filepath.FromSlash(fileName)))
-		// double check the joined path still lies inside dst
-		if !strings.HasPrefix(filePath, filepath.Clean(dst)+string(filepath.Separator)) && filePath != filepath.Clean(dst) {
-			return fmt.Errorf("archive entry escapes destination: %s", fileName)
+		filePath, err := archiveEntryPath(dst, fileName, archFile.FileInfo, archFile.LinkTarget)
+		if err != nil {
+			return err
 		}
 		totalEntries++
 		if totalEntries > maxEntries {
-			return fmt.Errorf("archive contains too many entries (limit %d): %s", maxEntries, fileName)
+			return fmt.Errorf("%w: archive contains too many entries (limit %d): %s", errUnsafeArchive, maxEntries, fileName)
 		}
 		if archFile.FileInfo.IsDir() {
 			if err := f.Fs.MkdirAll(filePath, info.Mode()); err != nil {
@@ -763,7 +787,7 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 		}
 		remaining := maxTotalSize - totalSize
 		if remaining <= 0 {
-			return fmt.Errorf("archive total size exceeds limit (%d bytes)", maxTotalSize)
+			return fmt.Errorf("%w: archive total size exceeds limit (%d bytes)", errUnsafeArchive, maxTotalSize)
 		}
 		fr, err := archFile.Open()
 		if err != nil {
@@ -785,7 +809,7 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 			// more byte to detect it without writing unbounded content
 			var probe [1]byte
 			if n, _ := fr.Read(probe[:]); n > 0 {
-				return fmt.Errorf("archive total size exceeds limit (%d bytes)", maxTotalSize)
+				return fmt.Errorf("%w: archive total size exceeds limit (%d bytes)", errUnsafeArchive, maxTotalSize)
 			}
 		}
 
@@ -798,23 +822,97 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 	return format.Extract(context.Background(), input, nil, handler)
 }
 
+// validateArchiveWithSDK checks an already-decompressed archive without
+// writing it. It is used before the encrypted-archive compatibility fallback
+// so the shell extractor never receives an unvalidated member list.
+func (f FileOp) validateArchiveWithSDK(srcFile string, dst string, cType CompressType) error {
+	format := getFormat(cType)
+	var totalSize int64
+	var totalEntries int
+	handler := func(ctx context.Context, archFile archiver.File) error {
+		if isIgnoreFile(archFile.Name()) {
+			return nil
+		}
+		fileName, err := archiveEntryName(archFile)
+		if err != nil {
+			return err
+		}
+		if _, err := archiveEntryPath(dst, fileName, archFile.FileInfo, archFile.LinkTarget); err != nil {
+			return err
+		}
+		totalEntries++
+		if totalEntries > decompressMaxEntries {
+			return fmt.Errorf("%w: archive contains too many entries (limit %d): %s", errUnsafeArchive, decompressMaxEntries, fileName)
+		}
+		if !archFile.FileInfo.IsDir() && archFile.FileInfo.Size() > 0 {
+			if archFile.FileInfo.Size() > decompressMaxTotalSize-totalSize {
+				return fmt.Errorf("%w: archive total size exceeds limit (%d bytes)", errUnsafeArchive, decompressMaxTotalSize)
+			}
+			totalSize += archFile.FileInfo.Size()
+		}
+		return nil
+	}
+	input, err := f.Fs.Open(srcFile)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	return format.Extract(context.Background(), input, nil, handler)
+}
+
+func decryptTarGz(srcFile, secret string) (string, error) {
+	tmpFile, err := os.CreateTemp("", "1panel-decompress-*.tar.gz")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+
+	decrypt := exec.Command("openssl", "enc", "-d", "-aes-256-cbc", "-k", secret, "-in", srcFile, "-out", tmpPath)
+	if output, err := decrypt.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("decrypt archive: %v, output: %s", err, output)
+	}
+	return tmpPath, nil
+}
+
 func (f FileOp) Decompress(srcFile string, dst string, cType CompressType, secret string) error {
 	if cType == Tar || cType == Zip || cType == TarGz {
+		if !ValidShellArgs(srcFile, dst) || (cType == TarGz && len(secret) != 0 && !ValidShellArgs(secret)) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 		if !f.Stat(dst) {
 			_ = f.CreateDir(dst, 0755)
 		}
-		// Prefer the hardened SDK path (entry path checks, GBK file names,
-		// zip-bomb limits). The SDK cannot handle password-protected
-		// archives, so the shell archiver stays as a fallback for those
-		// (e.g. an openssl-encrypted tar.gz that needs the secret); the
-		// shell archivers validate every interpolated value before any
-		// command is built.
-		if err := f.decompressWithSDK(srcFile, dst, cType); err == nil {
+		sdkErr := f.decompressWithSDK(srcFile, dst, cType)
+		if sdkErr == nil {
 			return nil
 		}
-		if shellArchiver, err := NewShellArchiver(cType); err == nil {
-			return shellArchiver.Extract(srcFile, dst, secret)
+		if errors.Is(sdkErr, errUnsafeArchive) {
+			return sdkErr
 		}
+		// A plain archive, a malformed archive, and every SDK safety failure
+		// must not reach a less restrictive extractor. The only compatibility
+		// path is an encrypted tar.gz: decrypt it first, validate all members
+		// with the SDK, and only then use the existing shell extractor.
+		if cType != TarGz || len(secret) == 0 {
+			return sdkErr
+		}
+		decryptedPath, err := decryptTarGz(srcFile, secret)
+		if err != nil {
+			return sdkErr
+		}
+		defer os.Remove(decryptedPath)
+		if err := f.validateArchiveWithSDK(decryptedPath, dst, TarGz); err != nil {
+			return err
+		}
+		if shellArchiver, err := NewShellArchiver(TarGz); err == nil {
+			return shellArchiver.Extract(decryptedPath, dst, "")
+		}
+		return sdkErr
 	}
 	return f.decompressWithSDK(srcFile, dst, cType)
 }

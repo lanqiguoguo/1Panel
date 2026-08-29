@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -33,6 +35,16 @@ func writeTarGzToFile(t *testing.T, build func(tw *tar.Writer)) string {
 		t.Fatalf("write archive: %v", err)
 	}
 	return archivePath
+}
+
+func encryptTarGzForTest(t *testing.T, source, secret string) string {
+	t.Helper()
+	encryptedPath := filepath.Join(t.TempDir(), "encrypted.tar.gz")
+	command := exec.Command("openssl", "enc", "-aes-256-cbc", "-salt", "-k", secret, "-in", source, "-out", encryptedPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("encrypt tar.gz: %v, output: %s", err, output)
+	}
+	return encryptedPath
 }
 
 // addTarEntry writes a regular file entry with the given name and content.
@@ -104,6 +116,103 @@ func TestDecompressWithSDKSymlinkRejected(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dst, "link")); err == nil {
 		t.Fatal("symlink entry was written to dst")
+	}
+}
+
+func TestDecompressRejectsUnsafeTarGzWithoutShellFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		add  func(tw *tar.Writer, outside string)
+	}{
+		{
+			name: "parent traversal",
+			add: func(tw *tar.Writer, outside string) {
+				if err := addTarEntry(tw, "../"+filepath.Base(outside), "evil"); err != nil {
+					t.Fatalf("write traversal entry: %v", err)
+				}
+			},
+		},
+		{
+			name: "absolute path",
+			add: func(tw *tar.Writer, outside string) {
+				if err := addTarEntry(tw, outside, "evil"); err != nil {
+					t.Fatalf("write absolute entry: %v", err)
+				}
+			},
+		},
+		{
+			name: "symbolic link",
+			add: func(tw *tar.Writer, outside string) {
+				hdr := &tar.Header{Name: "link", Mode: 0777, Typeflag: tar.TypeSymlink, Linkname: outside}
+				if err := tw.WriteHeader(hdr); err != nil {
+					t.Fatalf("write symlink entry: %v", err)
+				}
+			},
+		},
+		{
+			name: "hard link",
+			add: func(tw *tar.Writer, outside string) {
+				hdr := &tar.Header{Name: "hard-link", Mode: 0644, Typeflag: tar.TypeLink, Linkname: "../" + filepath.Base(outside)}
+				if err := tw.WriteHeader(hdr); err != nil {
+					t.Fatalf("write hard link entry: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dst := filepath.Join(root, "destination")
+			if err := os.Mkdir(dst, 0755); err != nil {
+				t.Fatalf("create destination: %v", err)
+			}
+			outside := filepath.Join(root, "escaped.txt")
+			archivePath := writeTarGzToFile(t, func(tw *tar.Writer) { tc.add(tw, outside) })
+
+			err := NewFileOp().Decompress(archivePath, dst, TarGz, "")
+			if err == nil {
+				t.Fatalf("Decompress %s: expected unsafe archive error", tc.name)
+			}
+			if !errors.Is(err, errUnsafeArchive) {
+				t.Fatalf("Decompress %s: expected unsafe archive error, got %v", tc.name, err)
+			}
+			if _, statErr := os.Lstat(outside); statErr == nil {
+				t.Fatalf("Decompress %s: shell fallback wrote outside destination", tc.name)
+			}
+			if tc.name == "symbolic link" {
+				if _, statErr := os.Lstat(filepath.Join(dst, "link")); statErr == nil {
+					t.Fatalf("Decompress %s: shell fallback created a symlink", tc.name)
+				}
+			}
+		})
+	}
+}
+
+func TestDecompressEncryptedUnsafeTarGzWithoutShellFallback(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "destination")
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	outside := filepath.Join(root, "escaped.txt")
+	plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		if err := addTarEntry(tw, "../"+filepath.Base(outside), "evil"); err != nil {
+			t.Fatalf("write traversal entry: %v", err)
+		}
+	})
+	const secret = "attacker supplied secret"
+	encryptedPath := encryptTarGzForTest(t, plainPath, secret)
+
+	err := NewFileOp().Decompress(encryptedPath, dst, TarGz, secret)
+	if err == nil {
+		t.Fatal("Decompress encrypted unsafe archive: expected unsafe archive error")
+	}
+	if !errors.Is(err, errUnsafeArchive) {
+		t.Fatalf("Decompress encrypted unsafe archive: expected unsafe archive error, got %v", err)
+	}
+	if _, statErr := os.Lstat(outside); statErr == nil {
+		t.Fatal("Decompress encrypted unsafe archive: shell fallback wrote outside destination")
 	}
 }
 
@@ -251,9 +360,8 @@ func TestShellArchiverInjectionRejected(t *testing.T) {
 }
 
 // TestDecompressInjectionRejected feeds injection payloads through
-// FileOp.Decompress. The source file is garbage so the SDK path fails and the
-// shell fallback is reached; the payloads must be rejected by validation
-// instead of being interpolated into a bash -c command.
+// FileOp.Decompress. The payloads must be rejected before an SDK or shell
+// extractor can use them.
 func TestDecompressInjectionRejected(t *testing.T) {
 	op := NewFileOp()
 	src := filepath.Join(t.TempDir(), "src.tar.gz")
@@ -321,7 +429,7 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 
 // TestCompressDecompressEncryptedTarGz checks that an openssl-encrypted
 // tar.gz, which the SDK cannot handle, still round-trips through the
-// validated shell archiver.
+// validated compatibility path.
 func TestCompressDecompressEncryptedTarGz(t *testing.T) {
 	op := NewFileOp()
 	srcDir := t.TempDir()
