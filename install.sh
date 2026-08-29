@@ -410,6 +410,37 @@ function set_password() {
     done
 }
 
+# write_initial_password stores the bootstrap credential only long enough for
+# the first service start.  The backend removes it after the initial database
+# migration; until then it is readable only by root.
+function write_initial_password() {
+    local secret_dir="$RUN_BASE_DIR/conf"
+    local secret_file="$secret_dir/initial-password"
+    mkdir -p "$secret_dir" || {
+        log_err "failed to create the panel secret directory"
+        exit 1
+    }
+    if ! (umask 077 && printf '%s\n' "$PANEL_PASSWORD" > "$secret_file"); then
+        log_err "failed to write the initial panel password"
+        exit 1
+    fi
+    chmod 600 "$secret_file" || {
+        log_err "failed to secure the initial panel password"
+        exit 1
+    }
+}
+
+function clear_install_password_export() {
+    # PANEL_PASSWORD may have been imported from the environment.  Unexport it
+    # before starting a non-systemd service so the daemon cannot inherit it.
+    export -n PANEL_PASSWORD 2>/dev/null || true
+}
+
+function clear_install_password() {
+    clear_install_password_export
+    unset PANEL_PASSWORD
+}
+
 function install_docker() {
     if command -v docker >/dev/null 2>&1; then
         log_info "docker detected: $(docker --version 2>/dev/null)"
@@ -475,7 +506,6 @@ function install_panel_files() {
     set_param /usr/local/bin/1pctl ORIGINAL_PORT "$PANEL_PORT"
     set_param /usr/local/bin/1pctl ORIGINAL_ENTRANCE "$PANEL_ENTRANCE"
     set_param /usr/local/bin/1pctl ORIGINAL_USERNAME "$PANEL_USERNAME"
-    set_param /usr/local/bin/1pctl ORIGINAL_PASSWORD "$PANEL_PASSWORD"
     set_param /usr/local/bin/1pctl LANGUAGE "$SELECTED_LANG"
     chmod +x /usr/local/bin/1pctl /usr/local/bin/1panel
 
@@ -485,6 +515,7 @@ function install_panel_files() {
     # the panel creates these on first boot; pre-create so 1pctl works
     # immediately after install (sqlite reports CANTOPEN as "out of memory")
     mkdir -p "$RUN_BASE_DIR/db" "$RUN_BASE_DIR/log" "$RUN_BASE_DIR/tmp" "$RUN_BASE_DIR/cache" "$RUN_BASE_DIR/backup"
+    write_initial_password
 }
 
 function install_service() {
@@ -582,6 +613,7 @@ function do_install() {
     set_entrance
     set_username
     set_password
+    clear_install_password_export
     open_firewall_port
     install_docker
     log_info "$(text TXT_CONFIGURE_PANEL_SERVICE "configuring panel service...")"
@@ -590,8 +622,10 @@ function do_install() {
     if wait_active; then
         get_ips
         show_result
+        clear_install_password
         log_ok "1Panel $VERSION installed successfully"
     else
+        clear_install_password
         log_warn "1Panel $VERSION installed, but service startup needs a manual check (see warnings above)"
     fi
 }
@@ -693,4 +727,6 @@ function cleanup_temp_dirs() {
 }
 trap cleanup_temp_dirs EXIT
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

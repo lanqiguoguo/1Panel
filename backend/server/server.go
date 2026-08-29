@@ -42,6 +42,9 @@ func Start() {
 	log.Init()
 	db.Init()
 	migration.Init()
+	if err := viper.CleanupInitialPassword(global.CONF.System.BaseDir); err != nil {
+		global.LOG.Warnf("cleanup initial panel password failed: %v", err)
+	}
 	app.Init()
 	service.InitProxyConfig()
 	lang.Init()

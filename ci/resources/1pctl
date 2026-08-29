@@ -9,7 +9,6 @@ ORIGINAL_PORT=port
 ORIGINAL_VERSION=version
 ORIGINAL_ENTRANCE=entrance
 ORIGINAL_USERNAME=username
-ORIGINAL_PASSWORD=password
 LANGUAGE=en
 
 if [ -f "/usr/local/bin/lang/$LANGUAGE.sh" ]; then
@@ -293,4 +292,3 @@ function main() {
 }
 
 main
-

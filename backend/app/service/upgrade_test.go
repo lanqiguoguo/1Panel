@@ -57,7 +57,6 @@ func TestMigrate1pctlParams(t *testing.T) {
 		"ORIGINAL_VERSION=v1.10.35-lts\n" +
 		"ORIGINAL_ENTRANCE=old_entrance\n" +
 		"ORIGINAL_USERNAME=old_admin\n" +
-		"ORIGINAL_PASSWORD=p@ss/w0rd#special\n" +
 		"LANGUAGE=zh\n" +
 		"CHANGE_USER_INFO=abc123\n"
 	if string(got) != want {

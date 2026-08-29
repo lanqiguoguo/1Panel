@@ -280,8 +280,9 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 
 // migrate1pctlParams rewrites the freshly installed 1pctl so local
 // installation parameters survive an upgrade; only ORIGINAL_VERSION comes
-// from req.Version. Non-dev mode reads port/credentials/entrance/language
-// from these keys (see init/viper), so losing them would lock users out.
+// from req.Version. Non-dev mode reads port/username/entrance/language from
+// these keys (see init/viper). The password is persisted in the database after
+// first boot and must never be copied into the executable control script.
 func (u *UpgradeService) migrate1pctlParams(backupPath, targetPath string, newVersion string) error {
 	backupData, err := os.ReadFile(backupPath)
 	if err != nil {
@@ -294,7 +295,7 @@ func (u *UpgradeService) migrate1pctlParams(backupPath, targetPath string, newVe
 			continue
 		}
 		switch key {
-		case "BASE_DIR", "ORIGINAL_PORT", "ORIGINAL_USERNAME", "ORIGINAL_PASSWORD", "ORIGINAL_ENTRANCE", "LANGUAGE", "CHANGE_USER_INFO":
+		case "BASE_DIR", "ORIGINAL_PORT", "ORIGINAL_USERNAME", "ORIGINAL_ENTRANCE", "LANGUAGE", "CHANGE_USER_INFO":
 			params[key] = value
 		}
 	}
@@ -308,16 +309,23 @@ func (u *UpgradeService) migrate1pctlParams(backupPath, targetPath string, newVe
 		return fmt.Errorf("read target 1pctl failed: %w", err)
 	}
 	lines := strings.Split(string(targetData), "\n")
-	for i, line := range lines {
+	rewritten := make([]string, 0, len(lines)+len(params))
+	for _, line := range lines {
 		key, _, found := strings.Cut(line, "=")
 		if !found {
+			rewritten = append(rewritten, line)
+			continue
+		}
+		if key == "ORIGINAL_PASSWORD" {
 			continue
 		}
 		if value, ok := params[key]; ok {
-			lines[i] = key + "=" + value
+			line = key + "=" + value
 			delete(params, key)
 		}
+		rewritten = append(rewritten, line)
 	}
+	lines = rewritten
 	insertAt := len(lines)
 	if insertAt > 0 && lines[insertAt-1] == "" {
 		insertAt--
@@ -356,6 +364,12 @@ func (u *UpgradeService) handleBackup(fileOp files.FileOp, originalDir string) e
 		if err := fileOp.Copy(item.src, item.dest); err != nil {
 			return fmt.Errorf("backup %s failed: %w", path.Base(item.src), err)
 		}
+	}
+	// The previous control script may contain the legacy plaintext password.
+	// Keep the rollback copy executable by root but unreadable to other local
+	// users; the installed replacement never receives ORIGINAL_PASSWORD.
+	if err := os.Chmod(path.Join(originalDir, "1pctl"), 0600); err != nil {
+		return fmt.Errorf("secure backup 1pctl failed: %w", err)
 	}
 
 	if err := handleTar(

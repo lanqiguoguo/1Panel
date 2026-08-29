@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+SECRET_VALUE='InstallOnly-Password1!'
+
+if grep -Eq '^ORIGINAL_PASSWORD=' "$ROOT_DIR/ci/resources/1pctl"; then
+    echo "1pctl template must not contain a password" >&2
+    exit 1
+fi
+if grep -Eq 'set_param[[:space:]].*ORIGINAL_PASSWORD' "$ROOT_DIR/install.sh"; then
+    echo "installer must not persist ORIGINAL_PASSWORD in 1pctl" >&2
+    exit 1
+fi
+
+TEST_ROOT=$(mktemp -d)
+trap 'rm -rf -- "$TEST_ROOT"' EXIT
+chmod 755 "$TEST_ROOT"
+
+(
+    # shellcheck disable=SC1090
+    source "$ROOT_DIR/install.sh"
+    RUN_BASE_DIR="$TEST_ROOT/1panel"
+    PANEL_PASSWORD="$SECRET_VALUE"
+    write_initial_password
+)
+
+SECRET_FILE="$TEST_ROOT/1panel/conf/initial-password"
+[[ -f "$SECRET_FILE" ]]
+[[ "$(stat -c '%a' "$SECRET_FILE")" == 600 ]]
+[[ "$(<"$SECRET_FILE")" == "$SECRET_VALUE" ]]
+
+if [[ "$(id -u)" == 0 ]]; then
+    [[ "$(stat -c '%u:%g' "$SECRET_FILE")" == 0:0 ]]
+    if command -v runuser >/dev/null 2>&1 && runuser -u nobody -- cat "$SECRET_FILE" >/dev/null 2>&1; then
+        echo "unprivileged users can read the initial password" >&2
+        exit 1
+    fi
+fi
+
+echo "installer password persistence checks passed"
