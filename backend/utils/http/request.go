@@ -84,6 +84,11 @@ func HandleGet(url, method string, timeout int) (int, []byte, error) {
 }
 
 func HandleGetWithTransport(url, method string, transport *http.Transport, timeout int) (int, []byte, error) {
+	client := http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
+	return handleGetWithClient(url, method, timeout, &client)
+}
+
+func handleGetWithClient(url, method string, timeout int, client *http.Client) (int, []byte, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			global.LOG.Errorf("handle request failed, error message: %v", r)
@@ -91,7 +96,6 @@ func HandleGetWithTransport(url, method string, transport *http.Transport, timeo
 		}
 	}()
 
-	client := http.Client{Timeout: time.Duration(timeout) * time.Second, Transport: transport}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, url, nil)
@@ -103,6 +107,7 @@ func HandleGetWithTransport(url, method string, transport *http.Transport, timeo
 	if err != nil {
 		return 0, nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return 0, nil, errors.New(resp.Status)
 	}
@@ -110,7 +115,6 @@ func HandleGetWithTransport(url, method string, transport *http.Transport, timeo
 	if err != nil {
 		return 0, nil, err
 	}
-	defer resp.Body.Close()
 
 	return resp.StatusCode, body, nil
 }
