@@ -288,8 +288,17 @@ func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 
 	changeLogOption(daemonMap, req.LogMaxFile, req.LogMaxSize)
 	if len(daemonMap) == 0 {
-		_ = os.Remove(constant.DaemonJsonPath)
-		return nil
+		// Clearing the only log option empties daemon.json; removing the file
+		// alone is not enough — dockerd keeps serving the stale in-memory
+		// config until it is restarted. Removing the file and returning early
+		// used to report success while the old config stayed active; restart
+		// here matches UpdateConf's semantics. A missing file is fine (it was
+		// created just above and is only absent if the removal raced, which the
+		// daemonJsonMu critical section prevents), so os.IsNotExist is ignored.
+		if err := os.Remove(constant.DaemonJsonPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return restartDockerFn()
 	}
 	newJson, err := json.MarshalIndent(daemonMap, "", "\t")
 	if err != nil {
@@ -333,8 +342,17 @@ func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
 		daemonMap["experimental"] = req.Experimental
 	}
 	if len(daemonMap) == 0 {
-		_ = os.Remove(constant.DaemonJsonPath)
-		return nil
+		// Clearing the only ipv6 option empties daemon.json; removing the file
+		// alone is not enough — dockerd keeps serving the stale in-memory
+		// config until it is restarted. Removing the file and returning early
+		// used to report success while the old config stayed active; restart
+		// here matches UpdateConf's semantics. A missing file is fine (it was
+		// created just above and is only absent if the removal raced, which the
+		// daemonJsonMu critical section prevents), so os.IsNotExist is ignored.
+		if err := os.Remove(constant.DaemonJsonPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return restartDockerFn()
 	}
 	newJson, err := json.MarshalIndent(daemonMap, "", "\t")
 	if err != nil {
