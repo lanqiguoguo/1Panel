@@ -588,6 +588,7 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
+	defer fstFile.Close()
 	info, err := fstFile.Stat()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
@@ -600,23 +601,19 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 
 	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", req.Name))
 	c.Writer.Header().Set("Content-Type", "application/octet-stream")
-	c.Writer.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	c.Writer.Header().Set("Accept-Ranges", "bytes")
 
-	if c.Request.Header.Get("Range") != "" {
-		rangeHeader := c.Request.Header.Get("Range")
-		rangeArr := strings.Split(rangeHeader, "=")[1]
-		rangeParts := strings.Split(rangeArr, "-")
-
-		startPos, _ := strconv.ParseInt(rangeParts[0], 10, 64)
-
-		var endPos int64
-		if rangeParts[1] == "" {
-			endPos = info.Size() - 1
-		} else {
-			endPos, _ = strconv.ParseInt(rangeParts[1], 10, 64)
+	rangeHeader := c.Request.Header.Get("Range")
+	if rangeHeader != "" {
+		startPos, endPos, err := parseByteRange(rangeHeader, info.Size())
+		if err != nil {
+			c.Writer.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size()))
+			c.Writer.Header().Del("Content-Length")
+			c.AbortWithStatus(http.StatusRequestedRangeNotSatisfiable)
+			return
 		}
 
+		c.Writer.Header().Set("Content-Length", strconv.FormatInt(endPos-startPos+1, 10))
 		c.Writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", startPos, endPos, info.Size()))
 		c.Writer.WriteHeader(http.StatusPartialContent)
 
@@ -628,7 +625,10 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		}
 		defer file.Close()
 
-		_, _ = file.Seek(startPos, 0)
+		if _, err = file.Seek(startPos, 0); err != nil {
+			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+			return
+		}
 		reader := io.LimitReader(file, endPos-startPos+1)
 		_, err = io.CopyBuffer(c.Writer, reader, buffer)
 		if err != nil {
@@ -636,8 +636,41 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 			return
 		}
 	} else {
+		c.Writer.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 		c.File(filePath)
 	}
+}
+
+// parseByteRange accepts one explicit byte range. Suffix ranges and multiple
+// ranges are intentionally unsupported because chunk downloads only stream a
+// single contiguous part of a file.
+func parseByteRange(rangeHeader string, size int64) (int64, int64, error) {
+	if size <= 0 || !strings.HasPrefix(rangeHeader, "bytes=") {
+		return 0, 0, errors.New("invalid byte range")
+	}
+
+	rangeParts := strings.Split(strings.TrimPrefix(rangeHeader, "bytes="), "-")
+	if len(rangeParts) != 2 || rangeParts[0] == "" {
+		return 0, 0, errors.New("invalid byte range")
+	}
+
+	startPos, err := strconv.ParseInt(rangeParts[0], 10, 64)
+	if err != nil || startPos < 0 || startPos >= size {
+		return 0, 0, errors.New("invalid byte range")
+	}
+
+	endPos := size - 1
+	if rangeParts[1] != "" {
+		endPos, err = strconv.ParseInt(rangeParts[1], 10, 64)
+		if err != nil || endPos < 0 || endPos >= size {
+			return 0, 0, errors.New("invalid byte range")
+		}
+	}
+	if startPos > endPos {
+		return 0, 0, errors.New("invalid byte range")
+	}
+
+	return startPos, endPos, nil
 }
 
 // @Tags File
