@@ -45,7 +45,10 @@ const GlobalStore = defineStore({
         isDarkTheme: (state) =>
             state.themeConfig.theme === 'dark' ||
             (state.themeConfig.theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches),
-        docsUrl: (state) => (state.isIntl ? 'https://docs.1panel.pro' : 'https://1panel.cn/docs/v1'),
+        // All locales use the Chinese docs site: the intl site (1panel.pro)
+        // is missing several v1 manual pages (containers/setting,
+        // hosts/firewall) and docs.1panel.pro only hosts the v2 manual.
+        docsUrl: () => 'https://1panel.cn/docs/v1',
     },
     actions: {
         setOpenMenuTabs(openMenuTabs: boolean) {
