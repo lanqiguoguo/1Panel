@@ -22,7 +22,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/ntp"
-	"github.com/pkg/errors"
 )
 
 // runningJobs tracks cronjobs whose body is currently executing, keyed by job
@@ -244,27 +243,24 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 }
 
 func handleUnTar(sourceFile, targetDir string, secret string) error {
+	return handleSafeUnTar(sourceFile, targetDir, secret)
+}
+
+// handleSafeUnTar is shared by backup and snapshot recovery. FileOp performs
+// archive-member validation before writing, while the argument checks keep
+// legacy shell-based compatibility paths from receiving shell metacharacters.
+func handleSafeUnTar(sourceFile, targetDir string, secret string) error {
+	if !files.ValidShellArgs(sourceFile, targetDir) || (secret != "" && !files.ValidShellArgs(secret)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(targetDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(targetDir, os.ModePerm); err != nil {
 			return err
 		}
 	}
-	commands := ""
-	if len(secret) != 0 {
-		extraCmd := "openssl enc -d -aes-256-cbc -k '" + secret + "' -in " + sourceFile + " | "
-		commands = fmt.Sprintf("%s tar -zxvf - -C %s", extraCmd, targetDir+" > /dev/null 2>&1")
-		// Same masking as handleTar: the quoted form is what actually appears
-		// in the command line.
-		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
-	} else {
-		commands = fmt.Sprintf("tar zxvfC %s %s", sourceFile, targetDir)
-		global.LOG.Debug(commands)
-	}
-
-	stdout, err := cmd.ExecWithTimeOut(commands, 24*time.Hour)
-	if err != nil {
-		global.LOG.Errorf("do handle untar failed, stdout: %s, err: %v", stdout, err)
-		return errors.New(stdout)
+	if err := files.NewFileOp().Decompress(sourceFile, targetDir, files.TarGz, secret); err != nil {
+		global.LOG.Errorf("do handle untar failed, err: %v", err)
+		return err
 	}
 	return nil
 }

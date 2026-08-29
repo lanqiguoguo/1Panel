@@ -14,7 +14,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
-	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
@@ -586,28 +585,7 @@ func updateRecoverStatus(id uint, isRecover bool, interruptStep, status, message
 }
 
 func (u *SnapshotService) handleUnTar(sourceDir, targetDir string, secret string) error {
-	if _, err := os.Stat(targetDir); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(targetDir, os.ModePerm); err != nil {
-			return err
-		}
-	}
-	commands := ""
-	if len(secret) != 0 {
-		extraCmd := "openssl enc -d -aes-256-cbc -k '" + secret + "' -in " + sourceDir + " | "
-		commands = fmt.Sprintf("%s tar -zxvf - -C %s", extraCmd, targetDir+" > /dev/null 2>&1")
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
-	} else {
-		commands = fmt.Sprintf("tar zxvfC %s %s", sourceDir, targetDir)
-		global.LOG.Debug(commands)
-	}
-	stdout, err := cmd.ExecWithTimeOut(commands, 30*time.Minute)
-	if err != nil {
-		if len(stdout) != 0 {
-			global.LOG.Errorf("do handle untar failed, stdout: %s, err: %v", stdout, err)
-			return fmt.Errorf("do handle untar failed, stdout: %s, err: %v", stdout, err)
-		}
-	}
-	return nil
+	return handleSafeUnTar(sourceDir, targetDir, secret)
 }
 
 func rebuildAllAppInstall() error {
