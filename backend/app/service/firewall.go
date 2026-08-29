@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -306,6 +308,10 @@ func (u *FirewallService) OperatePortRule(req dto.PortRuleOperate, reload bool) 
 }
 
 func (u *FirewallService) OperateForwardRule(req dto.ForwardRuleOperate) error {
+	if err := validateForwardRules(req); err != nil {
+		return err
+	}
+
 	client, err := firewall.NewFirewallClient()
 	if err != nil {
 		return err
@@ -388,6 +394,68 @@ func (u *FirewallService) OperateForwardRule(req dto.ForwardRuleOperate) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// validateForwardRules validates every forward rule before it is interpolated
+// into shell commands by the iptables/ufw/firewalld clients. It is the single
+// entry-point guard for the command injection vector in OperateForwardRule.
+func validateForwardRules(req dto.ForwardRuleOperate) error {
+	for i := range req.Rules {
+		rule := &req.Rules[i]
+		if err := validateForwardRule(rule.Num, rule.Protocol, rule.Port, rule.TargetIP, rule.TargetPort); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateForwardRule(num, protocol, port, targetIP, targetPort string) error {
+	for _, p := range strings.Split(protocol, "/") {
+		if p != "tcp" && p != "udp" {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	if !validForwardPort(port) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !validForwardPort(targetPort) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if num != "" {
+		if _, err := strconv.Atoi(num); err != nil {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	return validateForwardTargetIP(targetIP)
+}
+
+// validForwardPort reports whether s is a single port in 1-65535.
+// The frontend only accepts single ports here (no ranges), so no '-'/'|'/etc.
+func validForwardPort(s string) bool {
+	if s == "" {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return false
+	}
+	return n >= 1 && n <= 65535
+}
+
+// validateForwardTargetIP allows empty (replaced with 127.0.0.1), the loopback
+// literals, or a plain IPv4 address. IPv6 is intentionally rejected: the
+// iptables client has no ip6tables branch and forwards via 'iptables -t nat',
+// so an IPv6 target would not actually work and its ':' would be ambiguous
+// when concatenated with the destination port.
+func validateForwardTargetIP(s string) error {
+	if s == "" || s == "127.0.0.1" || s == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To4() == nil {
+		return buserr.New(constant.ErrCmdIllegal)
 	}
 	return nil
 }
