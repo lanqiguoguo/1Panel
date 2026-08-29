@@ -173,7 +173,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed, nextTick } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, computed, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import type { ElForm } from 'element-plus';
 import { loginApi, getCaptcha, mfaLoginApi, checkIsDemo, getAuthSetting, checkIsIntl } from '@/api/modules/auth';
@@ -443,6 +443,19 @@ const loadDataFromDB = async () => {
     globalStore.setThemeConfig({ ...themeConfig.value, theme: theme, panelName: res.data.panelName });
 };
 
+const handleKeydown = (e: KeyboardEvent) => {
+    if (e.keyCode === 13) {
+        if (!mfaShow.value) {
+            if (!loginButtonFocused.value) {
+                login(loginFormRef.value);
+            }
+        }
+        if (mfaShow.value && !mfaButtonFocused.value) {
+            mfaLogin(false);
+        }
+    }
+};
+
 onMounted(() => {
     globalStore.isOnRestart = false;
     checkIsSystemIntl();
@@ -451,19 +464,11 @@ onMounted(() => {
     document.title = globalStore.themeConfig.panelName;
     loginForm.agreeLicense = globalStore.agreeLicense;
     checkIsSystemDemo();
-    document.onkeydown = (e: any) => {
-        e = window.event || e;
-        if (e.keyCode === 13) {
-            if (!mfaShow.value) {
-                if (!loginButtonFocused.value) {
-                    login(loginFormRef.value);
-                }
-            }
-            if (mfaShow.value && !mfaButtonFocused.value) {
-                mfaLogin(false);
-            }
-        }
-    };
+    document.addEventListener('keydown', handleKeydown);
+});
+
+onBeforeUnmount(() => {
+    document.removeEventListener('keydown', handleKeydown);
 });
 </script>
 
