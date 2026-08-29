@@ -1343,8 +1343,18 @@ func downloadAppAssets(apps []dto.AppDefine, oldApps []model.App, baseRemoteUrl,
 		version string
 		content string
 	}
+	// iconCh holds at most one message per task; composeCh holds one message
+	// per (init-type task, version) pair. Sizing composeCh to the message
+	// count - not the task count - matters: with more versions than tasks the
+	// producers would otherwise block on a full channel before wg.Wait() ran
+	// and the sync would deadlock. Both capacities bound the producers, so no
+	// drain is needed before wg.Wait().
+	composeCapacity := 0
+	for _, task := range tasks {
+		composeCapacity += len(task.versions)
+	}
 	iconCh := make(chan iconResult, len(tasks))
-	composeCh := make(chan composeResult, len(tasks))
+	composeCh := make(chan composeResult, composeCapacity)
 	sem := make(chan struct{}, appAssetsConcurrency)
 	var wg sync.WaitGroup
 	for _, task := range tasks {

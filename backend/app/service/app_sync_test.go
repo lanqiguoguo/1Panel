@@ -292,3 +292,46 @@ func TestDownloadAppAssets(t *testing.T) {
 		})
 	}
 }
+
+// TestDownloadAppAssetsVersionsExceedTasks is a deadlock regression test:
+// composeCh is sized to the number of tasks, but every init-type task emits
+// one message per version. With more versions than tasks the producers used to
+// block on the full channel before wg.Wait() ran, hanging the sync forever.
+// The timeout turns that hang into a test failure.
+func TestDownloadAppAssetsVersionsExceedTasks(t *testing.T) {
+	global.LOG = logrus.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	// 3 init-type apps x 8 versions = 24 compose messages, but only 3 tasks,
+	// so the old len(tasks)-sized channel (capacity 3) would deadlock.
+	var apps []dto.AppDefine
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("init-%d", i)
+		versions := make([]dto.AppConfigVersion, 0, 8)
+		for v := 1; v <= 8; v++ {
+			versions = append(versions, dto.AppConfigVersion{
+				Name:    fmt.Sprintf("%d.0", v),
+				AppForm: map[string]interface{}{},
+			})
+		}
+		apps = append(apps, dto.AppDefine{
+			AppProperty: dto.AppProperty{Key: key, Type: "php"},
+			Icon:        server.URL + "/icon/" + key,
+			Versions:    versions,
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		downloadAppAssets(apps, []model.App{}, server.URL, "1.0.0", http2.NewTransport(), func(string) error { return nil })
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("downloadAppAssets deadlocked: versions outnumber tasks")
+	}
+}
