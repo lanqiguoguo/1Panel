@@ -20,6 +20,16 @@ import (
 type MonitorService struct {
 	DiskIO chan ([]disk.IOCountersStat)
 	NetIO  chan ([]net.IOCountersStat)
+
+	// stopCh is closed by stopMonitorLocked (once, via stopOnce) when the
+	// monitor generation is torn down. Run's loadDiskIO/loadNetIO sends are
+	// select-protected against it so that a collection racing the teardown
+	// exits through the stop branch instead of sending on a channel that the
+	// saver goroutines have just closed — that would panic with "send on
+	// closed channel". It also unblocks sends that would otherwise wait
+	// forever on a full buffer once nobody is draining it anymore.
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // monitorMu guards monitorCancel and global.MonitorCronID and must be held for
@@ -33,6 +43,14 @@ type MonitorService struct {
 var (
 	monitorMu     sync.Mutex
 	monitorCancel context.CancelFunc
+
+	// currentMonitorService holds the live monitor generation's service. It is
+	// written (startMonitor) and read (stopMonitorLocked) only while monitorMu
+	// is held, so it is covered by the same publication discipline as the
+	// cancel/id pair. stopMonitorLocked closes the service's stopCh exactly
+	// once so a Run racing the teardown exits via the select stop branch
+	// instead of panicking on the closed collection channel.
+	currentMonitorService *MonitorService
 )
 
 type IMonitorService interface {
@@ -46,6 +64,7 @@ func NewIMonitorService() IMonitorService {
 	return &MonitorService{
 		DiskIO: make(chan []disk.IOCountersStat, 2),
 		NetIO:  make(chan []net.IOCountersStat, 2),
+		stopCh: make(chan struct{}),
 	}
 }
 
@@ -90,7 +109,27 @@ func (m *MonitorService) loadDiskIO() {
 	for _, io := range ioStat {
 		diskIOList = append(diskIOList, io)
 	}
-	m.DiskIO <- diskIOList
+	m.sendDiskIO(diskIOList)
+}
+
+// sendDiskIO delivers one IO sample to the saver, protected against the
+// teardown race. The stop branch makes a blocked send (full buffer, saver
+// already gone) exit through stopCh instead of hanging the cron goroutine
+// forever. The select alone cannot, however, make the send panic-free: gc's
+// select panics with "send on closed channel" as soon as it scans a closed
+// send case — even when the stop branch is ready, because case order is
+// randomized — and a close() landing while the send is in flight wakes the
+// send straight into the panic. The deferred recover absorbs exactly that
+// teardown-only panic: the sample is dropped, nothing is left inconsistent,
+// and the panic never propagates to cron's Recover (no stack-trace spam).
+func (m *MonitorService) sendDiskIO(list []disk.IOCountersStat) {
+	defer func() {
+		_ = recover()
+	}()
+	select {
+	case m.DiskIO <- list:
+	case <-m.stopCh:
+	}
 }
 
 func (m *MonitorService) loadNetIO() {
@@ -99,7 +138,20 @@ func (m *MonitorService) loadNetIO() {
 	var netList []net.IOCountersStat
 	netList = append(netList, netStat...)
 	netList = append(netList, netStatAll...)
-	m.NetIO <- netList
+	m.sendNetIO(netList)
+}
+
+// sendNetIO is the network counterpart of sendDiskIO with the same teardown
+// protection: stop branch for blocked sends, recover for the panic a
+// close()-while-sending race can still produce.
+func (m *MonitorService) sendNetIO(list []net.IOCountersStat) {
+	defer func() {
+		_ = recover()
+	}()
+	select {
+	case m.NetIO <- list:
+	case <-m.stopCh:
+	}
 }
 
 func (m *MonitorService) saveIODataToDB(ctx context.Context, interval float64) {
@@ -236,6 +288,17 @@ func stopMonitor() {
 // Remove(0), no nil-cancel call) and the cancel/id pair is always cleared
 // together.
 func stopMonitorLocked() {
+	if currentMonitorService != nil {
+		// Close exactly once: stopMonitorLocked is reached from both the stop
+		// path and the replace path (startMonitor tears the old generation
+		// down first), so the stop channel may already be closed. The Once
+		// makes repeated teardowns safe without changing the guarded-state
+		// semantics.
+		currentMonitorService.stopOnce.Do(func() {
+			close(currentMonitorService.stopCh)
+		})
+		currentMonitorService = nil
+	}
 	if monitorCancel != nil {
 		monitorCancel()
 		monitorCancel = nil
@@ -272,6 +335,7 @@ func startMonitor(service IMonitorService, interval string, cancel context.Cance
 	}
 
 	stopMonitorLocked()
+	currentMonitorService, _ = service.(*MonitorService)
 	global.MonitorCronID = monitorID
 	monitorCancel = cancel
 

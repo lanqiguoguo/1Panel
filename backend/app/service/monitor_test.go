@@ -12,6 +12,8 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/glebarez/sqlite"
 	"github.com/robfig/cron/v3"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/net"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -358,5 +360,200 @@ func TestMonitorStartStopRaceInvariant(t *testing.T) {
 			t.Fatalf("collector goroutines leaked: baseline = %d, still %d running after 10s", before, runtime.NumGoroutine())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestMonitorRunSendVsStopRace reproduces the race between a cron-triggered
+// Run (whose loadDiskIO/loadNetIO end with a channel send) and a concurrent
+// stopMonitor teardown. stopMonitorLocked is invoked while the loader is
+// hammering sends: it closes the service's stopCh, and every send that is
+// still in flight when the stop lands must either complete normally (the
+// collection channel is still open — the savers are only cancelled after the
+// loader is confirmed done) or exit through the stop branch. Before the
+// stopCh fix, a teardown racing Run's sends could end with a send on a
+// channel the savers had just closed, panicking with "send on closed
+// channel" (recovered by cron, but losing the sample and spamming a stack
+// trace).
+//
+// The data channels are deliberately never closed while the loader is
+// sending: closing a channel while a send is in flight is a data race by the
+// memory model (Go only guarantees the send case is skipped when the select
+// re-scans after the close), which is covered deterministically by
+// TestMonitorSendOnClosedChannelNoPanic. Here the teardown is sequenced so
+// no send overlaps the savers' deferred close, keeping the -race run clean.
+func TestMonitorRunSendVsStopRace(t *testing.T) {
+	setupMonitorConcurrentTest(t)
+
+	for iter := 0; iter < 30; iter++ {
+		service := NewIMonitorService().(*MonitorService)
+
+		monitorMu.Lock()
+		currentMonitorService = service
+		monitorMu.Unlock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		ioDone := make(chan struct{})
+		netDone := make(chan struct{})
+		go func() {
+			defer close(ioDone)
+			service.saveIODataToDB(ctx, 1)
+		}()
+		go func() {
+			defer close(netDone)
+			service.saveNetDataToDB(ctx, 1)
+		}()
+
+		// Loader goroutine standing in for Run: keeps calling the two loaders
+		// (real disk/net reads plus the guarded sends) until the stop channel
+		// is closed.
+		loaderDone := make(chan struct{})
+		go func() {
+			defer close(loaderDone)
+			for {
+				select {
+				case <-service.stopCh:
+					return
+				default:
+				}
+				service.loadDiskIO()
+				service.loadNetIO()
+			}
+		}()
+
+		// Let a few samples flow, then tear down while the loader is
+		// mid-collection: closing stopCh makes the in-flight and subsequent
+		// sends take the stop branch instead of blocking on a buffer nobody
+		// drains anymore.
+		time.Sleep(500 * time.Microsecond)
+		monitorMu.Lock()
+		stopMonitorLocked()
+		monitorMu.Unlock()
+
+		<-loaderDone
+
+		// Only now, with no sends left in flight, cancel the savers so their
+		// deferred close(chan) runs without racing the loader.
+		cancel()
+		<-ioDone
+		<-netDone
+
+		// The generation must be fully torn down and all goroutines gone.
+		if len(global.Cron.Entries()) != 0 {
+			t.Fatalf("iter %d: cron entries = %d, want 0", iter, len(global.Cron.Entries()))
+		}
+		if global.MonitorCronID != 0 {
+			t.Fatalf("iter %d: MonitorCronID = %d, want 0", iter, global.MonitorCronID)
+		}
+		monitorMu.Lock()
+		live := currentMonitorService != nil
+		monitorMu.Unlock()
+		if live {
+			t.Fatalf("iter %d: currentMonitorService still set after stopMonitorLocked", iter)
+		}
+	}
+}
+
+// TestMonitorSendOnClosedChannelNoPanic deterministically exercises the two
+// failure modes of the teardown race, in arrangements that are themselves
+// race-free (so -race stays green) yet panic or hang on any partial fix:
+//
+// Scenario A — blocked send released by stopCh: the loader parks in the
+// select with both data buffers full and nobody draining; stopMonitorLocked
+// then closes stopCh. The select must exit through the stop branch. With the
+// original unguarded send this hangs forever (send on a full buffer with no
+// saver); with select+stopCh it exits; without the recover there is nothing
+// to panic on here, so this scenario also passes on the select-only fix.
+//
+// Scenario B — closed-channel send case: the data channels are closed before
+// the loader starts (a happens-before edge, so no data race — this is the
+// production situation where the close lands while Run is still collecting,
+// i.e. before its select is ever entered). A select scanning a closed send
+// case panics with "send on closed channel" roughly half the time even when
+// the stop branch is ready, because case order is randomized. The deferred
+// recover in sendDiskIO/sendNetIO must absorb that panic so the iteration
+// counts as a clean exit.
+func TestMonitorSendOnClosedChannelNoPanic(t *testing.T) {
+	setupMonitorConcurrentTest(t)
+
+	// Scenario A: blocked send + stopCh close.
+	for iter := 0; iter < 5; iter++ {
+		service := NewIMonitorService().(*MonitorService)
+
+		monitorMu.Lock()
+		currentMonitorService = service
+		monitorMu.Unlock()
+
+		// Prefill both buffers so the loader's sends cannot proceed and it
+		// parks inside the select.
+		service.DiskIO <- []disk.IOCountersStat{{}}
+		service.DiskIO <- []disk.IOCountersStat{{}}
+		service.NetIO <- []net.IOCountersStat{{}}
+		service.NetIO <- []net.IOCountersStat{{}}
+
+		loaderDone := make(chan struct{})
+		go func() {
+			defer close(loaderDone)
+			for {
+				select {
+				case <-service.stopCh:
+					return
+				default:
+				}
+				service.loadDiskIO()
+				service.loadNetIO()
+			}
+		}()
+
+		// Let the loader reach its parked select, then close stopCh: the stop
+		// branch must release it.
+		time.Sleep(100 * time.Microsecond)
+		monitorMu.Lock()
+		stopMonitorLocked()
+		monitorMu.Unlock()
+
+		select {
+		case <-loaderDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Scenario A: loader stuck on full buffers after stopCh closed (select stop branch missing)")
+		}
+	}
+
+	// Scenario B: send on a closed channel (close happens-before loader).
+	for iter := 0; iter < 10; iter++ {
+		service := NewIMonitorService().(*MonitorService)
+
+		monitorMu.Lock()
+		currentMonitorService = service
+		monitorMu.Unlock()
+
+		// Close the data channels first — exactly what the savers' deferred
+		// close does — then let the loader hit the closed send case.
+		close(service.DiskIO)
+		close(service.NetIO)
+
+		loaderDone := make(chan struct{})
+		go func() {
+			defer close(loaderDone)
+			for {
+				select {
+				case <-service.stopCh:
+					return
+				default:
+				}
+				service.loadDiskIO()
+				service.loadNetIO()
+			}
+		}()
+
+		time.Sleep(100 * time.Microsecond)
+		monitorMu.Lock()
+		stopMonitorLocked()
+		monitorMu.Unlock()
+
+		select {
+		case <-loaderDone:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Scenario B iter %d: loader did not exit after stop", iter)
+		}
 	}
 }
