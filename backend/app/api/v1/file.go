@@ -930,6 +930,7 @@ func (b *BaseApi) BatchChangeModeAndOwner(c *gin.Context) {
 	}
 	if err := fileService.BatchChangeModeAndOwner(req); err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+		return
 	}
 	helper.SuccessWithOutData(c)
 }
