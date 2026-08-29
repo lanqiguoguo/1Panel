@@ -421,3 +421,112 @@ func TestRecoverDaemonJsonLockedLifecycle(t *testing.T) {
 		}
 	})
 }
+
+// TestSnapshotDeleteLocalCleanup verifies that deleting a snapshot record also
+// removes the local artifacts the creation flow left behind: the working
+// directory <localDir>/system/<name> (HandleSnapshot) and the compressed
+// tarball <TmpDir>/system/<name>.tar.gz (snapCompress). Failed snapshots never
+// reach the upload step that normally deletes these, so they used to pile up on
+// disk. The cleanup is best-effort and must refuse names that could escape the
+// snapshot directories.
+func TestSnapshotDeleteLocalCleanup(t *testing.T) {
+	setupSnapshotTest(t)
+
+	origTmpDir := global.CONF.System.TmpDir
+	t.Cleanup(func() { global.CONF.System.TmpDir = origTmpDir })
+
+	localDir := t.TempDir()
+	tmpDir := t.TempDir()
+	global.CONF.System.TmpDir = tmpDir
+
+	writeArtifacts := func(t *testing.T, snap model.Snapshot) {
+		t.Helper()
+		rootDir := filepath.Join(localDir, "system", snap.Name)
+		if err := os.MkdirAll(filepath.Join(rootDir, "1panel"), 0750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(rootDir, "snapshot.json"), []byte(`{}`), 0640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(tmpDir, "system"), 0750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "system", snap.Name+".tar.gz"), []byte("tar"), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("valid name removes work dir and tarball", func(t *testing.T) {
+		snap := model.Snapshot{BaseModel: model.BaseModel{ID: 1}, Name: "1panel_v1.10.39-lts_amd64_20260829070716"}
+		writeArtifacts(t, snap)
+
+		removeSnapshotLocalFiles(snap, localDir)
+
+		if _, err := os.Stat(filepath.Join(localDir, "system", snap.Name)); !os.IsNotExist(err) {
+			t.Fatalf("work dir still exists after cleanup (stat err: %v)", err)
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "system", snap.Name+".tar.gz")); !os.IsNotExist(err) {
+			t.Fatalf("tarball still exists after cleanup (stat err: %v)", err)
+		}
+	})
+
+	t.Run("name with path separator is rejected", func(t *testing.T) {
+		for _, bad := range []string{"../escape", "a/b", `a\b`} {
+			snap := model.Snapshot{BaseModel: model.BaseModel{ID: 2}, Name: bad}
+			rootDir := filepath.Join(localDir, "system", bad)
+			if err := os.MkdirAll(rootDir, 0750); err != nil {
+				t.Fatal(err)
+			}
+			removeSnapshotLocalFiles(snap, localDir)
+			if _, err := os.Stat(rootDir); err != nil {
+				t.Fatalf("name %q: dir was removed, want it left untouched", bad)
+			}
+		}
+	})
+
+	t.Run("empty name is rejected", func(t *testing.T) {
+		removeSnapshotLocalFiles(model.Snapshot{BaseModel: model.BaseModel{ID: 3}, Name: ""}, localDir)
+	})
+
+	t.Run("missing artifacts are ignored", func(t *testing.T) {
+		removeSnapshotLocalFiles(model.Snapshot{BaseModel: model.BaseModel{ID: 4}, Name: "1panel_v1.10.39-lts_amd64_20260829070717"}, localDir)
+	})
+
+	t.Run("empty localDir still removes tarball", func(t *testing.T) {
+		snap := model.Snapshot{BaseModel: model.BaseModel{ID: 5}, Name: "1panel_v1.10.39-lts_amd64_20260829070718"}
+		if err := os.MkdirAll(filepath.Join(tmpDir, "system"), 0750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "system", snap.Name+".tar.gz"), []byte("tar"), 0640); err != nil {
+			t.Fatal(err)
+		}
+		removeSnapshotLocalFiles(snap, "")
+		if _, err := os.Stat(filepath.Join(tmpDir, "system", snap.Name+".tar.gz")); !os.IsNotExist(err) {
+			t.Fatalf("tarball still exists after cleanup with empty localDir (stat err: %v)", err)
+		}
+	})
+
+	t.Run("recover scratch dir is removed", func(t *testing.T) {
+		snap := model.Snapshot{BaseModel: model.BaseModel{ID: 6}, Name: "1panel_v1.10.39-lts_amd64_20260829070719"}
+		// HandleSnapshotRecover downloads <name>.tar.gz into, and decompresses
+		// into, the directory <TmpDir>/system/<name>; a failed recover leaves it
+		// there. The directory and the creation tarball (a file with the same
+		// base name) can exist side by side, so cleanup must handle both.
+		recoverDir := filepath.Join(tmpDir, "system", snap.Name)
+		if err := os.MkdirAll(filepath.Join(recoverDir, "1panel"), 0750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(recoverDir, snap.Name+".tar.gz"), []byte("tar"), 0640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(recoverDir, "snapshot.json"), []byte(`{}`), 0640); err != nil {
+			t.Fatal(err)
+		}
+
+		removeSnapshotLocalFiles(snap, localDir)
+
+		if _, err := os.Stat(recoverDir); !os.IsNotExist(err) {
+			t.Fatalf("recover scratch dir still exists after cleanup (stat err: %v)", err)
+		}
+	})
+}

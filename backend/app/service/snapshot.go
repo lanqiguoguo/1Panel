@@ -466,6 +466,10 @@ func (u *SnapshotService) HandleSnapshot(isCronjob bool, logPath string, req dto
 
 func (u *SnapshotService) Delete(req dto.SnapshotBatchDelete) error {
 	snaps, _ := snapshotRepo.GetList(commonRepo.WithIdsIn(req.Ids))
+	localDir, err := loadLocalDir()
+	if err != nil {
+		global.LOG.Errorf("load local backup dir for snapshot cleanup failed, err: %v", err)
+	}
 	for _, snap := range snaps {
 		if req.DeleteWithFile {
 			targetAccounts, err := loadClientMap(snap.From)
@@ -478,12 +482,63 @@ func (u *SnapshotService) Delete(req dto.SnapshotBatchDelete) error {
 			}
 		}
 
+		removeSnapshotLocalFiles(snap, localDir)
+
 		_ = snapshotRepo.DeleteStatus(snap.ID)
 		if err := snapshotRepo.Delete(commonRepo.WithByID(snap.ID)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// removeSnapshotLocalFiles deletes the local artifacts a snapshot leaves
+// behind in the panel directories: the creation working directory
+// <localDir>/system/<name> (created by HandleSnapshot) and the compressed
+// tarball <TmpDir>/system/<name>.tar.gz (produced by snapCompress), as well as
+// the recover scratch directory <TmpDir>/system/<name> (created by
+// HandleSnapshotRecover, which downloads and decompresses into it and removes
+// it only on success). Failed operations never reach the step that normally
+// removes these (snapCompress removes rootDir only after a successful tar,
+// snapUpload removes the tarball only after a successful upload, and
+// HandleSnapshotRecover removes the scratch dir only at the end), so they would
+// otherwise pile up on disk. Cleanup is best-effort: failures are logged and
+// never returned, and the record deletion in Delete stays the primary
+// operation. The name is validated before any path is built so a malformed
+// database value can never escape the snapshot directories.
+func removeSnapshotLocalFiles(snap model.Snapshot, localDir string) {
+	if snap.Name == "" || strings.ContainsAny(snap.Name, "/\\") {
+		global.LOG.Errorf("skip local cleanup of snapshot %d: invalid name %q", snap.ID, snap.Name)
+		return
+	}
+	if localDir != "" {
+		rootDir := path.Join(localDir, "system", snap.Name)
+		if _, err := os.Stat(rootDir); err == nil {
+			if err := os.RemoveAll(rootDir); err != nil {
+				global.LOG.Errorf("remove snapshot work dir %s failed, err: %v", rootDir, err)
+			}
+		}
+	}
+	tmpSystemDir := path.Join(global.CONF.System.TmpDir, "system")
+	if tmpSystemDir != "" {
+		source := path.Join(tmpSystemDir, fmt.Sprintf("%s.tar.gz", snap.Name))
+		if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+			global.LOG.Errorf("remove snapshot tar file %s failed, err: %v", source, err)
+		}
+		// A recover downloads and decompresses into the directory
+		// <TmpDir>/system/<name>, which is the same name as the creation
+		// tarball minus the .tar.gz suffix. HandleSnapshotRecover only removes
+		// it on success, so a failed restore (e.g. an aborted download or
+		// decompress) leaves it behind too. It coexists with the tarball above
+		// (a directory and a file with neighbouring names), so both are
+		// handled here.
+		recoverDir := path.Join(tmpSystemDir, snap.Name)
+		if _, err := os.Stat(recoverDir); err == nil {
+			if err := os.RemoveAll(recoverDir); err != nil {
+				global.LOG.Errorf("remove snapshot recover scratch dir %s failed, err: %v", recoverDir, err)
+			}
+		}
+	}
 }
 
 func updateRecoverStatus(id uint, isRecover bool, interruptStep, status, message string) {
