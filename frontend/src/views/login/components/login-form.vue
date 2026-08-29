@@ -388,20 +388,25 @@ const mfaLogin = async (auto: boolean) => {
     if ((!auto && mfaLoginForm.code) || (auto && mfaLoginForm.code.length === 6)) {
         lastMfaSubmitted = mfaLoginForm.code;
         isLoggingIn = true;
-        mfaLoginForm.name = loginForm.name;
-        mfaLoginForm.password = encryptPassword(loginForm.password);
-        const res = await mfaLoginApi(mfaLoginForm);
-        if (res.code === 406) {
-            errMfaInfo.value = true;
+        try {
+            mfaLoginForm.name = loginForm.name;
+            mfaLoginForm.password = encryptPassword(loginForm.password);
+            const res = await mfaLoginApi(mfaLoginForm);
+            if (res.code === 406) {
+                errMfaInfo.value = true;
+                return;
+            }
+            globalStore.setLogStatus(true);
+            menuStore.setMenuList([]);
+            tabsStore.removeAllTabs();
+            MsgSuccess(i18n.t('commons.msg.loginSuccess'));
+            loadDataFromDB();
+            router.push({ name: 'home' });
+        } catch {
+            // The HTTP interceptor already reports request and business errors.
+        } finally {
             isLoggingIn = false;
-            return;
         }
-        globalStore.setLogStatus(true);
-        menuStore.setMenuList([]);
-        tabsStore.removeAllTabs();
-        MsgSuccess(i18n.t('commons.msg.loginSuccess'));
-        loadDataFromDB();
-        router.push({ name: 'home' });
     }
 };
 const loginVerify = async () => {
