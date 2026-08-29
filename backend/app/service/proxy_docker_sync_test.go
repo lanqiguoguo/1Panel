@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -228,7 +229,7 @@ func TestWriteDaemonJsonProxiesRemove(t *testing.T) {
 	t.Run("other keys survive the removal", func(t *testing.T) {
 		file := filepath.Join(t.TempDir(), "daemon.json")
 		original := map[string]interface{}{
-			"proxies":         map[string]interface{}{"http-proxy": "http://10.0.0.1:8888"},
+			"proxies":          map[string]interface{}{"http-proxy": "http://10.0.0.1:8888"},
 			"registry-mirrors": []string{"https://mirror.example.com"},
 		}
 		raw, _ := json.MarshalIndent(original, "", "\t")
@@ -278,6 +279,28 @@ func TestWriteDaemonJsonProxiesCorruptFile(t *testing.T) {
 	}
 	if err := writeDaemonJsonProxies(file, map[string]interface{}{"http-proxy": "x"}); err == nil {
 		t.Fatal("writeDaemonJsonProxies on a corrupt file succeeded, want error")
+	}
+}
+
+// TestSyncDockerDaemonProxyRejectsPassword prevents a decrypted panel proxy
+// password from reaching applyDaemonJsonProxies and daemon.json. Docker's
+// daemon proxy configuration has no credential helper, so the API must fail
+// closed for authenticated Docker sync while leaving the panel proxy itself
+// available to its own outbound requests.
+func TestSyncDockerDaemonProxyRejectsPassword(t *testing.T) {
+	err := syncDockerDaemonProxy("false", dto.ProxyUpdate{
+		ProxyType:       "http",
+		ProxyUrl:        "proxy.example.com",
+		ProxyPort:       "3128",
+		ProxyUser:       "alice",
+		ProxyPasswd:     "s3cret",
+		ProxyDockerSync: "true",
+	})
+	if err == nil {
+		t.Fatal("authenticated Docker proxy sync succeeded, want a fail-closed error")
+	}
+	if strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("authenticated proxy rejection leaks the password: %v", err)
 	}
 }
 

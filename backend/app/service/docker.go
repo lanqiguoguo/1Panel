@@ -25,9 +25,10 @@ type DockerService struct{}
 
 // daemonJsonMu serializes every daemon.json read-modify-write + validate +
 // restart critical section (UpdateConf, UpdateLogOption, UpdateIpv6Option,
-// UpdateConfByFile, applyDaemonJsonProxies): daemon.json is a single-file
-// global config, so writers must be mutually exclusive to prevent concurrent
-// writes overwriting each other and rollbacks reading a half-written file.
+// UpdateConfByFile, applyDaemonJsonProxies):
+// daemon.json is a single-file global config, so writers must be mutually
+// exclusive to prevent concurrent writes overwriting each other and rollbacks
+// reading a half-written file.
 var daemonJsonMu sync.Mutex
 
 type IDockerService interface {
@@ -691,11 +692,11 @@ func applyDaemonJsonProxies(filePath string, proxies map[string]interface{}) err
 	return nil
 }
 
-// syncDockerDaemonProxy mirrors the panel proxy into Docker's daemon.json per
-// the ProxyDockerSync flag. It is called from UpdateProxy after the settings
-// are saved and RefreshProxy has run, so req carries the persisted values; when
-// the form kept the stored password (empty password with ProxyPasswdKeep), the
-// stored encrypted password is decrypted for the daemon URL.
+// syncDockerDaemonProxy mirrors a credential-free panel proxy into Docker's
+// daemon.json per the ProxyDockerSync flag. Docker supports authenticated
+// proxy URLs in daemon.json, but has no credential helper for daemon proxy
+// settings; refusing those URLs here prevents the decrypted panel password
+// from being persisted in daemon.json or copied by snapshots.
 func syncDockerDaemonProxy(prevSync string, req dto.ProxyUpdate) error {
 	if prevSync != "true" && req.ProxyDockerSync != "true" {
 		return nil
@@ -715,6 +716,11 @@ func syncDockerDaemonProxy(prevSync string, req dto.ProxyUpdate) error {
 		return err
 	} else if u != nil {
 		proxyURL = u.String()
+		if req.ProxyDockerSync == "true" && u.User != nil {
+			if password, ok := u.User.Password(); ok && password != "" {
+				return errors.New("Docker proxy synchronization with a password is disabled because daemon.json cannot store it securely")
+			}
+		}
 	}
 	proxies, apply := dockerProxySyncAction(prevSync, req.ProxyDockerSync, proxyURL)
 	if !apply {
