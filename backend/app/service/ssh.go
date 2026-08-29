@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/user"
 	"path"
 	"path/filepath"
@@ -227,13 +228,21 @@ func (u *SSHService) GenerateSSH(req dto.GenerateSSH) error {
 	secretPubFile := fmt.Sprintf("%s/.ssh/id_item_%s.pub", currentUser.HomeDir, req.EncryptionMode)
 	authFilePath := currentUser.HomeDir + "/.ssh/authorized_keys"
 
-	command := fmt.Sprintf("ssh-keygen -t %s -f %s/.ssh/id_item_%s | echo y", req.EncryptionMode, currentUser.HomeDir, req.EncryptionMode)
-	if len(req.Password) != 0 {
-		command = fmt.Sprintf("ssh-keygen -t %s -P %s -f %s/.ssh/id_item_%s | echo y", req.EncryptionMode, req.Password, currentUser.HomeDir, req.EncryptionMode)
+	// 移除可能残留的临时密钥文件，避免 ssh-keygen 触发交互式 "Overwrite (y/n)?" 询问
+	// （原代码通过管道 `| echo y` 自动回答该询问）。文件本来就不存在（os.ErrNotExist）
+	// 属于正常情况，直接忽略。
+	for _, stale := range []string{secretFile, secretPubFile} {
+		if err := os.Remove(stale); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale temp key file %s failed, err: %v", stale, err)
+		}
 	}
-	stdout, err := cmd.Exec(command)
+
+	// 参数化调用 ssh-keygen，不经过 shell，任何包含空格/短横线等字符的密码都只会
+	// 作为 -N 的单个参数值传入，无法被解释为额外命令或参数（命令注入）。
+	keygen := exec.Command("ssh-keygen", buildSSHKeygenArgs(secretFile, req.EncryptionMode, req.Password)...)
+	output, err := keygen.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("generate failed, err: %v, message: %s", err, stdout)
+		return fmt.Errorf("generate failed, err: %v, message: %s", err, output)
 	}
 	defer func() {
 		_ = os.Remove(secretFile)
@@ -242,16 +251,20 @@ func (u *SSHService) GenerateSSH(req dto.GenerateSSH) error {
 		_ = os.Remove(secretPubFile)
 	}()
 
-	if _, err := os.Stat(authFilePath); err != nil && errors.Is(err, os.ErrNotExist) {
-		authFile, err := os.Create(authFilePath)
-		if err != nil {
-			return err
-		}
-		defer authFile.Close()
-	}
-	stdout1, err := cmd.Execf("cat %s >> %s/.ssh/authorized_keys", secretPubFile, currentUser.HomeDir)
+	// 将公钥追加到 authorized_keys。O_CREATE 保证文件不存在时自动创建（合并原
+	// Stat/Create 的创建逻辑），O_APPEND 保证追加写入（替代原 `cat >>` 的 shell 调用）。
+	pubContent, err := os.ReadFile(secretPubFile)
 	if err != nil {
-		return fmt.Errorf("generate failed, err: %v, message: %s", err, stdout1)
+		return fmt.Errorf("generate failed, err: %v, message: %s", err, "read public key failed")
+	}
+	authFile, err := os.OpenFile(authFilePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("generate failed, err: %v, message: %s", err, "open authorized_keys failed")
+	}
+	defer authFile.Close()
+	pubLine := strings.TrimRight(string(pubContent), "\r\n") + "\n"
+	if _, err := authFile.WriteString(pubLine); err != nil {
+		return fmt.Errorf("generate failed, err: %v, message: %s", err, "append public key failed")
 	}
 
 	fileOp := files.NewFileOp()
@@ -263,6 +276,17 @@ func (u *SSHService) GenerateSSH(req dto.GenerateSSH) error {
 	}
 
 	return nil
+}
+
+// buildSSHKeygenArgs 以参数数组方式构造 ssh-keygen 命令参数，避免 shell 拼接。
+// 设置新密钥的 passphrase 应使用 -N（-P 用于提供旧 passphrase，原代码用 -P 设置
+// 新密码实际不生效）。password 为空时不传 -N，用户输入始终作为 -N 的单个值。
+func buildSSHKeygenArgs(secretFile, mode, password string) []string {
+	args := []string{"-t", mode, "-f", secretFile}
+	if password != "" {
+		args = append(args, "-N", password)
+	}
+	return args
 }
 
 func (u *SSHService) LoadSSHSecret(mode string) (string, error) {
