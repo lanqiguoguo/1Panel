@@ -300,10 +300,18 @@ func (u *ContainerService) ComposeUpdate(req dto.ComposeUpdate) error {
 	defer file.Close()
 	write := bufio.NewWriter(file)
 	_, _ = write.WriteString(req.Content)
-	write.Flush()
+	if err := write.Flush(); err != nil {
+		// The file was truncated and rewritten above; restore the old content
+		// so a failed flush does not leave a half-written compose file behind.
+		_ = recreateCompose(string(oldFile), req.Path)
+		return err
+	}
 
 	global.LOG.Infof("docker-compose.yml %s has been replaced, now start to docker-compose restart", req.Path)
 	if err := newComposeEnv(req.Path, req.Env); err != nil {
+		// newComposeEnv may have partially rewritten the env file; restore the
+		// compose file so the project is left in its previous state.
+		_ = recreateCompose(string(oldFile), req.Path)
 		return err
 	}
 

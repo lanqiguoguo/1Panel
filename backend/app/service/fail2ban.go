@@ -9,6 +9,7 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/utils/firewall"
 	"github.com/1Panel-dev/1Panel/backend/utils/toolbox"
 )
@@ -103,7 +104,24 @@ func (u *Fail2BanService) Operate(operation string) error {
 }
 
 func (u *Fail2BanService) UpdateConf(req dto.Fail2BanUpdate) error {
-	if req.Key == "banaction" {
+	// A newline or '#' in Value could inject extra ini directives into the
+	// [sshd] jail; reject them up front for every key. The remaining shape
+	// checks below match what the frontend sends for each key.
+	if strings.ContainsAny(req.Value, "\n\r#") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	switch req.Key {
+	case "bantime", "findtime", "maxretry":
+		if _, err := strconv.Atoi(req.Value); err != nil {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	case "port":
+		for _, p := range strings.Split(req.Value, "-") {
+			if _, err := strconv.Atoi(p); err != nil {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+		}
+	case "banaction":
 		if req.Value == "firewallcmd-ipset" || req.Value == "ufw" {
 			itemName := "ufw"
 			if req.Value == "firewallcmd-ipset" {
@@ -121,8 +139,10 @@ func (u *Fail2BanService) UpdateConf(req dto.Fail2BanUpdate) error {
 				return buserr.WithName("ErrBanAction", itemName)
 			}
 		}
-	}
-	if req.Key == "logpath" {
+	case "logpath":
+		if strings.Contains(req.Value, "..") {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 		if _, err := os.Stat(req.Value); err != nil {
 			return err
 		}

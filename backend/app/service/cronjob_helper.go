@@ -216,13 +216,16 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 		path = sourceDir
 	}
 
-	commands := ""
+		commands := ""
 
-	if len(secret) != 0 {
-		extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
-		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+excludeRules, path, extraCmd, targetDir+"/"+name)
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
-	} else {
+		if len(secret) != 0 {
+			extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
+			commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+excludeRules, path, extraCmd, targetDir+"/"+name)
+			// The secret appears quoted in the command (-k '<secret>'); the old
+			// ' %s ' pattern never matched that form, leaking the key into the
+			// debug log. Mask both the quoted and the bare form.
+			global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
+		} else {
 		itemPrefix := pathUtils.Base(sourceDir)
 		if itemPrefix == "/" {
 			itemPrefix = ""
@@ -250,7 +253,9 @@ func handleUnTar(sourceFile, targetDir string, secret string) error {
 	if len(secret) != 0 {
 		extraCmd := "openssl enc -d -aes-256-cbc -k '" + secret + "' -in " + sourceFile + " | "
 		commands = fmt.Sprintf("%s tar -zxvf - -C %s", extraCmd, targetDir+" > /dev/null 2>&1")
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
+		// Same masking as handleTar: the quoted form is what actually appears
+		// in the command line.
+		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
 	} else {
 		commands = fmt.Sprintf("tar zxvfC %s %s", sourceFile, targetDir)
 		global.LOG.Debug(commands)

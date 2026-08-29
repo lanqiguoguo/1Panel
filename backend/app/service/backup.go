@@ -348,6 +348,10 @@ func (u *BackupService) Delete(id uint) error {
 	}
 	if backup.Type == constant.OneDrive {
 		global.Cron.Remove(global.OneDriveCronID)
+		// Reset the id so a later Create of another OneDrive account cannot
+		// double-register the refresh job: StartRefreshOneDriveToken skips
+		// when the id is already set, and Remove(0) is a safe no-op.
+		global.OneDriveCronID = 0
 	}
 	cronjobs, _ := cronjobRepo.List(cronjobRepo.WithByDefaultDownload(backup.Type))
 	if len(cronjobs) != 0 {
@@ -685,6 +689,11 @@ func (u *BackupService) checkBackupConn(backup *model.BackupAccount) (bool, erro
 }
 
 func StartRefreshOneDriveToken() {
+	if global.OneDriveCronID != 0 {
+		// Already registered (startup + account creation both call this);
+		// re-adding would leak a duplicate cron job.
+		return
+	}
 	service := NewIBackupService()
 	oneDriveCronID, err := global.Cron.AddJob("0 3 */31 * *", service)
 	if err != nil {
