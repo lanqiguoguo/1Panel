@@ -20,6 +20,14 @@ const (
 	TimeOut20s = 20
 	TimeOut5m  = 300
 
+	// WsReadLimit caps the size of a single WebSocket message received from
+	// the client. It only bounds the client -> server direction: the
+	// server -> client output streams (terminal output, container logs) are
+	// not limited by it. 1MB comfortably fits the largest legitimate client
+	// message (a paste buffer / resize payload) while stopping oversized
+	// frames that would otherwise be buffered unbounded by the server.
+	WsReadLimit = 1 << 20
+
 	DateLayout         = "2006-01-02" // or use time.DateOnly while go version >= 1.20
 	DefaultDate        = "1970-01-01"
 	DateTimeLayout     = "2006-01-02 15:04:05" // or use time.DateTime while go version >= 1.20

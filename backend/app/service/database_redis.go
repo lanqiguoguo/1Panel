@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -42,6 +44,16 @@ func NewIRedisService() IRedisService {
 func (u *RedisService) UpdateConf(req dto.RedisConfUpdate) error {
 	redisInfo, err := appInstallRepo.LoadBaseInfo("redis", req.Database)
 	if err != nil {
+		return err
+	}
+
+	if err := validateRedisConfValue(req.Timeout, redisConfValueInt); err != nil {
+		return err
+	}
+	if err := validateRedisConfValue(req.Maxclients, redisConfValueInt); err != nil {
+		return err
+	}
+	if err := validateRedisConfValue(req.Maxmemory, redisConfValueMemory); err != nil {
 		return err
 	}
 
@@ -113,8 +125,17 @@ func (u *RedisService) UpdatePersistenceConf(req dto.RedisConfPersistenceUpdate)
 
 	var confs []redisConfig
 	if req.Type == "rbd" {
+		if err := validateRedisConfValue(req.Save, redisConfValueSave); err != nil {
+			return err
+		}
 		confs = append(confs, redisConfig{key: "save", value: req.Save})
 	} else {
+		if err := validateRedisConfValue(req.Appendonly, redisConfValueEnum, "yes", "no"); err != nil {
+			return err
+		}
+		if err := validateRedisConfValue(req.Appendfsync, redisConfValueEnum, "always", "everysec", "no"); err != nil {
+			return err
+		}
 		confs = append(confs, redisConfig{key: "appendonly", value: req.Appendonly})
 		confs = append(confs, redisConfig{key: "appendfsync", value: req.Appendfsync})
 	}
@@ -223,7 +244,110 @@ type redisConfig struct {
 	value string
 }
 
+// redis.conf value validation.
+//
+// Values written by UpdateConf / UpdatePersistenceConf end up verbatim on a
+// redis.conf line ("maxmemory 100mb"), so a value containing a newline could
+// inject arbitrary extra configuration directives (e.g. "100mb\nrequirepass
+// evil"). Every value is therefore validated against a strict per-key rule
+// before it is written; values that fail the rule are rejected without
+// touching the file.
+//
+// The rules below intentionally mirror what the 1Panel frontend itself
+// produces (see frontend/src/views/database/redis/):
+//   - timeout / maxclients: plain digits ("900", "65504")
+//   - maxmemory: plain digits followed by a size suffix ("100mb", "1gb")
+//   - save: "second changes" pairs, comma separated ("900 1,300 10")
+//   - appendonly / appendfsync: enum values ("yes"/"no"/"always"/"everysec")
+//
+// Empty values are legal (the confSet writer treats them like "0": the
+// directive line is commented out).
+type redisConfValidator func(value string, allowed ...string) bool
+
+var (
+	redisConfIntRE    = regexp.MustCompile(`^[0-9]+$`)
+	redisConfMemoryRE = regexp.MustCompile(`^[0-9]+(kb|mb|gb)?$`)
+	redisConfSaveRE   = regexp.MustCompile(`^[0-9]+\s+[0-9]+(\s*,\s*[0-9]+\s+[0-9]+)*$`)
+)
+
+func redisConfValueInt(value string, _ ...string) bool {
+	if value == "" {
+		return true
+	}
+	return redisConfIntRE.MatchString(value)
+}
+
+func redisConfValueMemory(value string, _ ...string) bool {
+	if value == "" {
+		return true
+	}
+	return redisConfMemoryRE.MatchString(value)
+}
+
+func redisConfValueSave(value string, _ ...string) bool {
+	if value == "" {
+		return true
+	}
+	return redisConfSaveRE.MatchString(value)
+}
+
+func redisConfValueEnum(value string, allowed ...string) bool {
+	if value == "" {
+		return true
+	}
+	for _, item := range allowed {
+		if value == item {
+			return true
+		}
+	}
+	return false
+}
+
+// redisConfValidators maps every directive confSet may rewrite to its value
+// validator. Keys not listed here are rejected by confSet.
+var redisConfValidators = map[string]redisConfValidator{
+	"timeout":     redisConfValueInt,
+	"maxclients":  redisConfValueInt,
+	"maxmemory":   redisConfValueMemory,
+	"save":        redisConfValueSave,
+	"appendonly":  redisConfValueEnum,
+	"appendfsync": redisConfValueEnum,
+}
+
+// redisConfAllowedValues holds the whitelist for enum-validated directives.
+var redisConfAllowedValues = map[string][]string{
+	"appendonly":  {"yes", "no"},
+	"appendfsync": {"always", "everysec", "no"},
+}
+
+// validateRedisConfigList rejects any value that would not be safe to write
+// verbatim onto a redis.conf line. It is the last line of defense behind the
+// per-field checks in UpdateConf / UpdatePersistenceConf.
+func validateRedisConfigList(confs []redisConfig) error {
+	for _, item := range confs {
+		validate, ok := redisConfValidators[item.key]
+		if !ok {
+			return buserr.New("ErrInvalidChar")
+		}
+		if err := validateRedisConfValue(item.value, validate, redisConfAllowedValues[item.key]...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRedisConfValue(value string, validate redisConfValidator, allowed ...string) error {
+	if !validate(value, allowed...) {
+		// ErrInvalidChar is a plain i18n key (see backend/app/service/file.go).
+		return buserr.New("ErrInvalidChar")
+	}
+	return nil
+}
+
 func confSet(redisName string, updateType string, changeConf []redisConfig) error {
+	if err := validateRedisConfigList(changeConf); err != nil {
+		return err
+	}
 	path := fmt.Sprintf("%s/redis/%s/conf/redis.conf", constant.AppInstallDir, redisName)
 	lineBytes, err := os.ReadFile(path)
 	if err != nil {

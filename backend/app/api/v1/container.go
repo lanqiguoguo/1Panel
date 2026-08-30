@@ -450,6 +450,9 @@ func (b *BaseApi) ContainerLogs(c *gin.Context) {
 		return
 	}
 	defer wsConn.Close()
+	// Cap the client -> server message size (the "close conn" frame); the
+	// server -> client log stream is not affected.
+	wsConn.SetReadLimit(constant.WsReadLimit)
 
 	container := c.Query("container")
 	since := c.Query("since")
@@ -694,6 +697,8 @@ func (b *BaseApi) ComposeLogs(c *gin.Context) {
 		return
 	}
 	defer wsConn.Close()
+	// Cap the client -> server message size; the log stream is unaffected.
+	wsConn.SetReadLimit(constant.WsReadLimit)
 
 	compose := c.Query("compose")
 	since := c.Query("since")

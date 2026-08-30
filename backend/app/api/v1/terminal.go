@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/middleware"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -27,6 +28,9 @@ func (b *BaseApi) WsSsh(c *gin.Context) {
 		return
 	}
 	defer wsConn.Close()
+	// The limit only applies to the client -> server direction (typed input);
+	// the server -> client output stream is unaffected.
+	wsConn.SetReadLimit(constant.WsReadLimit)
 
 	id, err := strconv.Atoi(c.Query("id"))
 	if wshandleError(wsConn, errors.WithMessage(err, "invalid param id in request")) {
@@ -79,6 +83,8 @@ func (b *BaseApi) ContainerWsSSH(c *gin.Context) {
 		return
 	}
 	defer wsConn.Close()
+	// Cap the client -> server message size; server output stays unlimited.
+	wsConn.SetReadLimit(constant.WsReadLimit)
 
 	if global.CONF.System.IsDemo {
 		if wshandleError(wsConn, errors.New("   demo server, prohibit this operation!")) {

@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/gorilla/websocket"
 )
 
@@ -11,6 +12,9 @@ type Client struct {
 }
 
 func NewWsClient(ID string, socket *websocket.Conn) *Client {
+	// Cap the client -> server message size. This only limits what the peer
+	// may send us (user input), never the server -> client output stream.
+	socket.SetReadLimit(constant.WsReadLimit)
 	return &Client{
 		ID:     ID,
 		Socket: socket,

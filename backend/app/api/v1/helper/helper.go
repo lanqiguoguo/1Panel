@@ -18,6 +18,16 @@ import (
 	"github.com/pkg/errors"
 )
 
+// logError writes the raw error to the global logger only. The logger is not
+// initialized in unit tests, so a nil guard keeps the helper callable from
+// test code; nil errors (call sites that pass no err) are not logged.
+func logError(err error) {
+	if err == nil || global.LOG == nil {
+		return
+	}
+	global.LOG.Errorf("%v", err)
+}
+
 func ErrorWithDetail(ctx *gin.Context, code int, msgKey string, err error) {
 	res := dto.Response{
 		Code:    code,
@@ -32,7 +42,11 @@ func ErrorWithDetail(ctx *gin.Context, code int, msgKey string, err error) {
 		case errors.Is(err, constant.ErrInvalidParams):
 			res.Message = i18n.GetMsgWithMap("ErrInvalidParams", nil)
 		case errors.Is(err, constant.ErrStructTransform):
-			res.Message = i18n.GetMsgWithMap("ErrStructTransform", map[string]interface{}{"detail": err})
+			// The raw error (it usually wraps copier.Copy/json errors that
+			// can embed file paths) only goes to the log; the response stays
+			// on the generic template without the detail.
+			logError(err)
+			res.Message = i18n.GetMsgWithMap("ErrStructTransform", nil)
 		case errors.Is(err, constant.ErrCaptchaCode):
 			res.Code = constant.CodeAuth
 			res.Message = "ErrCaptchaCode"
@@ -40,14 +54,22 @@ func ErrorWithDetail(ctx *gin.Context, code int, msgKey string, err error) {
 			res.Code = constant.CodeAuth
 			res.Message = "ErrAuth"
 		case errors.Is(err, constant.ErrInitialPassword):
-			res.Message = i18n.GetMsgWithMap("ErrInitialPassword", map[string]interface{}{"detail": err})
+			logError(err)
+			res.Message = i18n.GetMsgWithMap("ErrInitialPassword", nil)
 		case errors.As(err, &buserr.BusinessError{}):
 			res.Message = err.Error()
 		default:
-			res.Message = i18n.GetMsgWithMap(msgKey, map[string]interface{}{"detail": err})
+			// Generic internal-server error: the raw err (file paths, SQL,
+			// command output) goes to the log only, never into the response.
+			logError(err)
+			res.Message = i18n.GetMsgWithMap(msgKey, nil)
 		}
 	} else {
-		res.Message = i18n.GetMsgWithMap(msgKey, map[string]interface{}{"detail": err})
+		// Non-internal message keys (e.g. ErrTypeInvalidParams): the raw err
+		// can echo request content (malformed JSON bodies, validation
+		// values), so it is logged instead of being spliced into the message.
+		logError(err)
+		res.Message = i18n.GetMsgWithMap(msgKey, nil)
 	}
 	ctx.JSON(http.StatusOK, res)
 	ctx.Abort()

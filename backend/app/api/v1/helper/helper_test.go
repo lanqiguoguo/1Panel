@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -72,29 +73,85 @@ func TestErrorWithDetailWrappedInvalidParams(t *testing.T) {
 }
 
 // TestErrorWithDetailWrappedInitialPassword proves that an error wrapping the
-// ErrInitialPassword sentinel maps to the initial-password branch.
+// ErrInitialPassword sentinel maps to the initial-password branch. The raw
+// wrapped error is logged, never spliced into the response.
 func TestErrorWithDetailWrappedInitialPassword(t *testing.T) {
 	err := fmt.Errorf("check password: %w", constant.ErrInitialPassword)
 	resp := runErrorWithDetail(t, err)
 
-	want := i18n.GetMsgWithMap("ErrInitialPassword", map[string]interface{}{"detail": err})
+	want := i18n.GetMsgWithMap("ErrInitialPassword", nil)
 	if resp.Message != want {
 		t.Errorf("wrapped ErrInitialPassword: got message %q, want %q", resp.Message, want)
+	}
+	if strings.Contains(resp.Message, "check password") {
+		t.Errorf("wrapped ErrInitialPassword: raw error leaked into response: %q", resp.Message)
 	}
 }
 
 // TestErrorWithDetailGenericError proves the default branch still handles
-// unrelated errors.
+// unrelated errors with a fixed message (no raw err in the response).
 func TestErrorWithDetailGenericError(t *testing.T) {
 	err := fmt.Errorf("boom")
 	resp := runErrorWithDetail(t, err)
 
-	want := i18n.GetMsgWithMap(constant.ErrTypeInternalServer, map[string]interface{}{"detail": err})
+	want := i18n.GetMsgWithMap(constant.ErrTypeInternalServer, nil)
 	if resp.Message != want {
 		t.Errorf("generic error: got message %q, want %q", resp.Message, want)
 	}
 	if resp.Code != constant.CodeErrInternalServer {
 		t.Errorf("generic error: got code %d, want %d", resp.Code, constant.CodeErrInternalServer)
+	}
+}
+
+// TestErrorWithDetailNoPathLeak proves the default branch no longer splices
+// raw errors (which can embed absolute file paths) into the response.
+func TestErrorWithDetailNoPathLeak(t *testing.T) {
+	const secretPath = "/opt/1panel/secret/data.db"
+	err := fmt.Errorf("open %s: no such file or directory", secretPath)
+	resp := runErrorWithDetail(t, err)
+
+	if strings.Contains(resp.Message, secretPath) {
+		t.Errorf("default branch leaked path %q into response: %q", secretPath, resp.Message)
+	}
+	if strings.Contains(resp.Message, "no such file") {
+		t.Errorf("default branch leaked raw error into response: %q", resp.Message)
+	}
+}
+
+// TestErrorWithDetailStructTransformNoLeak proves the ErrStructTransform
+// branch keeps its generic template without the raw wrapped error.
+func TestErrorWithDetailStructTransformNoLeak(t *testing.T) {
+	const secretPath = "/var/lib/1panel/runtime/go/app/main.go"
+	err := fmt.Errorf("copy %s: %w", secretPath, constant.ErrStructTransform)
+	resp := runErrorWithDetail(t, err)
+
+	want := i18n.GetMsgWithMap("ErrStructTransform", nil)
+	if resp.Message != want {
+		t.Errorf("ErrStructTransform: got message %q, want %q", resp.Message, want)
+	}
+	if strings.Contains(resp.Message, secretPath) {
+		t.Errorf("ErrStructTransform leaked path %q into response: %q", secretPath, resp.Message)
+	}
+}
+
+// TestErrorWithDetailInvalidParamsNoEcho proves the non-internal branch does
+// not echo the raw binding/validation error (which can contain request
+// content) back to the client.
+func TestErrorWithDetailInvalidParamsNoEcho(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	err := fmt.Errorf("invalid character 'x' looking for beginning of value, request body: {\"path\":\"/opt/secret\"}")
+	ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, err)
+	var resp dto.Response
+	if unmarshalErr := json.Unmarshal(w.Body.Bytes(), &resp); unmarshalErr != nil {
+		t.Fatalf("failed to decode response body %q: %v", w.Body.String(), unmarshalErr)
+	}
+	want := i18n.GetMsgWithMap("ErrInvalidParams", nil)
+	if resp.Message != want {
+		t.Errorf("invalid params: got message %q, want %q", resp.Message, want)
+	}
+	if strings.Contains(resp.Message, "/opt/secret") || strings.Contains(resp.Message, "invalid character") {
+		t.Errorf("invalid params branch echoed raw error: %q", resp.Message)
 	}
 }
 
