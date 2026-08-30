@@ -86,6 +86,51 @@ func TestDownloadRegularFile(t *testing.T) {
 	}
 }
 
+func TestDownloadSymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	const content = "symlink target content\n"
+	if err := os.WriteFile(target, []byte(content), 0600); err != nil {
+		t.Fatalf("create target file: %v", err)
+	}
+	linkPath := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	status, _, body := runDownloadRequest(t, linkPath)
+	if status != http.StatusOK {
+		t.Fatalf("symlink status = %d, want %d", status, http.StatusOK)
+	}
+	response := decodeDownloadError(t, body)
+	if response.Code != constant.CodeErrInternalServer {
+		t.Fatalf("symlink response code = %d, want %d", response.Code, constant.CodeErrInternalServer)
+	}
+	if response.Message == "" {
+		t.Fatal("symlink response has an empty error message")
+	}
+}
+
+func TestDownloadSymlinkToDirectoryRejected(t *testing.T) {
+	dir := t.TempDir()
+	linkPath := filepath.Join(t.TempDir(), "dirlink")
+	if err := os.Symlink(dir, linkPath); err != nil {
+		t.Fatalf("create directory symlink: %v", err)
+	}
+
+	status, _, body := runDownloadRequest(t, linkPath)
+	if status != http.StatusOK {
+		t.Fatalf("directory symlink status = %d, want %d", status, http.StatusOK)
+	}
+	response := decodeDownloadError(t, body)
+	if response.Code != constant.CodeErrInternalServer {
+		t.Fatalf("directory symlink response code = %d, want %d", response.Code, constant.CodeErrInternalServer)
+	}
+	if response.Message == "" {
+		t.Fatal("directory symlink response has an empty error message")
+	}
+}
+
 func TestParseByteRange(t *testing.T) {
 	const fileSize = int64(10)
 
@@ -169,6 +214,30 @@ func TestDownloadChunkRangeResponse(t *testing.T) {
 	}
 	if got := headers.Get("Content-Range"); got != "bytes 2-5/10" {
 		t.Fatalf("chunk Content-Range = %q, want %q", got, "bytes 2-5/10")
+	}
+}
+
+func TestDownloadChunkSymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("chunk symlink target"), 0600); err != nil {
+		t.Fatalf("create target file: %v", err)
+	}
+	linkPath := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	status, _, body := runChunkDownloadRequest(t, linkPath, "")
+	if status != http.StatusOK {
+		t.Fatalf("chunk symlink status = %d, want %d", status, http.StatusOK)
+	}
+	response := decodeDownloadError(t, body)
+	if response.Code != constant.CodeErrInternalServer {
+		t.Fatalf("chunk symlink response code = %d, want %d", response.Code, constant.CodeErrInternalServer)
+	}
+	if response.Message == "" {
+		t.Fatal("chunk symlink response has an empty error message")
 	}
 }
 

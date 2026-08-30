@@ -543,13 +543,26 @@ func (b *BaseApi) MoveFile(c *gin.Context) {
 // @Router /files/download [get]
 func (b *BaseApi) Download(c *gin.Context) {
 	filePath := c.Query("path")
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
+		return
+	}
+	if info.IsDir() {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
+		return
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
@@ -583,13 +596,26 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		return
 	}
 	filePath := req.Path
+	info, err := os.Lstat(filePath)
+	if err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrPathNotFound, nil)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
+		return
+	}
+	if info.IsDir() {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, err)
+		return
+	}
 	fstFile, err := fileOp.OpenFile(filePath)
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
 	defer fstFile.Close()
-	info, err := fstFile.Stat()
+	info, err = fstFile.Stat()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
