@@ -101,7 +101,9 @@ func TestParseByteRange(t *testing.T) {
 		{name: "negative suffix range", header: "bytes=-1", wantErr: true},
 		{name: "negative end", header: "bytes=1--2", wantErr: true},
 		{name: "reverse range", header: "bytes=5-2", wantErr: true},
-		{name: "end beyond file", header: "bytes=0-10", wantErr: true},
+		{name: "end at file size is clipped", header: "bytes=0-10", wantStart: 0, wantEnd: 9},
+		{name: "end beyond file is clipped", header: "bytes=0-11", wantStart: 0, wantEnd: 9},
+		{name: "last byte through file size is clipped", header: "bytes=9-10", wantStart: 9, wantEnd: 9},
 		{name: "start beyond file", header: "bytes=10-10", wantErr: true},
 		{name: "multiple ranges", header: "bytes=0-1,2-3", wantErr: true},
 		{name: "start overflow", header: "bytes=9223372036854775808-", wantErr: true},
@@ -167,6 +169,32 @@ func TestDownloadChunkRangeResponse(t *testing.T) {
 	}
 	if got := headers.Get("Content-Range"); got != "bytes 2-5/10" {
 		t.Fatalf("chunk Content-Range = %q, want %q", got, "bytes 2-5/10")
+	}
+}
+
+func TestDownloadChunkRangeEndBeyondFileReturnsEOF(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "chunk.txt")
+	const content = "0123456789"
+	if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+
+	for _, rangeHeader := range []string{"bytes=0-10", "bytes=0-11"} {
+		t.Run(rangeHeader, func(t *testing.T) {
+			status, headers, body := runChunkDownloadRequest(t, filePath, rangeHeader)
+			if status != http.StatusPartialContent {
+				t.Fatalf("chunk status = %d, want %d", status, http.StatusPartialContent)
+			}
+			if string(body) != content {
+				t.Fatalf("chunk body = %q, want %q", body, content)
+			}
+			if got := headers.Get("Content-Length"); got != "10" {
+				t.Fatalf("chunk Content-Length = %q, want %q", got, "10")
+			}
+			if got := headers.Get("Content-Range"); got != "bytes 0-9/10" {
+				t.Fatalf("chunk Content-Range = %q, want %q", got, "bytes 0-9/10")
+			}
+		})
 	}
 }
 

@@ -662,8 +662,11 @@ func parseByteRange(rangeHeader string, size int64) (int64, int64, error) {
 	endPos := size - 1
 	if rangeParts[1] != "" {
 		endPos, err = strconv.ParseInt(rangeParts[1], 10, 64)
-		if err != nil || endPos < 0 || endPos >= size {
+		if err != nil || endPos < 0 {
 			return 0, 0, errors.New("invalid byte range")
+		}
+		if endPos >= size {
+			endPos = size - 1
 		}
 	}
 	if startPos > endPos {
