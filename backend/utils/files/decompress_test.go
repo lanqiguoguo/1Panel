@@ -16,6 +16,7 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/mholt/archiver/v4"
 )
 
 // writeTarGzToFile writes the tar archive built by build into a temp file and
@@ -994,5 +995,194 @@ func TestDecompressEncryptedWrongSecretSurfacesDecryptError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decrypt") {
 		t.Fatalf("Decompress with wrong secret should mention the decrypt step, got: %v", err)
+	}
+}
+
+// TestDecompressStripsSpecialModeBits guards P3-1: an archive entry carrying
+// setuid/setgid/sticky bits must never materialize a file with those bits set.
+// The remaining permission bits are preserved (subject to the process umask,
+// like every other extraction), so legitimate executable backups still restore
+// executable.
+func TestDecompressStripsSpecialModeBits(t *testing.T) {
+	op := NewFileOp()
+	archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		// 04755 = setuid | rwxr-xr-x
+		hdr := &tar.Header{Name: "suid.sh", Mode: 04755, Size: 3, Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write suid entry: %v", err)
+		}
+		if _, err := io.WriteString(tw, "id\n"); err != nil {
+			t.Fatalf("write suid content: %v", err)
+		}
+		// 02755 = setgid | rwxr-xr-x
+		hdr = &tar.Header{Name: "sgid.sh", Mode: 02755, Size: 3, Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write sgid entry: %v", err)
+		}
+		if _, err := io.WriteString(tw, "id\n"); err != nil {
+			t.Fatalf("write sgid content: %v", err)
+		}
+		// 01777 = sticky | rwxrwxrwx
+		hdr = &tar.Header{Name: "sticky.tmp", Mode: 01777, Size: 1, Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write sticky entry: %v", err)
+		}
+		if _, err := io.WriteString(tw, "x"); err != nil {
+			t.Fatalf("write sticky content: %v", err)
+		}
+		// a plain executable file must keep its exec bits
+		hdr = &tar.Header{Name: "exec.sh", Mode: 0755, Size: 3, Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write exec entry: %v", err)
+		}
+		if _, err := io.WriteString(tw, "id\n"); err != nil {
+			t.Fatalf("write exec content: %v", err)
+		}
+		// a plain 0644 file must keep its permissions
+		if err := addTarEntry(tw, "plain.txt", "data"); err != nil {
+			t.Fatalf("write plain entry: %v", err)
+		}
+		// a directory carrying setgid must not keep it
+		dirHdr := &tar.Header{Name: "sgid-dir/", Mode: 02775, Typeflag: tar.TypeDir}
+		if err := tw.WriteHeader(dirHdr); err != nil {
+			t.Fatalf("write sgid dir entry: %v", err)
+		}
+	})
+	dst := t.TempDir()
+	if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+		t.Fatalf("Decompress archive with special mode bits: %v", err)
+	}
+	perm := func(name string) os.FileMode {
+		t.Helper()
+		info, err := os.Stat(filepath.Join(dst, name))
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		return info.Mode().Perm()
+	}
+	for _, name := range []string{"suid.sh", "sgid.sh", "sticky.tmp"} {
+		if p := perm(name); p != 0755 && p != 0777 {
+			t.Errorf("%s: mode after extraction = %04o, want the setuid/setgid/sticky bits stripped (0755/0777 umask-limited)", name, p)
+		}
+		if info, err := os.Stat(filepath.Join(dst, name)); err == nil {
+			if info.Mode()&os.ModeSetuid != 0 {
+				t.Errorf("%s: setuid bit survived extraction", name)
+			}
+			if info.Mode()&os.ModeSetgid != 0 {
+				t.Errorf("%s: setgid bit survived extraction", name)
+			}
+			if info.Mode()&os.ModeSticky != 0 {
+				t.Errorf("%s: sticky bit survived extraction", name)
+			}
+		}
+	}
+	if p := perm("exec.sh"); p != 0755 {
+		t.Errorf("exec.sh: mode = %04o, want 0755 (executable backup must keep exec bits)", p)
+	}
+	if p := perm("plain.txt"); p != 0644 {
+		t.Errorf("plain.txt: mode = %04o, want 0644", p)
+	}
+	if p := perm("sgid-dir"); p&os.ModeSetgid != 0 {
+		t.Errorf("sgid-dir: setgid bit survived directory extraction, mode = %04o", p)
+	}
+}
+
+// TestDecompressSkipsNulNamedEntries guards P3-2: a zip entry whose name
+// contains a NUL byte cannot be materialized (os.OpenFile fails with EINVAL).
+// The entry must be skipped and the rest of the archive must still extract —
+// previously the NUL name aborted the whole decompression with a raw EINVAL.
+func TestDecompressSkipsNulNamedEntries(t *testing.T) {
+	op := NewFileOp()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range []struct {
+		name    string
+		content string
+	}{
+		{"evil\x00.txt", "nul"},
+		{"ok.txt", "fine"},
+	} {
+		hdr := &zip.FileHeader{Name: e.name, Method: zip.Deflate}
+		hdr.SetMode(0644)
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			t.Fatalf("create header %q: %v", e.name, err)
+		}
+		if _, err := io.WriteString(w, e.content); err != nil {
+			t.Fatalf("write content: %v", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "nul.zip")
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := op.Decompress(archivePath, dst, Zip, ""); err != nil {
+		t.Fatalf("Decompress zip with NUL-named entry: %v", err)
+	}
+	// the NUL-named entry must not have landed, under any truncated form
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d files in dst, want 1 (NUL-named entry must be skipped, not written)", len(entries))
+	}
+	if entries[0].Name() != "ok.txt" {
+		t.Fatalf("unexpected entry %q in dst, want ok.txt", entries[0].Name())
+	}
+	content, err := os.ReadFile(filepath.Join(dst, "ok.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(content) != "fine" {
+		t.Fatalf("extracted content = %q, want %q", string(content), "fine")
+	}
+}
+
+// TestArchiveEntryNameNulRejected directly exercises archiveEntryName: a NUL
+// name must surface the errUnsafeArchive sentinel (so the handlers skip the
+// entry) while a normal name passes through unchanged.
+func TestArchiveEntryNameNulRejected(t *testing.T) {
+	_, err := archiveEntryName(archiver.File{NameInArchive: "evil\x00.txt"})
+	if err == nil {
+		t.Fatal("archiveEntryName with NUL name: expected error, got nil")
+	}
+	if !errors.Is(err, errUnsafeArchive) {
+		t.Fatalf("archiveEntryName with NUL name: expected unsafe archive error, got %v", err)
+	}
+	name, err := archiveEntryName(archiver.File{NameInArchive: "normal.txt"})
+	if err != nil {
+		t.Fatalf("archiveEntryName with normal name: %v", err)
+	}
+	if name != "normal.txt" {
+		t.Fatalf("archiveEntryName returned %q, want %q", name, "normal.txt")
+	}
+}
+
+// TestSanitizedEntryMode guards the P3-1 sanitizer directly: the special bits
+// (setuid/setgid/sticky, Go's high-bit mode flags) are stripped while ordinary
+// permission bits are untouched.
+func TestSanitizedEntryMode(t *testing.T) {
+	cases := []struct {
+		in   os.FileMode
+		want os.FileMode
+	}{
+		{os.ModeSetuid | 0755, 0755},
+		{os.ModeSetgid | 0755, 0755},
+		{os.ModeSticky | 0777, 0777},
+		{os.ModeSetuid | os.ModeSetgid | os.ModeSticky | 0755, 0755},
+		{0644, 0644},
+		{0755, 0755},
+		{os.ModeDir | 0755, os.ModeDir | 0755},
+	}
+	for _, tc := range cases {
+		if got := sanitizedEntryMode(tc.in); got != tc.want {
+			t.Errorf("sanitizedEntryMode(%#o) = %#o, want %#o", tc.in, got, tc.want)
+		}
 	}
 }

@@ -1,10 +1,14 @@
 package service
 
 import (
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/sirupsen/logrus"
 )
 
 // The update functions below (UpdateLogOption / UpdateIpv6Option / UpdateConf /
@@ -116,3 +120,192 @@ var errRestartStub = &restartStubError{}
 type restartStubError struct{}
 
 func (e *restartStubError) Error() string { return "stub: restart docker" }
+
+// withDaemonJsonStubs swaps the two production seams used by the daemon.json
+// writers (validateDockerConfigFn and restartDockerFn) for deterministic
+// stubs, so a test can force a validation failure without dockerd and never
+// bounces a real docker daemon. restartErr is returned from every restart
+// call, including the recovery restart performed by rollbackDaemonJson.
+func withDaemonJsonStubs(t *testing.T, validateErr, restartErr error) (validateCalls *int, restartCalls *int) {
+	t.Helper()
+	origValidate, origRestart := validateDockerConfigFn, restartDockerFn
+	vc, rc := 0, 0
+	validateDockerConfigFn = func() error {
+		vc++
+		return validateErr
+	}
+	restartDockerFn = func() error {
+		rc++
+		return restartErr
+	}
+	t.Cleanup(func() {
+		validateDockerConfigFn, restartDockerFn = origValidate, origRestart
+	})
+	return &vc, &rc
+}
+
+// TestUpdateConfRollsBackOnValidationFailure guards P3-3: when the written
+// daemon.json fails dockerd validation, UpdateConf must restore the previous
+// file content instead of leaving an unloadable config on disk (which would
+// take dockerd down or prevent a restart). The only restart that may run is
+// the rollback's own recovery restart, and only AFTER the restore.
+func TestUpdateConfRollsBackOnValidationFailure(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		original := "{\n\t\"live-restore\": false\n}"
+		writeDaemonJson(t, original)
+		vc, rc := withDaemonJsonStubs(t, errors.New("dockerd --validate failed"), nil)
+
+		err := (&DockerService{}).UpdateConf(dto.SettingUpdate{Key: "Mirrors", Value: "https://mirror.example.com"})
+
+		if err == nil {
+			t.Fatal("UpdateConf with failing validation: expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "rolled back") {
+			t.Errorf("UpdateConf error should mention the rollback, got: %v", err)
+		}
+		if *vc != 1 {
+			t.Errorf("validateDockerConfig called %d times, want 1", *vc)
+		}
+		if *rc != 1 {
+			t.Errorf("restartDocker called %d times, want exactly 1 (the rollback's recovery restart)", *rc)
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json after rollback: %v", readErr)
+		}
+		if string(got) != original {
+			t.Errorf("daemon.json after rollback = %q, want original %q", got, original)
+		}
+	})
+}
+
+// TestUpdateConfRestartFailureRollsBack guards the restart leg of P3-3: a
+// config that validates but fails to restart must also restore the previous
+// file state (the daemon may still be running the old config).
+func TestUpdateConfRestartFailureRollsBack(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		original := "{\n\t\"registry-mirrors\": [\"https://mirror.example.com\"]\n}"
+		writeDaemonJson(t, original)
+		restartErr := errors.New("systemctl restart docker failed")
+		_, rc := withDaemonJsonStubs(t, nil, restartErr)
+
+		err := (&DockerService{}).UpdateConf(dto.SettingUpdate{Key: "Mirrors", Value: "https://mirror.example.com"})
+
+		if err == nil {
+			t.Fatal("UpdateConf with failing restart: expected error, got nil")
+		}
+		// the file is restored before the rollback's recovery restart, so with
+		// a stub that fails every restart the error reports the failed rollback
+		if !strings.Contains(err.Error(), "rollback") {
+			t.Errorf("UpdateConf error should mention the rollback, got: %v", err)
+		}
+		// one failed restart from the update itself + one recovery restart from
+		// the rollback
+		if *rc != 2 {
+			t.Errorf("restartDocker called %d times, want 2 (update restart + rollback recovery restart)", *rc)
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json after rollback: %v", readErr)
+		}
+		if string(got) != original {
+			t.Errorf("daemon.json after rollback = %q, want original %q", got, original)
+		}
+	})
+}
+
+// TestUpdateConfSuccessLeavesWrittenConfig guards against over-rolling-back:
+// a config that validates and restarts cleanly must stay on disk unchanged.
+func TestUpdateConfSuccessLeavesWrittenConfig(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		writeDaemonJson(t, "{\n\t\"live-restore\": false\n}")
+		withDaemonJsonStubs(t, nil, nil)
+
+		err := (&DockerService{}).UpdateConf(dto.SettingUpdate{Key: "Mirrors", Value: "https://mirror.example.com"})
+
+		if err != nil {
+			t.Fatalf("UpdateConf with valid config: unexpected error: %v", err)
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json: %v", readErr)
+		}
+		if !strings.Contains(string(got), "mirror.example.com") {
+			t.Errorf("daemon.json after successful UpdateConf = %q, want the new mirror written", got)
+		}
+	})
+}
+
+// TestUpdateLogOptionRollsBackOnValidationFailure and
+// TestUpdateIpv6OptionRollsBackOnValidationFailure guard the same P3-3
+// rollback for the other two map-based writers.
+func TestUpdateLogOptionRollsBackOnValidationFailure(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		original := "{\n\t\"live-restore\": false\n}"
+		writeDaemonJson(t, original)
+		withDaemonJsonStubs(t, errors.New("dockerd --validate failed"), nil)
+
+		err := (&DockerService{}).UpdateLogOption(dto.LogOption{LogMaxSize: "10m"})
+
+		if err == nil {
+			t.Fatal("UpdateLogOption with failing validation: expected error, got nil")
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json after rollback: %v", readErr)
+		}
+		if string(got) != original {
+			t.Errorf("daemon.json after rollback = %q, want original %q", got, original)
+		}
+	})
+}
+
+func TestUpdateIpv6OptionRollsBackOnValidationFailure(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		original := "{\n\t\"live-restore\": false\n}"
+		writeDaemonJson(t, original)
+		withDaemonJsonStubs(t, errors.New("dockerd --validate failed"), nil)
+
+		err := (&DockerService{}).UpdateIpv6Option(dto.Ipv6Option{FixedCidrV6: "fd00::/64"})
+
+		if err == nil {
+			t.Fatal("UpdateIpv6Option with failing validation: expected error, got nil")
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json after rollback: %v", readErr)
+		}
+		if string(got) != original {
+			t.Errorf("daemon.json after rollback = %q, want original %q", got, original)
+		}
+	})
+}
+
+// TestUpdateConfByFileRollsBackOnValidationFailure guards the raw-file writer:
+// a config blob that fails dockerd validation must restore the previous file.
+func TestUpdateConfByFileRollsBackOnValidationFailure(t *testing.T) {
+	global.LOG = logrus.New()
+	withDaemonJsonBackup(t, func() {
+		original := "{\n\t\"live-restore\": false\n}"
+		writeDaemonJson(t, original)
+		withDaemonJsonStubs(t, errors.New("dockerd --validate failed"), nil)
+
+		err := (&DockerService{}).UpdateConfByFile(dto.DaemonJsonUpdateByFile{File: "{\n\t\"not\": \"valid config\"\n}"})
+
+		if err == nil {
+			t.Fatal("UpdateConfByFile with failing validation: expected error, got nil")
+		}
+		got, readErr := os.ReadFile(constantDaemonJsonPath())
+		if readErr != nil {
+			t.Fatalf("read daemon.json after rollback: %v", readErr)
+		}
+		if string(got) != original {
+			t.Errorf("daemon.json after rollback = %q, want original %q", got, original)
+		}
+	})
+}

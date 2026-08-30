@@ -779,6 +779,13 @@ func archiveEntryPath(dst, fileName string, info fs.FileInfo, linkTarget string)
 	return filePath, nil
 }
 
+// archiveEntryName returns the entry name to extract, decoding GBK zip names
+// that are not marked UTF-8. A name containing a NUL byte cannot be opened
+// (os.OpenFile fails with EINVAL on it), so it is reported with a skip
+// sentinel error instead: the entry is dropped and extraction continues.
+// Decoding failures are NOT skipped — a corrupt GBK name means the archive is
+// malformed and the whole extraction aborts, matching the pre-existing
+// behavior.
 func archiveEntryName(archFile archiver.File) (string, error) {
 	fileName := archFile.NameInArchive
 	if header, ok := archFile.Header.(cZip.FileHeader); ok {
@@ -790,7 +797,19 @@ func archiveEntryName(archFile archiver.File) (string, error) {
 			fileName = decoded
 		}
 	}
+	if strings.ContainsRune(fileName, '\x00') {
+		return "", fmt.Errorf("%w: archive entry name contains a NUL byte: %q", errUnsafeArchive, fileName)
+	}
 	return fileName, nil
+}
+
+// sanitizedEntryMode strips the setuid/setgid/sticky bits from an
+// archive-supplied mode so extraction can never leave a privileged file
+// behind: those bits have no meaning for freshly created backup-restore files
+// (executability is carried by the remaining permission bits, which are
+// preserved, subject to the process umask like every other extraction).
+func sanitizedEntryMode(mode os.FileMode) os.FileMode {
+	return mode &^ os.ModeSetuid &^ os.ModeSetgid &^ os.ModeSticky
 }
 
 // isArchiveRootEntry reports whether a directory entry is the archive root
@@ -825,6 +844,11 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 		}
 		fileName, err := archiveEntryName(archFile)
 		if err != nil {
+			if errors.Is(err, errUnsafeArchive) {
+				// a name the OS cannot materialize (embedded NUL) — skip the
+				// entry rather than abort the whole extraction
+				return nil
+			}
 			return err
 		}
 		filePath, err := archiveEntryPath(dst, fileName, archFile.FileInfo, archFile.LinkTarget)
@@ -835,15 +859,16 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 		if totalEntries > maxEntries {
 			return fmt.Errorf("%w: archive contains too many entries (limit %d): %s", errUnsafeArchive, maxEntries, fileName)
 		}
+		mode := sanitizedEntryMode(info.Mode())
 		if archFile.FileInfo.IsDir() {
-			if err := f.Fs.MkdirAll(filePath, info.Mode()); err != nil {
+			if err := f.Fs.MkdirAll(filePath, mode); err != nil {
 				return err
 			}
 			return nil
 		} else {
 			parentDir := path.Dir(filePath)
 			if !f.Stat(parentDir) {
-				if err := f.Fs.MkdirAll(parentDir, info.Mode()); err != nil {
+				if err := f.Fs.MkdirAll(parentDir, mode); err != nil {
 					return err
 				}
 			}
@@ -857,7 +882,7 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 			return err
 		}
 		defer fr.Close()
-		fw, err := f.Fs.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, info.Mode())
+		fw, err := f.Fs.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, mode)
 		if err != nil {
 			return err
 		}
@@ -901,6 +926,10 @@ func (f FileOp) validateArchiveWithSDK(srcFile string, dst string, cType Compres
 		}
 		fileName, err := archiveEntryName(archFile)
 		if err != nil {
+			if errors.Is(err, errUnsafeArchive) {
+				// mirror the extractor: NUL-named entries are skipped, not fatal
+				return nil
+			}
 			return err
 		}
 		if _, err := archiveEntryPath(dst, fileName, archFile.FileInfo, archFile.LinkTarget); err != nil {

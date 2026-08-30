@@ -145,7 +145,14 @@ func (u *DockerService) LoadDockerConf() *dto.DaemonJsonConf {
 func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
+	// Snapshot the current daemon.json before touching it: a config that
+	// fails dockerd validation below would otherwise be left on disk, taking
+	// the daemon down (or preventing a restart) until a manual fix.
+	backup, err := backupDaemonJson(constant.DaemonJsonPath)
+	if err != nil {
+		return fmt.Errorf("backup %s failed: %w", constant.DaemonJsonPath, err)
+	}
+	err = createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -231,7 +238,7 @@ func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
 	}
 	if len(daemonMap) == 0 {
 		_ = os.Remove(constant.DaemonJsonPath)
-		if err := restartDocker(); err != nil {
+		if err := restartDockerFn(); err != nil {
 			return err
 		}
 		return nil
@@ -243,12 +250,14 @@ func (u *DockerService) UpdateConf(req dto.SettingUpdate) error {
 	if err := os.WriteFile(constant.DaemonJsonPath, newJson, 0640); err != nil {
 		return err
 	}
-	if err := validateDockerConfig(); err != nil {
-		return err
+	if err := validateDockerConfigFn(); err != nil {
+		// the write already landed; restore the previous state so a failed
+		// validation cannot leave dockerd with a config it refuses to load
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 
-	if err := restartDocker(); err != nil {
-		return err
+	if err := restartDockerFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 	return nil
 }
@@ -276,7 +285,13 @@ func createIfNotExistDaemonJsonFile(filePath string) error {
 func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
+	// see UpdateConf: roll back on validation/restart failure instead of
+	// leaving an unloadable config behind
+	backup, err := backupDaemonJson(constant.DaemonJsonPath)
+	if err != nil {
+		return fmt.Errorf("backup %s failed: %w", constant.DaemonJsonPath, err)
+	}
+	err = createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -309,12 +324,12 @@ func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 		return err
 	}
 
-	if err := validateDockerConfig(); err != nil {
-		return err
+	if err := validateDockerConfigFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 
-	if err := restartDocker(); err != nil {
-		return err
+	if err := restartDockerFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 	return nil
 }
@@ -322,7 +337,13 @@ func (u *DockerService) UpdateLogOption(req dto.LogOption) error {
 func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
 	daemonJsonMu.Lock()
 	defer daemonJsonMu.Unlock()
-	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
+	// see UpdateConf: roll back on validation/restart failure instead of
+	// leaving an unloadable config behind
+	backup, err := backupDaemonJson(constant.DaemonJsonPath)
+	if err != nil {
+		return fmt.Errorf("backup %s failed: %w", constant.DaemonJsonPath, err)
+	}
+	err = createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -363,12 +384,12 @@ func (u *DockerService) UpdateIpv6Option(req dto.Ipv6Option) error {
 		return err
 	}
 
-	if err := validateDockerConfig(); err != nil {
-		return err
+	if err := validateDockerConfigFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 
-	if err := restartDocker(); err != nil {
-		return err
+	if err := restartDockerFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 	return nil
 }
@@ -378,12 +399,18 @@ func (u *DockerService) UpdateConfByFile(req dto.DaemonJsonUpdateByFile) error {
 	defer daemonJsonMu.Unlock()
 	if len(req.File) == 0 {
 		_ = os.Remove(constant.DaemonJsonPath)
-		if err := restartDocker(); err != nil {
+		if err := restartDockerFn(); err != nil {
 			return err
 		}
 		return nil
 	}
-	err := createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
+	// see UpdateConf: roll back on validation/restart failure instead of
+	// leaving an unloadable config behind
+	backup, err := backupDaemonJson(constant.DaemonJsonPath)
+	if err != nil {
+		return fmt.Errorf("backup %s failed: %w", constant.DaemonJsonPath, err)
+	}
+	err = createIfNotExistDaemonJsonFile(constant.DaemonJsonPath)
 	if err != nil {
 		return err
 	}
@@ -396,12 +423,12 @@ func (u *DockerService) UpdateConfByFile(req dto.DaemonJsonUpdateByFile) error {
 	_, _ = write.WriteString(req.File)
 	write.Flush()
 
-	if err := validateDockerConfig(); err != nil {
-		return err
+	if err := validateDockerConfigFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 
-	if err := restartDocker(); err != nil {
-		return err
+	if err := restartDockerFn(); err != nil {
+		return rollbackDaemonJson(constant.DaemonJsonPath, backup, err)
 	}
 	return nil
 }
@@ -657,7 +684,7 @@ func rollbackDaemonJson(filePath string, backup daemonJsonBackup, cause error) e
 	var rbErr error
 	if err := restoreDaemonJson(filePath, backup); err != nil {
 		rbErr = fmt.Errorf("restore daemon.json failed: %w", err)
-	} else if err := restartDocker(); err != nil {
+	} else if err := restartDockerFn(); err != nil {
 		rbErr = fmt.Errorf("restart docker after restore failed: %w", err)
 	}
 	if rbErr != nil {
