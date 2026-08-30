@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosError, AxiosRequestConfig, AxiosResponse, In
 import { ResultData } from '@/api/interface';
 import { ResultEnum } from '@/enums/http-enum';
 import { checkStatus } from './helper/check-status';
-import router from '@/routers';
+import router, { clearSessionCache } from '@/routers';
 import { GlobalStore } from '@/store';
 import { MsgError } from '@/utils/message';
 import { Base64 } from 'js-base64';
@@ -45,6 +45,10 @@ class RequestHttp {
                 globalStore.errStatus = '';
                 const { data } = response;
                 if (data.code == ResultEnum.OVERDUE || data.code == ResultEnum.FORBIDDEN) {
+                    // 401/403：登录态失效（含登出后遗留请求、会话过期），立即清空
+                    // 路由守卫的会话快照缓存，避免 TTL 30s 内旧快照（unknown/未登录）
+                    // 继续误导导航决策。
+                    clearSessionCache();
                     globalStore.setLogStatus(false);
                     router.push({
                         name: 'entrance',

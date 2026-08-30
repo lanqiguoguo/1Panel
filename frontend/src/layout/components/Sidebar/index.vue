@@ -43,6 +43,7 @@ import Logo from './components/Logo.vue';
 import Collapse from './components/Collapse.vue';
 import SubItem from './components/SubItem.vue';
 import router, { menuList } from '@/routers/router';
+import { clearSessionCache } from '@/routers';
 import { checkIsIntl, logOutApi } from '@/api/modules/auth';
 import i18n from '@/lang';
 import { ElMessageBox } from 'element-plus';
@@ -107,6 +108,7 @@ const logout = () => {
 
 const systemLogOut = async () => {
     await logOutApi();
+    clearSessionCache();
 };
 
 function extractLabels(node: Node, result: string[]): void {

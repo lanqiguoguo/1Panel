@@ -58,7 +58,7 @@
 <script lang="ts" setup>
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import router from '@/routers';
+import router, { clearSessionCache } from '@/routers';
 import { MsgError, MsgSuccess } from '@/utils/message';
 import { FormInstance } from 'element-plus';
 import { GlobalStore } from '@/store';
@@ -132,6 +132,7 @@ const submitChangePassword = async (formEl: FormInstance | undefined) => {
                 passwordVisible.value = false;
                 MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
                 await logOutApi();
+                clearSessionCache();
                 router.push({ name: 'entrance', params: { code: globalStore.entrance } });
                 globalStore.setLogStatus(false);
             })

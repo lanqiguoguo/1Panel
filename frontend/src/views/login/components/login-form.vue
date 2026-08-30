@@ -200,6 +200,7 @@ import { getSettingInfo } from '@/api/modules/setting';
 import { Rules } from '@/global/form-rules';
 import { encryptPassword } from '@/utils/util';
 import { createMfaLoginController } from '@/utils/mfa-login-controller';
+import { clearSessionCache } from '@/routers';
 
 const i18n = useI18n();
 const themeConfig = computed(() => globalStore.themeConfig);
@@ -376,6 +377,7 @@ const login = (formEl: FormInstance | undefined) => {
                 errMfaInfo.value = false;
                 return;
             }
+            clearSessionCache();
             globalStore.setLogStatus(true);
             globalStore.setAgreeLicense(true);
             menuStore.setMenuList([]);
@@ -428,6 +430,7 @@ const mfaLogin = createMfaLoginController({
         return res;
     },
     onSuccess: () => {
+        clearSessionCache();
         globalStore.setLogStatus(true);
         menuStore.setMenuList([]);
         tabsStore.removeAllTabs();
