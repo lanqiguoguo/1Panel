@@ -897,12 +897,42 @@ func decryptTarGz(srcFile, secret string) (string, error) {
 		return "", err
 	}
 
-	decrypt := exec.Command("openssl", "enc", "-d", "-aes-256-cbc", "-k", secret, "-in", srcFile, "-out", tmpPath)
+	decrypt, passReader, err := buildDecryptCmd(srcFile, tmpPath, secret)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	defer passReader.Close()
 	if output, err := decrypt.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("decrypt archive: %v, output: %s", err, output)
 	}
 	return tmpPath, nil
+}
+
+// buildDecryptCmd builds the openssl command that decrypts a backup archive
+// into tmpPath. The secret is handed to openssl through file descriptor 3
+// (cmd.ExtraFiles starts at fd 3) via -pass fd:3 instead of -k, so it never
+// appears in the process cmdline (/proc/<pid>/cmdline). The write end of the
+// pipe is closed after the secret is written; the caller must close the
+// returned read end once the command has finished.
+func buildDecryptCmd(srcFile, tmpPath, secret string) (*exec.Cmd, *os.File, error) {
+	passReader, passWriter, err := os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	decrypt := exec.Command("openssl", "enc", "-d", "-aes-256-cbc", "-pass", "fd:3", "-in", srcFile, "-out", tmpPath)
+	decrypt.ExtraFiles = []*os.File{passReader}
+	if _, err := passWriter.WriteString(secret); err != nil {
+		passWriter.Close()
+		passReader.Close()
+		return nil, nil, err
+	}
+	if err := passWriter.Close(); err != nil {
+		passReader.Close()
+		return nil, nil, err
+	}
+	return decrypt, passReader, nil
 }
 
 func (f FileOp) Decompress(srcFile string, dst string, cType CompressType, secret string) error {
@@ -929,7 +959,7 @@ func (f FileOp) Decompress(srcFile string, dst string, cType CompressType, secre
 		}
 		decryptedPath, err := decryptTarGz(srcFile, secret)
 		if err != nil {
-			return sdkErr
+			return fmt.Errorf("decrypt backup archive failed: %w", err)
 		}
 		defer os.Remove(decryptedPath)
 		if err := f.validateArchiveWithSDK(decryptedPath, dst, TarGz); err != nil {

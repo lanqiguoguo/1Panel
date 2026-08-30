@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/buserr"
@@ -602,5 +603,127 @@ func TestCompressDecompressEncryptedTarGz(t *testing.T) {
 	}
 	if string(content) != "top secret" {
 		t.Fatalf("extracted content = %q, want %q", content, "top secret")
+	}
+}
+
+// TestBuildDecryptCmdHidesSecretFromCmdline guards P2-4: the password must be
+// passed to openssl via -pass fd:3, never through -k, so it cannot leak into
+// /proc/<pid>/cmdline.
+func TestBuildDecryptCmdHidesSecretFromCmdline(t *testing.T) {
+	const secret = "super secret phrase 123"
+	cmd, passReader, err := buildDecryptCmd("/tmp/src.tar.gz", "/tmp/out.tar.gz", secret)
+	if err != nil {
+		t.Fatalf("buildDecryptCmd: %v", err)
+	}
+	defer passReader.Close()
+	joined := strings.Join(cmd.Args, " ")
+	if strings.Contains(joined, secret) {
+		t.Fatalf("openssl cmdline leaks the secret: %q", joined)
+	}
+	if strings.Contains(joined, "-k") {
+		t.Fatalf("openssl cmdline still uses -k: %q", joined)
+	}
+	if !strings.Contains(joined, "-pass") || !strings.Contains(joined, "fd:3") {
+		t.Fatalf("openssl cmdline must pass the secret via -pass fd:3, got: %q", joined)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("expected one ExtraFiles entry (fd 3) carrying the secret, got %d", len(cmd.ExtraFiles))
+	}
+}
+
+// TestDecryptTarGzWithCorrectSecret decrypts an openssl-encrypted archive with
+// the right password and checks the result is a valid tar.gz.
+func TestDecryptTarGzWithCorrectSecret(t *testing.T) {
+	plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		if err := addTarEntry(tw, "file.txt", "encrypted content"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+	})
+	const secret = "correct horse battery staple"
+	encryptedPath := encryptTarGzForTest(t, plainPath, secret)
+
+	decryptedPath, err := decryptTarGz(encryptedPath, secret)
+	if err != nil {
+		t.Fatalf("decryptTarGz: %v", err)
+	}
+	defer os.Remove(decryptedPath)
+	f, err := os.Open(decryptedPath)
+	if err != nil {
+		t.Fatalf("open decrypted archive: %v", err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("decrypted archive is not a valid gzip stream: %v", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decrypted archive is not a valid tar.gz: %v", err)
+		}
+		if hdr.Name == "file.txt" {
+			content, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("read entry: %v", err)
+			}
+			if string(content) != "encrypted content" {
+				t.Fatalf("decrypted content = %q, want %q", string(content), "encrypted content")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("decrypted archive does not contain file.txt")
+	}
+}
+
+// TestDecryptTarGzWithWrongSecret checks that a wrong password surfaces the
+// openssl diagnostic instead of a generic failure.
+func TestDecryptTarGzWithWrongSecret(t *testing.T) {
+	plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		if err := addTarEntry(tw, "file.txt", "encrypted content"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+	})
+	encryptedPath := encryptTarGzForTest(t, plainPath, "right secret")
+
+	_, err := decryptTarGz(encryptedPath, "wrong secret")
+	if err == nil {
+		t.Fatal("decryptTarGz with wrong secret: expected error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "decrypt archive") {
+		t.Fatalf("error should mention the decrypt step, got: %v", err)
+	}
+	if !strings.Contains(msg, "bad decrypt") && !strings.Contains(msg, "digital envelope") {
+		t.Fatalf("error should carry the openssl diagnostic, got: %v", err)
+	}
+}
+
+// TestDecompressEncryptedWrongSecretSurfacesDecryptError guards P2-5: a
+// decryption failure must not be masked by the SDK's unsafe-archive error.
+func TestDecompressEncryptedWrongSecretSurfacesDecryptError(t *testing.T) {
+	plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		if err := addTarEntry(tw, "file.txt", "encrypted content"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+	})
+	encryptedPath := encryptTarGzForTest(t, plainPath, "right secret")
+
+	err := NewFileOp().Decompress(encryptedPath, t.TempDir(), TarGz, "wrong secret")
+	if err == nil {
+		t.Fatal("Decompress with wrong secret: expected error, got nil")
+	}
+	if errors.Is(err, errUnsafeArchive) {
+		t.Fatalf("Decompress with wrong secret must not surface the SDK unsafe-archive error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "decrypt") {
+		t.Fatalf("Decompress with wrong secret should mention the decrypt step, got: %v", err)
 	}
 }
