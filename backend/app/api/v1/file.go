@@ -667,9 +667,10 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 	}
 }
 
-// parseByteRange accepts one explicit byte range. Suffix ranges and multiple
-// ranges are intentionally unsupported because chunk downloads only stream a
-// single contiguous part of a file.
+// parseByteRange accepts one explicit byte range. Open-ended ranges are
+// supported (bytes=N- streams from N to the end of file); suffix ranges
+// (bytes=-N) and multiple ranges are rejected because chunk downloads only
+// stream a single contiguous part of a file.
 func parseByteRange(rangeHeader string, size int64) (int64, int64, error) {
 	if size <= 0 || !strings.HasPrefix(rangeHeader, "bytes=") {
 		return 0, 0, errors.New("invalid byte range")

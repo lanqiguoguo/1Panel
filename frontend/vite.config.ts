@@ -20,6 +20,13 @@ export default defineConfig(({ mode }: ConfigEnv): UserConfig => {
     const env = loadEnv(mode, process.cwd());
     const viteEnv = wrapperEnv(env);
 
+    if (viteEnv.VITE_HOST === '0.0.0.0') {
+        console.warn(
+            '[vite] VITE_HOST=0.0.0.0: the dev server is reachable on all network interfaces. ' +
+                'This is only intended for remote debugging; keep 127.0.0.1 otherwise.',
+        );
+    }
+
     return {
         resolve: {
             alias: {

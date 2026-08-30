@@ -616,11 +616,11 @@ func safeLogPath(root string, components ...string) (string, error) {
 	candidate := filepath.Clean(filepath.Join(append([]string{cleanRoot}, components...)...))
 	rootAbs, err := filepath.Abs(cleanRoot)
 	if err != nil {
-		return "", err
+		return "", buserr.New(constant.ErrCmdIllegal)
 	}
 	candidateAbs, err := filepath.Abs(candidate)
 	if err != nil {
-		return "", err
+		return "", buserr.New(constant.ErrCmdIllegal)
 	}
 	rel, err := filepath.Rel(rootAbs, candidateAbs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
