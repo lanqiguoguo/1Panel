@@ -201,3 +201,105 @@ func TestReadLogByLineRejectsUnsafeNames(t *testing.T) {
 		t.Fatal("unknown log type returned nil error")
 	}
 }
+
+// TestSafeLogPathRejectsSymlinkEscape verifies that a symlink planted inside
+// the log root cannot redirect a later read to a file outside the root.
+// Both a link to an existing external file and a dangling link (whose target
+// could appear after validation) are rejected; a real file and a path that
+// simply does not exist yet (system-log .gz fallback depends on this) keep
+// their original behavior.
+func TestSafeLogPathRejectsSymlinkEscape(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret outside content\n"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	inside := filepath.Join(root, "real.log")
+	if err := os.WriteFile(inside, []byte("normal log line\n"), 0644); err != nil {
+		t.Fatalf("write inside file: %v", err)
+	}
+
+	linkToOutside := filepath.Join(root, "link-to-outside.log")
+	if err := os.Symlink(outside, linkToOutside); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	dangling := filepath.Join(root, "dangling.log")
+	if err := os.Symlink(filepath.Join(root, "does-not-exist"), dangling); err != nil {
+		t.Fatalf("create dangling symlink: %v", err)
+	}
+
+	t.Run("symlink to external file rejected", func(t *testing.T) {
+		if _, err := safeLogPath(root, "link-to-outside.log"); err == nil {
+			t.Fatal("safeLogPath accepted a symlink escaping the log root")
+		}
+	})
+
+	t.Run("dangling symlink rejected", func(t *testing.T) {
+		if _, err := safeLogPath(root, "dangling.log"); err == nil {
+			t.Fatal("safeLogPath accepted a dangling symlink")
+		}
+	})
+
+	t.Run("existing real file accepted", func(t *testing.T) {
+		got, err := safeLogPath(root, "real.log")
+		if err != nil {
+			t.Fatalf("safeLogPath(real.log) unexpected error: %v", err)
+		}
+		if filepath.Clean(got) != inside {
+			t.Fatalf("safeLogPath(real.log) = %q, want %q", got, inside)
+		}
+	})
+
+	t.Run("missing plain path still accepted", func(t *testing.T) {
+		// The system-log caller relies on safeLogPath succeeding for a
+		// missing plaintext file so it can fall back to the .gz archive.
+		want := filepath.Join(root, "1Panel-20990101.log")
+		got, err := safeLogPath(root, "1Panel-20990101.log")
+		if err != nil {
+			t.Fatalf("safeLogPath(missing) unexpected error: %v", err)
+		}
+		if filepath.Clean(got) != want {
+			t.Fatalf("safeLogPath(missing) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("symlink inside root to inside file accepted", func(t *testing.T) {
+		link := filepath.Join(root, "link-inside.log")
+		if err := os.Symlink(inside, link); err != nil {
+			t.Fatalf("create symlink: %v", err)
+		}
+		if _, err := safeLogPath(root, "link-inside.log"); err != nil {
+			t.Fatalf("safeLogPath rejected a symlink staying inside the root: %v", err)
+		}
+	})
+}
+
+// TestReadLogByLineRejectsDockerSymlink verifies end to end that a symlink in
+// the docker_logs directory pointing at /etc/passwd is refused before any
+// content is read.
+func TestReadLogByLineRejectsDockerSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldTmpDir := global.CONF.System.TmpDir
+	global.CONF.System.TmpDir = tmpDir
+	t.Cleanup(func() {
+		global.CONF.System.TmpDir = oldTmpDir
+	})
+
+	logDir := filepath.Join(tmpDir, "docker_logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("mkdir docker_logs: %v", err)
+	}
+	attacker := filepath.Join(logDir, "image_pull_attacker_20260830120000.log")
+	if err := os.Symlink("/etc/passwd", attacker); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	svc := NewIFileService()
+	if _, err := svc.ReadLogByLine(request.FileReadByLineReq{Type: "image-pull", Name: "image_pull_attacker_20260830120000.log", Page: 1, PageSize: 10}); err == nil {
+		t.Fatal("ReadLogByLine read a symlink pointing outside the log root")
+	}
+}

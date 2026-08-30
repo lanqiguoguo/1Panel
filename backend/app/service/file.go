@@ -627,6 +627,41 @@ func safeLogPath(root string, components ...string) (string, error) {
 		return "", buserr.New(constant.ErrCmdIllegal)
 	}
 
+	// The Rel check above is purely lexical: a symlink planted inside the
+	// log root (for example docker_logs/image_pull_x.log -> /etc/passwd)
+	// stays under the root and would pass, letting the later read follow
+	// the link outside the root. Resolve an existing candidate and re-check
+	// the resolved target against the (also resolved) root.
+	//
+	// The check only runs when the path exists: a log file that has not been
+	// generated yet must flow through unchanged — the system-log caller
+	// depends on the plaintext file being absent to fall back to its .gz
+	// archive, and a missing file cannot be read anyway. A dangling link is
+	// rejected outright: it cannot be read today, but its target could
+	// appear between validation and the actual read, so leaving it open
+	// would just defer the failure or race it later.
+	if _, err := os.Lstat(candidate); err == nil {
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			return "", buserr.New(constant.ErrCmdIllegal)
+		}
+		resolvedAbs, err := filepath.Abs(resolved)
+		if err != nil {
+			return "", err
+		}
+		// Compare against the resolved root as well, so installs whose
+		// data/tmp root is itself a symlink keep working while links inside
+		// the root pointing anywhere else are rejected.
+		relBase := rootAbs
+		if resolvedRoot, err := filepath.EvalSymlinks(cleanRoot); err == nil {
+			relBase = resolvedRoot
+		}
+		rel, err = filepath.Rel(relBase, resolvedAbs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return "", buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+
 	return candidate, nil
 }
 
