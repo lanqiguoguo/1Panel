@@ -310,6 +310,19 @@ func (a AppService) GetIgnoredApp() ([]response.IgnoredApp, error) {
 }
 
 func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (appInstall *model.AppInstall, err error) {
+	// req.Name is embedded into the install directory
+	// (AppInstallDir/<appKey>/<name>), the compose file path
+	// (…/docker-compose.yml) which reaches `docker-compose -f <path>`
+	// unquoted, the compose project name and the database name, so it must
+	// not escape the install root (path traversal) nor carry shell
+	// metacharacters. The whitelist matches the frontend appName rule
+	// (ASCII [a-zA-Z0-9_-], no dots or slashes) and the compose-name
+	// precedent: no "/" (app names have no namespacing), no ":" (would
+	// break the container name / docker reference).
+	if !files.ValidNameComponent(req.Name) || strings.ContainsAny(req.Name, "/:") {
+		err = buserr.New(constant.ErrCmdIllegal)
+		return
+	}
 	if err = docker.CreateDefaultDockerNetwork(); err != nil {
 		err = buserr.WithDetail(constant.Err1PanelNetworkFailed, err.Error(), nil)
 		return

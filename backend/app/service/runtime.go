@@ -52,6 +52,17 @@ func NewRuntimeService() IRuntimeService {
 }
 
 func (r *RuntimeService) Create(create request.RuntimeCreate) (*model.Runtime, error) {
+	// create.Name is embedded into the runtime directory
+	// (RuntimeDir/<type>/<name>), the compose file path and the compose
+	// project name, so it must not escape the runtime root (path
+	// traversal) nor carry shell metacharacters. The whitelist matches the
+	// frontend appName rule used by every runtime create form (ASCII
+	// [a-zA-Z0-9_-], no dots or slashes) and the compose-name precedent:
+	// no "/" (runtime names have no namespacing) and no ":" (would break
+	// image references).
+	if !files.ValidNameComponent(create.Name) || strings.ContainsAny(create.Name, "/:") {
+		return nil, buserr.New(constant.ErrCmdIllegal)
+	}
 	var (
 		opts []repo.DBOption
 	)
@@ -559,6 +570,18 @@ func (r *RuntimeService) GetNodeModules(req request.NodeModuleReq) ([]response.N
 }
 
 func (r *RuntimeService) OperateNodeModules(req request.NodeModuleOperateReq) error {
+	// req.Module is interpolated unquoted into `npm|yarn <op> <module>`
+	// inside the container bash -c command (see cmd2.ExecContainerScript),
+	// so it must be free of shell metacharacters. A quoted npm spec may
+	// legitimately contain @ (scope), / (scoped package path), . _ - (names
+	// and versions), ~ ^ (version ranges), = : (aliases like
+	// "pkg@npm:other" and git URLs) and digits; it never contains whitespace
+	// (space would split the argument) or the shell metacharacters rejected
+	// by cmd.CheckIllegal (including a single quote, which would close the
+	// bash -c quoting and escalate to arbitrary commands).
+	if cmd2.CheckIllegal(req.Module) || strings.ContainsAny(req.Module, " \t") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	runtime, err := runtimeRepo.GetFirst(commonRepo.WithByID(req.ID))
 	if err != nil {
 		return err

@@ -129,6 +129,15 @@ func (w WebsiteSSLService) Search(search request.WebsiteSSLSearch) ([]response.W
 }
 
 func (w WebsiteSSLService) Create(create request.WebsiteSSLCreate) (request.WebsiteSSLCreate, error) {
+	// create.PrimaryDomain is embedded into the SSL log path
+	// (SSLLogDir/<primary>-ssl-<id>.log), the download directory
+	// (BaseDir/1panel/tmp/ssl/<primary>) and the zip file name, so it must
+	// be a well-formed domain: path traversal ("..", "/") and shell
+	// metacharacters are rejected. Wildcard certificates are supported by
+	// the frontend domain rule, so "*.example.com" stays valid.
+	if !common.IsValidDomain(create.PrimaryDomain) {
+		return create, buserr.WithName("ErrDomainFormat", create.PrimaryDomain)
+	}
 	if create.Nameserver1 != "" && !common.IsValidIP(create.Nameserver1) {
 		return create, buserr.New("ErrParseIP")
 	}
@@ -544,6 +553,12 @@ func (w WebsiteSSLService) Delete(ids []uint) error {
 }
 
 func (w WebsiteSSLService) Update(update request.WebsiteSSLUpdate) error {
+	// See Create: update.PrimaryDomain is stored and later embedded into
+	// the SSL log path and download directory, so it gets the same domain
+	// validation (wildcards remain supported).
+	if !common.IsValidDomain(update.PrimaryDomain) {
+		return buserr.WithName("ErrDomainFormat", update.PrimaryDomain)
+	}
 	websiteSSL, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(update.ID))
 	if err != nil {
 		return err

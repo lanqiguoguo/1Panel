@@ -11,11 +11,11 @@ type RuntimeSearch struct {
 
 type RuntimeCreate struct {
 	AppDetailID uint                   `json:"appDetailId"`
-	Name        string                 `json:"name"`
+	Name        string                 `json:"name" validate:"required"`
 	Params      map[string]interface{} `json:"params"`
 	Resource    string                 `json:"resource"`
 	Image       string                 `json:"image"`
-	Type        string                 `json:"type"`
+	Type        string                 `json:"type" validate:"required"`
 	Version     string                 `json:"version"`
 	Source      string                 `json:"source"`
 	CodeDir     string                 `json:"codeDir"`
@@ -61,10 +61,10 @@ type RuntimeOperate struct {
 }
 
 type NodeModuleOperateReq struct {
-	Operate    string `json:"operate" validate:"oneof=install uninstall update"`
+	Operate    string `json:"operate" validate:"required,oneof=install uninstall update"`
 	ID         uint   `json:"ID" validate:"required"`
-	Module     string `json:"module"`
-	PkgManager string `json:"pkgManager" validate:"oneof=npm yarn"`
+	Module     string `json:"module" validate:"required"`
+	PkgManager string `json:"pkgManager" validate:"required,oneof=npm yarn"`
 }
 
 type NodeModuleReq struct {
