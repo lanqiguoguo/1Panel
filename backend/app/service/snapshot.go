@@ -1,11 +1,15 @@
 package service
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -92,6 +96,24 @@ func (u *SnapshotService) SnapshotImport(req dto.SnapshotImport) error {
 		if !strings.HasPrefix(shortName, "1panel_v") || !strings.HasSuffix(shortName, ".tar.gz") || len(nameItems) < 3 {
 			return fmt.Errorf("incorrect snapshot name format of %s", shortName)
 		}
+		if req.From == constant.Local {
+			// The import flow trusts names coming from the configured LOCAL
+			// backup directory: an attacker who can write there (or who tricks
+			// an admin into importing a crafted package) could otherwise feed
+			// the recovery flow a snapshot.json whose restore targets
+			// overwrite arbitrary host paths. The package must be a valid
+			// gzip/tar archive with a parseable snapshot.json whose path
+			// fields stay inside the panel data/backup/tmp directories before
+			// the record is accepted.
+			localDir, err := loadLocalDir()
+			if err != nil {
+				return fmt.Errorf("load local backup dir for snapshot import failed, err: %v", err)
+			}
+			packageFile := path.Join(localDir, "system_snapshot", strings.ReplaceAll(snap, ".tar.gz", "")+".tar.gz")
+			if err := validateSnapshotPackage(packageFile); err != nil {
+				return fmt.Errorf("validate imported snapshot package %s failed: %v", snap, err)
+			}
+		}
 		if strings.HasSuffix(snap, ".tar.gz") {
 			snap = strings.ReplaceAll(snap, ".tar.gz", "")
 		}
@@ -137,6 +159,141 @@ type SnapshotJson struct {
 	BackupDataDir      string `json:"backupDataDir"`
 	PanelDataDir       string `json:"panelDataDir"`
 	LiveRestoreEnabled bool   `json:"liveRestoreEnabled"`
+}
+
+// pathInsideDir reports whether pathItem, after cleaning, is an absolute path
+// strictly inside dir (or equal to dir for allowEqual). ".." components and
+// path separators are rejected by filepath.Clean + filepath.Rel, so a value
+// like "../../etc" or "etc" can never fold onto a location outside dir.
+func pathInsideDir(pathItem, dir string, allowEqual bool) bool {
+	if pathItem == "" || dir == "" {
+		return false
+	}
+	cleanItem := filepath.Clean(filepath.FromSlash(pathItem))
+	if !filepath.IsAbs(cleanItem) {
+		return false
+	}
+	cleanDir := filepath.Clean(filepath.FromSlash(dir))
+	if !filepath.IsAbs(cleanDir) {
+		return false
+	}
+	rel, err := filepath.Rel(cleanDir, cleanItem)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return allowEqual
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// pathHasTraversalComponent rejects paths whose raw form contains ".."
+// components (pathInsideDir already folds those away via Clean, but a raw ".."
+// anywhere in the string is always rejected explicitly so no value can resolve
+// ambiguously on case-insensitive or junction-heavy filesystems).
+func pathHasTraversalComponent(pathItem string) bool {
+	for _, comp := range strings.Split(filepath.FromSlash(pathItem), string(filepath.Separator)) {
+		if comp == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSnapshotJsonPaths enforces the restore-target whitelist of a
+// snapshot's snapshot.json before ANY untar runs. Recovery uses these fields
+// verbatim as extraction destinations (1panel_backup.tar.gz ->
+// BackupDataDir, 1panel_data.tar.gz -> BaseDir/1panel), so a hostile or
+// tampered snapshot package could otherwise overwrite arbitrary host paths
+// (e.g. "/etc" or "/usr/local/bin"), including the panel database with its
+// stored credentials. Every restore target must be an absolute path with no
+// ".." component that lies inside the panel data directory (DataDir), the
+// configured local backup directory (global.CONF.System.Backup, which is
+// DataDir/backup by default but configurable), or the panel tmp directory
+// (DataDir/tmp by default). These are the only locations a restore is allowed
+// to write to.
+func validateSnapshotJsonPaths(jsonItem SnapshotJson) error {
+	allowedDirs := []string{global.CONF.System.DataDir, global.CONF.System.Backup, global.CONF.System.TmpDir}
+	check := func(field, pathItem string) error {
+		if pathHasTraversalComponent(pathItem) {
+			return fmt.Errorf("invalid snapshot path: field %s of snapshot.json must not contain '..' components, got %q", field, pathItem)
+		}
+		for _, dir := range allowedDirs {
+			if pathInsideDir(pathItem, dir, true) {
+				return nil
+			}
+		}
+		return fmt.Errorf("invalid snapshot path: field %s of snapshot.json (%q) must be an absolute path inside one of %s", field, pathItem, strings.Join(allowedDirs, ", "))
+	}
+	if err := check("baseDir", jsonItem.BaseDir); err != nil {
+		return err
+	}
+	if err := check("backupDataDir", jsonItem.BackupDataDir); err != nil {
+		return err
+	}
+	if err := check("panelDataDir", jsonItem.PanelDataDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSnapshotPackage checks that a snapshot tarball is a valid gzip/tar
+// archive containing a parseable snapshot.json whose restore-target paths pass
+// validateSnapshotJsonPaths. It is the integrity gate for every imported
+// snapshot package (SnapshotImport for local files, HandleSnapshotRecover for
+// files downloaded from cloud storage) before any extraction or recovery step
+// runs.
+func validateSnapshotPackage(packageFile string) error {
+	f, err := os.Open(packageFile)
+	if err != nil {
+		return fmt.Errorf("open snapshot package failed, err: %v", err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("snapshot package is not a valid gzip archive: %v", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	var jsonFound bool
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("snapshot package is not a valid tar archive: %v", err)
+		}
+		if hdr.Typeflag == tar.TypeDir || strings.HasSuffix(hdr.Name, "/") {
+			continue
+		}
+		base := filepath.Base(hdr.Name)
+		if base == "snapshot.json" {
+			jsonFound = true
+			if hdr.Size > 4*1024*1024 {
+				return fmt.Errorf("snapshot package snapshot.json is too large (%d bytes)", hdr.Size)
+			}
+			jsonBytes, err := io.ReadAll(io.LimitReader(tr, 4*1024*1024+1))
+			if err != nil {
+				return fmt.Errorf("read snapshot.json from snapshot package failed, err: %v", err)
+			}
+			var jsonItem SnapshotJson
+			if err := json.Unmarshal(jsonBytes, &jsonItem); err != nil {
+				return fmt.Errorf("parse snapshot.json from snapshot package failed, err: %v", err)
+			}
+			if err := validateSnapshotJsonPaths(jsonItem); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	if !jsonFound {
+		return fmt.Errorf("snapshot.json is missing from snapshot package %s", path.Base(packageFile))
+	}
+	return nil
 }
 
 func (u *SnapshotService) SnapshotCreate(req dto.SnapshotCreate) error {

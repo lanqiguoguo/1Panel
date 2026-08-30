@@ -67,6 +67,32 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 			return
 		}
 	}
+	if isRecover {
+		// A snapshot downloaded from cloud storage (or placed in the local
+		// backup dir) is untrusted: the storage account may be compromised or
+		// the package replaced in transit. Before any recovery step runs, the
+		// decompressed package must carry a parseable snapshot.json whose
+		// restore-target paths stay inside the panel data/backup/tmp
+		// directories — otherwise the untar below could overwrite arbitrary
+		// host paths, including the panel database with its stored
+		// credentials. Decompression itself is already member-validated
+		// (handleSafeUnTar), so it can only write inside the scratch dir.
+		jsonPath := fmt.Sprintf("%s/snapshot.json", snapFileDir)
+		if _, err := os.Stat(jsonPath); err != nil {
+			updateRecoverStatus(snap.ID, isRecover, "Readjson", constant.StatusFailed, "snapshot.json is missing from the snapshot package")
+			return
+		}
+		jsonItem, err := u.readFromJson(jsonPath)
+		if err != nil {
+			updateRecoverStatus(snap.ID, isRecover, "Readjson", constant.StatusFailed, fmt.Sprintf("decompress file failed, err: %v", err))
+			return
+		}
+		if err := validateSnapshotJsonPaths(jsonItem); err != nil {
+			global.LOG.Errorf("reject recovering snapshot %s: %v", snap.Name, err)
+			updateRecoverStatus(snap.ID, isRecover, "Readjson", constant.StatusFailed, fmt.Sprintf("snapshot package integrity check failed, err: %v", err))
+			return
+		}
+	}
 	snapJson, err := u.readFromJson(fmt.Sprintf("%s/snapshot.json", snapFileDir))
 	if err != nil {
 		updateRecoverStatus(snap.ID, isRecover, "Readjson", constant.StatusFailed, fmt.Sprintf("decompress file failed, err: %v", err))

@@ -25,7 +25,7 @@ type WebsiteSSLCreate struct {
 	Nameserver1   string `json:"nameserver1"`
 	Nameserver2   string `json:"nameserver2"`
 	ExecShell     bool   `json:"execShell"`
-	Shell         string `json:"shell"`
+	Shell         string `json:"shell" validate:"max=512"`
 }
 
 type WebsiteDNSReq struct {
@@ -91,7 +91,7 @@ type WebsiteSSLUpdate struct {
 	Nameserver1   string `json:"nameserver1"`
 	Nameserver2   string `json:"nameserver2"`
 	ExecShell     bool   `json:"execShell"`
-	Shell         string `json:"shell"`
+	Shell         string `json:"shell" validate:"max=512"`
 }
 
 type WebsiteSSLUpload struct {
@@ -132,7 +132,7 @@ type WebsiteCAObtain struct {
 	SSLID       uint   `json:"sslID"`
 	Description string `json:"description"`
 	ExecShell   bool   `json:"execShell"`
-	Shell       string `json:"shell"`
+	Shell       string `json:"shell" validate:"max=512"`
 }
 
 type WebsiteCARenew struct {

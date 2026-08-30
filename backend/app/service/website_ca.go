@@ -17,7 +17,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/i18n"
-	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/ssl"
@@ -375,7 +374,7 @@ func (w WebsiteCAService) ObtainSSL(req request.WebsiteCAObtain) (*model.Website
 			workDir = websiteSSL.Dir
 		}
 		logger.Println(i18n.GetMsgByKey("ExecShellStart"))
-		if err = cmd.ExecShellWithTimeOut(websiteSSL.Shell, workDir, logger, 30*time.Minute); err != nil {
+		if err = execSSLShell(websiteSSL.Shell, workDir, logger, 30*time.Minute, websiteSSL.ID, websiteSSL.PrimaryDomain); err != nil {
 			logger.Println(i18n.GetMsgWithMap("ErrExecShell", map[string]interface{}{"err": err.Error()}))
 		} else {
 			logger.Println(i18n.GetMsgByKey("ExecShellSuccess"))

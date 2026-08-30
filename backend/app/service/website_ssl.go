@@ -54,6 +54,12 @@ var sslApplyMu sync.Mutex
 // silently dropped, and log.Logger may panic on a nil writer).
 var originalLegoLogger = legoLogger.Logger
 
+// maxSSLShellLength bounds the post-apply custom shell of an SSL certificate
+// (see execSSLShell). Legitimate deploy commands fit easily within 512
+// characters; the cap prevents oversized payloads from being stored and
+// executed. Enforced both at DTO validation and at execution time.
+const maxSSLShellLength = 512
+
 type WebsiteSSLService struct {
 }
 
@@ -222,6 +228,28 @@ func printSSLLog(logger *log.Logger, msgKey string, params map[string]interface{
 	logger.Println(i18n.GetMsgWithMap(msgKey, params))
 }
 
+// execSSLShell runs the post-apply custom shell of an SSL certificate (the
+// "deploy certificate to another server" feature) under its 30 minute timeout,
+// enforcing the shell boundary at execution time: the shell is bounded to
+// maxSSLShellLength chars and every executed command is recorded in the panel
+// audit log together with the certificate it belongs to. The length check is a
+// defense-in-depth mirror of the DTO validation — it also covers legacy rows
+// and any future caller that skips validation. No command whitelist is applied:
+// the feature exists precisely to let an administrator run arbitrary deploy
+// commands, so restricting the command set would break its purpose.
+func execSSLShell(shell string, workDir string, logger *log.Logger, timeout time.Duration, sslID uint, domain string) error {
+	if shell == "" {
+		return nil
+	}
+	if len(shell) > maxSSLShellLength {
+		global.LOG.Errorf("reject executing ssl shell of ssl %d (domain %s): shell length %d exceeds limit %d", sslID, domain, len(shell), maxSSLShellLength)
+		logger.Println(fmt.Sprintf("shell too long (%d chars, limit %d), skipped", len(shell), maxSSLShellLength))
+		return fmt.Errorf("shell too long (%d chars, limit %d)", len(shell), maxSSLShellLength)
+	}
+	global.LOG.Infof("execute ssl shell of ssl %d (domain %s): %s", sslID, domain, shell)
+	return cmd.ExecShellWithTimeOut(shell, workDir, logger, timeout)
+}
+
 func reloadSystemSSL(websiteSSL *model.WebsiteSSL, logger *log.Logger) {
 	systemSSLEnable, sslID := GetSystemSSL()
 	if systemSSLEnable && sslID == websiteSSL.ID {
@@ -370,7 +398,7 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 				workDir = websiteSSL.Dir
 			}
 			printSSLLog(logger, "ExecShellStart", nil, apply.DisableLog)
-			if err = cmd.ExecShellWithTimeOut(websiteSSL.Shell, workDir, logger, 30*time.Minute); err != nil {
+			if err = execSSLShell(websiteSSL.Shell, workDir, logger, 30*time.Minute, websiteSSL.ID, websiteSSL.PrimaryDomain); err != nil {
 				printSSLLog(logger, "ErrExecShell", map[string]interface{}{"err": err.Error()}, apply.DisableLog)
 			} else {
 				printSSLLog(logger, "ExecShellSuccess", nil, apply.DisableLog)
