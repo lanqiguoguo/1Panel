@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -177,9 +178,14 @@ func password() {
 	}
 	username := getSettingByKey(db, "UserName")
 
-	fmt.Println("\n" + i18n.GetMsgByKeyForCmd("UpdateSuccessful"))
-	fmt.Println(i18n.GetMsgWithMapForCmd("UpdateUserResult", map[string]interface{}{"name": username}))
-	fmt.Println(i18n.GetMsgWithMapForCmd("UpdatePasswordResult", map[string]interface{}{"name": string(newPassword)}))
+	writePasswordUpdateSuccess(os.Stdout, username)
+}
+
+// writePasswordUpdateSuccess deliberately omits the password. Command output
+// is commonly captured by terminals, shells, and log collectors.
+func writePasswordUpdateSuccess(w io.Writer, username string) {
+	fmt.Fprintln(w, "\n"+i18n.GetMsgByKeyForCmd("UpdateSuccessful"))
+	fmt.Fprintln(w, i18n.GetMsgWithMapForCmd("UpdateUserResult", map[string]interface{}{"name": username}))
 }
 
 func port() {
