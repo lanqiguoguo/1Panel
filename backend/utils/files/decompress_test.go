@@ -2,6 +2,7 @@ package files
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"errors"
@@ -76,7 +77,9 @@ func TestDecompressWithSDKPathTraversal(t *testing.T) {
 		{"nested parent traversal", "sub/../../evil.txt"},
 		{"absolute path", "/etc/evil.txt"},
 		{"current dir entry", "."},
-		{"current dir prefix entry", "./evil.txt"},
+		{"current dir with dot component", "./."},
+		{"parent via dot prefix", "./.."},
+		{"parent traversal via dot prefix", "./../evil.txt"},
 		{"trailing dotdot entry", "x/.."},
 		{"folded dotdot entry", "a/../b"},
 		{"nested dotdot entry", "x/../y"},
@@ -244,9 +247,11 @@ func TestDecompressEncryptedUnsafeTarGzWithoutShellFallback(t *testing.T) {
 
 // TestDecompressRejectsDotAndDotdotEntries feeds archives whose members resolve
 // to the destination itself or to a silently re-folded path inside it (".",
-// "./evil", "x/..", "a/../b", "x/../y") through the full Decompress entry
-// point, plain and openssl-encrypted. All of them must be rejected as unsafe
-// and must not touch the destination.
+// "./.", "./..", "./../evil.txt", "x/..", "a/../b", "x/../y") through the full
+// Decompress entry point, plain and openssl-encrypted. All of them must be
+// rejected as unsafe and must not touch the destination. ("./evil.txt" is NOT
+// in this list: it folds to "evil.txt" inside dst and is a legitimate entry
+// produced by "tar -cf x.tar ./src"; see TestDecompressAllowsDotPrefixEntries.)
 func TestDecompressRejectsDotAndDotdotEntries(t *testing.T) {
 	op := NewFileOp()
 	cases := []struct {
@@ -254,7 +259,9 @@ func TestDecompressRejectsDotAndDotdotEntries(t *testing.T) {
 		fileName string
 	}{
 		{"current dir entry", "."},
-		{"current dir prefix entry", "./evil.txt"},
+		{"current dir with dot component", "./."},
+		{"parent via dot prefix", "./.."},
+		{"parent traversal via dot prefix", "./../evil.txt"},
 		{"trailing dotdot entry", "x/.."},
 		{"folded dotdot entry", "a/../b"},
 		{"nested dotdot entry", "x/../y"},
@@ -536,6 +543,186 @@ func TestDecompressInjectionRejected(t *testing.T) {
 // TestCompressDecompressRoundTrip compresses sample files (including names
 // with spaces and CJK characters) and extracts them again through the SDK
 // path, for zip and tar.gz.
+// TestDecompressAllowsDotPrefixEntries is the P1-4 regression guard: archives
+// created with "tar -cf x.tar ./src" or "python tarfile.add('./src')" store
+// entries like "./src/", "./src/a.txt" and even the archive root "./". These
+// are legitimate — filepath.Clean folds them inside dst — and must extract
+// successfully. The "./" root entry must be skipped (it maps to dst itself,
+// and creating it could chmod dst with an attacker-controlled mode), with dst
+// left untouched: no new files, marker preserved and mode unchanged.
+func TestDecompressAllowsDotPrefixEntries(t *testing.T) {
+	op := NewFileOp()
+
+	t.Run("tar style ./src entries", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			dir := &tar.Header{Name: "./src/", Mode: 0755, Typeflag: tar.TypeDir}
+			if err := tw.WriteHeader(dir); err != nil {
+				t.Fatalf("write dir entry: %v", err)
+			}
+			if err := addTarEntry(tw, "./src/a.txt", "dot prefix"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+			t.Fatalf("Decompress tar-style ./ archive: %v", err)
+		}
+		content, err := os.ReadFile(filepath.Join(dst, "src", "a.txt"))
+		if err != nil {
+			t.Fatalf("read extracted file: %v", err)
+		}
+		if string(content) != "dot prefix" {
+			t.Fatalf("extracted content = %q, want %q", string(content), "dot prefix")
+		}
+	})
+
+	t.Run("archive root ./ entry", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			// "tar -cf x.tar ." emits "./" with the current directory's mode.
+			dir := &tar.Header{Name: "./", Mode: 0777, Typeflag: tar.TypeDir}
+			if err := tw.WriteHeader(dir); err != nil {
+				t.Fatalf("write dir entry: %v", err)
+			}
+			if err := addTarEntry(tw, "./src/a.txt", "root dot"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		if err := os.Chmod(dst, 0750); err != nil {
+			t.Fatalf("chmod dst: %v", err)
+		}
+		marker := filepath.Join(dst, "marker.txt")
+		if err := os.WriteFile(marker, []byte("keep me"), 0644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+			t.Fatalf("Decompress archive with ./ root entry: %v", err)
+		}
+		// the "./" entry must have been skipped, not applied to dst
+		if info, err := os.Stat(dst); err != nil {
+			t.Fatalf("stat dst: %v", err)
+		} else if info.Mode().Perm() != 0750 {
+			t.Fatalf("dst mode = %v, want 0750 (./ entry must not chmod dst)", info.Mode().Perm())
+		}
+		if content, err := os.ReadFile(marker); err != nil || string(content) != "keep me" {
+			t.Fatalf("dst contents were tampered with (read err %v, content %q)", err, string(content))
+		}
+		content, err := os.ReadFile(filepath.Join(dst, "src", "a.txt"))
+		if err != nil {
+			t.Fatalf("read extracted file: %v", err)
+		}
+		if string(content) != "root dot" {
+			t.Fatalf("extracted content = %q, want %q", string(content), "root dot")
+		}
+	})
+
+	t.Run("./evil folds to evil inside dst", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			if err := addTarEntry(tw, "./evil.txt", "evil"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+			t.Fatalf("Decompress ./evil archive: %v", err)
+		}
+		content, err := os.ReadFile(filepath.Join(dst, "evil.txt"))
+		if err != nil {
+			t.Fatalf("read extracted file: %v", err)
+		}
+		if string(content) != "evil" {
+			t.Fatalf("extracted content = %q, want %q", string(content), "evil")
+		}
+	})
+}
+
+// TestDecompressZipWithDotEntries checks the zip side of P1-4: an archive with
+// "./", "./sub/" and "./sub/a.txt" entries (as produced by "zip -r x.zip .")
+// must extract successfully with the "./" root entry skipped.
+func TestDecompressZipWithDotEntries(t *testing.T) {
+	op := NewFileOp()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range []struct {
+		name    string
+		dir     bool
+		content string
+	}{
+		{"./", true, ""},
+		{"./sub/", true, ""},
+		{"./sub/a.txt", false, "zip dot"},
+	} {
+		hdr := &zip.FileHeader{Name: e.name, Method: zip.Deflate}
+		if e.dir {
+			hdr.SetMode(0777 | os.ModeDir)
+		} else {
+			hdr.SetMode(0644)
+		}
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			t.Fatalf("create header %q: %v", e.name, err)
+		}
+		if !e.dir {
+			if _, err := io.WriteString(w, e.content); err != nil {
+				t.Fatalf("write content: %v", err)
+			}
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "dot.zip")
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := op.Decompress(archivePath, dst, Zip, ""); err != nil {
+		t.Fatalf("Decompress zip with ./ entries: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dst, "sub", "a.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(content) != "zip dot" {
+		t.Fatalf("extracted content = %q, want %q", string(content), "zip dot")
+	}
+}
+
+// TestDecompressEncryptedTarGzWithDotPrefixEntries covers the encrypted
+// compatibility path of P1-4: an openssl-encrypted tar.gz whose members carry
+// the "./" prefix must decrypt, pass validateArchiveWithSDK and extract.
+func TestDecompressEncryptedTarGzWithDotPrefixEntries(t *testing.T) {
+	op := NewFileOp()
+	plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		dir := &tar.Header{Name: "./", Mode: 0755, Typeflag: tar.TypeDir}
+		if err := tw.WriteHeader(dir); err != nil {
+			t.Fatalf("write dir entry: %v", err)
+		}
+		dir = &tar.Header{Name: "./src/", Mode: 0755, Typeflag: tar.TypeDir}
+		if err := tw.WriteHeader(dir); err != nil {
+			t.Fatalf("write dir entry: %v", err)
+		}
+		if err := addTarEntry(tw, "./src/a.txt", "encrypted dot"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+	})
+	const secret = "secret for dot prefix"
+	encryptedPath := encryptTarGzForTest(t, plainPath, secret)
+
+	dst := t.TempDir()
+	if err := op.Decompress(encryptedPath, dst, TarGz, secret); err != nil {
+		t.Fatalf("Decompress encrypted ./ archive: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dst, "src", "a.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(content) != "encrypted dot" {
+		t.Fatalf("extracted content = %q, want %q", string(content), "encrypted dot")
+	}
+}
+
 func TestCompressDecompressRoundTrip(t *testing.T) {
 	op := NewFileOp()
 	for _, cType := range []CompressType{Zip, TarGz} {

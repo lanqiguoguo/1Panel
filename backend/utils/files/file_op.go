@@ -709,6 +709,13 @@ var errUnsafeArchive = errors.New("unsafe archive")
 // resolve to the destination itself ("." or any name folding to it) and
 // symbolic link entries are rejected to prevent path traversal, takeover of
 // dst itself and symlink escapes.
+//
+// A leading "./" is intentionally not checked on the raw name: filepath.Clean
+// normalizes it away, so "./sub/a.txt" folds to "sub/a.txt" and any unsafe
+// shape that relies on the "./" prefix ("./.", "./..", "./../x") folds to
+// ".", ".." or "../x", all of which the cleanName checks below already reject.
+// Legitimate archives created with "tar -cf x.tar ./src" or "zip -r x.zip ."
+// carry such entries and must keep working.
 func checkArchivePath(fileName string, info fs.FileInfo) error {
 	if info != nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%w: archive entry is a symlink: %s", errUnsafeArchive, fileName)
@@ -718,9 +725,6 @@ func checkArchivePath(fileName string, info fs.FileInfo) error {
 	if cleanName == "." || cleanName == ".." ||
 		strings.HasPrefix(cleanName, "."+string(filepath.Separator)) ||
 		strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) ||
-		// filepath.Clean strips a leading "./" ("./evil" cleans to "evil"),
-		// so the raw slash-normalized name must be checked as well.
-		strings.HasPrefix(slashName, "."+string(filepath.Separator)) ||
 		filepath.IsAbs(cleanName) {
 		return fmt.Errorf("%w: invalid archive entry path: %s", errUnsafeArchive, fileName)
 	}
@@ -773,6 +777,20 @@ func archiveEntryName(archFile archiver.File) (string, error) {
 	return fileName, nil
 }
 
+// isArchiveRootEntry reports whether a directory entry is the archive root
+// itself, stored as "./" by "tar -cf x.tar .", "zip -r x.zip ." and similar
+// tooling. Such an entry folds onto dst itself: it carries nothing to
+// extract, and creating it could chmod dst with an attacker-controlled mode,
+// so the handlers skip it before any path validation. A bare "." or "./."
+// entry is NOT skipped here — those are rejected by checkArchivePath.
+func isArchiveRootEntry(archFile archiver.File) bool {
+	name := filepath.FromSlash(archFile.NameInArchive)
+	if !strings.HasSuffix(name, string(filepath.Separator)) {
+		return false
+	}
+	return filepath.Clean(name) == "."
+}
+
 func (f FileOp) decompressWithSDK(srcFile string, dst string, cType CompressType) error {
 	return f.decompressWithSDKWithLimits(srcFile, dst, cType, decompressMaxEntries, decompressMaxTotalSize)
 }
@@ -784,6 +802,9 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 	handler := func(ctx context.Context, archFile archiver.File) error {
 		info := archFile.FileInfo
 		if isIgnoreFile(archFile.Name()) {
+			return nil
+		}
+		if isArchiveRootEntry(archFile) {
 			return nil
 		}
 		fileName, err := archiveEntryName(archFile)
@@ -857,6 +878,9 @@ func (f FileOp) validateArchiveWithSDK(srcFile string, dst string, cType Compres
 	var totalEntries int
 	handler := func(ctx context.Context, archFile archiver.File) error {
 		if isIgnoreFile(archFile.Name()) {
+			return nil
+		}
+		if isArchiveRootEntry(archFile) {
 			return nil
 		}
 		fileName, err := archiveEntryName(archFile)
