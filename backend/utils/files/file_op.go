@@ -695,9 +695,17 @@ func decodeGBK(input string) (string, error) {
 // be written out (the 512MB file upload limit and the commonly several
 // hundred MB backups/application packages leave plenty of headroom below the
 // 4GB cap).
+//
+// decompressMaxDepth caps how deeply archive entries may nest below the
+// extraction destination. A hostile archive can otherwise force the creation
+// of a very deep directory chain (a/b/c/... thousands of levels), which costs
+// one path traversal and inode per level and grows the on-disk path toward
+// PATH_MAX. Legitimate backups and application packages stay far below 64
+// levels, so the cap is purely defensive.
 const (
 	decompressMaxEntries   = 100000
 	decompressMaxTotalSize = 4 * 1024 * 1024 * 1024
+	decompressMaxDepth     = 64
 )
 
 // errUnsafeArchive marks archive validation failures. Callers must not fall
@@ -756,9 +764,17 @@ func archiveEntryPath(dst, fileName string, info fs.FileInfo, linkTarget string)
 	}
 	// Belt and braces: the resolved path must stay strictly inside cleanDst
 	// with no remaining ".." components relative to it.
-	if rel, err := filepath.Rel(cleanDst, filePath); err != nil ||
+	rel, err := filepath.Rel(cleanDst, filePath)
+	if err != nil ||
 		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("%w: archive entry escapes destination: %s", errUnsafeArchive, fileName)
+	}
+	// Depth cap: entries nested more than decompressMaxDepth levels below dst
+	// are rejected so a hostile archive cannot force an unboundedly deep
+	// directory chain. The relative path is clean at this point, so counting
+	// separators is exact (a file directly inside dst has depth 0).
+	if depth := strings.Count(rel, string(filepath.Separator)); depth > decompressMaxDepth {
+		return "", fmt.Errorf("%w: archive entry too deep (limit %d levels): %s", errUnsafeArchive, decompressMaxDepth, fileName)
 	}
 	return filePath, nil
 }

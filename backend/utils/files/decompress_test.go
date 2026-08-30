@@ -437,6 +437,88 @@ func TestDecompressWithSDKSizeLimit(t *testing.T) {
 	}
 }
 
+// TestDecompressDepthLimit guards the P2-3 depth cap: archive entries nested
+// more than decompressMaxDepth levels below the destination are rejected with
+// the unsafe-archive error, while entries at exactly the limit still extract.
+// The cap applies to both the SDK extraction path and the encrypted-archive
+// validation path (validateArchiveWithSDK), which share archiveEntryPath.
+func TestDecompressDepthLimit(t *testing.T) {
+	op := NewFileOp()
+	depthName := func(dirs int, leaf string) string {
+		return strings.Repeat("d/", dirs) + leaf
+	}
+
+	t.Run("over limit rejected", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			if err := addTarEntry(tw, depthName(decompressMaxDepth+1, "file.txt"), "deep"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		err := op.Decompress(archivePath, dst, TarGz, "")
+		if err == nil {
+			t.Fatal("Decompress archive deeper than the limit: expected error, got nil")
+		}
+		if !errors.Is(err, errUnsafeArchive) {
+			t.Fatalf("Decompress archive deeper than the limit: expected unsafe archive error, got %v", err)
+		}
+	})
+
+	t.Run("deep directory entry rejected", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			dir := &tar.Header{Name: depthName(decompressMaxDepth+2, ""), Mode: 0755, Typeflag: tar.TypeDir}
+			if err := tw.WriteHeader(dir); err != nil {
+				t.Fatalf("write dir entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		err := op.decompressWithSDK(archivePath, dst, SdkTarGz)
+		if err == nil {
+			t.Fatal("Decompress with too-deep directory entry: expected error, got nil")
+		}
+		if !errors.Is(err, errUnsafeArchive) {
+			t.Fatalf("Decompress with too-deep directory entry: expected unsafe archive error, got %v", err)
+		}
+	})
+
+	t.Run("at the limit accepted", func(t *testing.T) {
+		archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			if err := addTarEntry(tw, depthName(decompressMaxDepth, "file.txt"), "ok"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		dst := t.TempDir()
+		if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+			t.Fatalf("Decompress archive at the depth limit: unexpected error: %v", err)
+		}
+		content, err := os.ReadFile(filepath.Join(append([]string{dst}, strings.Split(depthName(decompressMaxDepth, "file.txt"), "/")...)...))
+		if err != nil {
+			t.Fatalf("read extracted file at the depth limit: %v", err)
+		}
+		if string(content) != "ok" {
+			t.Fatalf("extracted content = %q, want %q", string(content), "ok")
+		}
+	})
+
+	t.Run("encrypted archive over limit rejected", func(t *testing.T) {
+		plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+			if err := addTarEntry(tw, depthName(decompressMaxDepth+1, "file.txt"), "deep"); err != nil {
+				t.Fatalf("write entry: %v", err)
+			}
+		})
+		const secret = "secret for depth test"
+		encryptedPath := encryptTarGzForTest(t, plainPath, secret)
+		dst := t.TempDir()
+		err := op.Decompress(encryptedPath, dst, TarGz, secret)
+		if err == nil {
+			t.Fatal("Decompress encrypted archive deeper than the limit: expected error, got nil")
+		}
+		if !errors.Is(err, errUnsafeArchive) {
+			t.Fatalf("Decompress encrypted archive deeper than the limit: expected unsafe archive error, got %v", err)
+		}
+	})
+}
+
 // assertCmdIllegal fails the test when err is not the ErrCmdIllegal business
 // error returned by the shell archiver validation.
 func assertCmdIllegal(t *testing.T, context string, err error) {
