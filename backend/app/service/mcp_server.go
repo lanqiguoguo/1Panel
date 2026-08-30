@@ -401,6 +401,12 @@ func updateMcpConfig(websiteID uint) {
 }
 
 func addProxy(server *model.McpServer) {
+	// server.SsePath is embedded into the proxy_pass URL and the location
+	// match below, so reject characters that would end the nginx directive.
+	if !nginx.ValidNginxParamValue(server.SsePath) {
+		global.LOG.Errorf("[mcp] add proxy failed, err: illegal ssePath")
+		return
+	}
 	websiteID := GetWebsiteID()
 	website, err := websiteRepo.GetFirst(commonRepo.WithByID(websiteID))
 	if err != nil {
@@ -478,6 +484,11 @@ func addMCPProxy(websiteID uint) error {
 		baseUrl = fmt.Sprintf("%s:%d", baseUrl, websiteDomain.Port)
 	}
 	for _, server := range servers {
+		// server.SsePath is embedded into the proxy_pass URL and the location
+		// match below, so reject characters that would end the nginx directive.
+		if !nginx.ValidNginxParamValue(server.SsePath) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 		includePath := path.Join(includeDir, server.Name+".conf")
 		config.FilePath = includePath
 		directives := config.Directives

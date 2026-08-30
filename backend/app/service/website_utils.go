@@ -129,6 +129,12 @@ func createIndexFile(website *model.Website, runtime *model.Runtime) error {
 }
 
 func createProxyFile(website *model.Website) error {
+	// website.Proxy is user-supplied free text (proxy address of a proxy-type
+	// website) and is embedded into the proxy_pass directive below; reject
+	// characters that would terminate the directive or start a new one.
+	if !nginx.ValidNginxParamValue(website.Proxy) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	nginxInstall, err := getAppInstallByKey(constant.AppOpenresty)
 	if err != nil {
 		return err

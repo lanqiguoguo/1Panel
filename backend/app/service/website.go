@@ -1546,6 +1546,11 @@ func (w WebsiteService) GetRewriteConfig(req request.NginxRewriteReq) (*response
 }
 
 func (w WebsiteService) UpdateSiteDir(req request.WebsiteUpdateDir) error {
+	// req.SiteDir is embedded into the `root` directive below; reject the
+	// characters that would terminate the directive or open a new one.
+	if !nginx.ValidNginxParamValue(req.SiteDir) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	website, err := websiteRepo.GetFirst(commonRepo.WithByID(req.ID))
 	if err != nil {
 		return err
@@ -1639,6 +1644,20 @@ func (w WebsiteService) OperateProxy(req request.WebsiteProxyConfig) (err error)
 	// traversal and shell metacharacters before it reaches any path.
 	if !validSiteName(req.Name) {
 		return buserr.New(constant.ErrCmdIllegal)
+	}
+	// Every user-supplied value below is embedded into the generated nginx
+	// config as a directive parameter. Reject characters that would end the
+	// current directive (';'), open/close a block ('{', '}'), start a comment
+	// ('#') or split the line (newlines, CR, NUL) before the config is written.
+	for _, s := range []string{req.ProxyPass, req.ProxyHost, req.ProxySSLName, req.Match, req.Modifier, req.CacheUnit} {
+		if !nginx.ValidNginxParamValue(s) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	for k, v := range req.Replaces {
+		if !nginx.ValidNginxParamValue(k) || !nginx.ValidNginxParamValue(v) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 	}
 	var (
 		website      model.Website
@@ -2097,6 +2116,18 @@ func (w WebsiteService) UpdateAntiLeech(req request.NginxAntiLeechUpdate) (err e
 		}
 	}
 	if req.Enable {
+		// req.Extends becomes a location regex (`.*\.(exts)$`), req.Return the
+		// parameter of a `return` directive and req.CacheUint the unit suffix of
+		// an `expires` value; reject anything that would end the directive or
+		// start a new one. req.ServerNames is joined into `valid_referers`.
+		if !nginx.ValidNginxParamValue(req.Extends) || !nginx.ValidNginxParamValue(req.Return) || !nginx.ValidNginxParamValue(req.CacheUint) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+		for _, name := range req.ServerNames {
+			if !nginx.ValidNginxParamValue(name) {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+		}
 		exts := strings.Split(req.Extends, ",")
 		newDirective := components.Directive{
 			Name:       "location",
@@ -2253,6 +2284,18 @@ func (w WebsiteService) OperateRedirect(req request.NginxRedirectReq) (err error
 	// reject traversal and shell metacharacters before it reaches any path.
 	if !validSiteName(req.Name) {
 		return buserr.New(constant.ErrCmdIllegal)
+	}
+	// req.Path becomes a rewrite regex and req.Target a rewrite/return
+	// parameter in the generated config; both must be free of characters that
+	// would end the directive or start a new one. Domain names land in an
+	// `if ($host ~ '^<domain>)'` condition and are validated the same way.
+	if !nginx.ValidNginxParamValue(req.Path) || !nginx.ValidNginxParamValue(req.Target) || !nginx.ValidNginxParamValue(req.Redirect) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	for _, domain := range req.Domains {
+		if !nginx.ValidNginxParamValue(domain) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 	}
 	var (
 		website      model.Website

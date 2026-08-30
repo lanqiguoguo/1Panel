@@ -104,6 +104,21 @@ func getNginxParamsByKeys(scope string, keys []string, website *model.Website) (
 }
 
 func updateNginxConfig(scope string, params []dto.NginxParam, website *model.Website) error {
+	// Every parameter value below is dumped into the generated config as part
+	// of an nginx directive. Reject values that would terminate the current
+	// directive (';'), open/close a block ('{', '}'), start a comment ('#') or
+	// split the line (newlines, CR, NUL) before any config is written or any
+	// reload is attempted. This is the shared choke point for the scope-based
+	// editors (index, limit-conn, ssl, http-per); site-specific features
+	// (proxy, redirect, site dir, anti-leech) validate at their own entry
+	// points where requiredness and field semantics differ.
+	for _, p := range params {
+		for _, v := range p.Params {
+			if !nginx.ValidNginxParamValue(v) {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+		}
+	}
 	nginxFull, err := getNginxFull(website)
 	if err != nil {
 		return err
