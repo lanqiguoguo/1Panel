@@ -9,7 +9,7 @@
                             size="default"
                             :placeholder="$t('commons.login.mfaCode')"
                             v-model.trim="mfaLoginForm.code"
-                            @input="mfaLogin(true)"
+                            @input="mfaLogin.onInput(mfaLoginForm.code)"
                         >
                             <template #prefix>
                                 <el-icon class="el-input__icon">
@@ -29,7 +29,7 @@
                             type="primary"
                             size="default"
                             round
-                            @click="mfaLogin(false)"
+                            @click="mfaLogin.onSubmit(mfaLoginForm.code)"
                         >
                             {{ $t('commons.button.verify') }}
                         </el-button>
@@ -183,6 +183,7 @@ import { useI18n } from 'vue-i18n';
 import { getSettingInfo } from '@/api/modules/setting';
 import { Rules } from '@/global/form-rules';
 import { encryptPassword } from '@/utils/util';
+import { createMfaLoginController } from '@/utils/mfa-login-controller';
 
 const i18n = useI18n();
 const themeConfig = computed(() => globalStore.themeConfig);
@@ -252,11 +253,6 @@ const mfaLoginForm = reactive({
     code: '',
     authMethod: 'session',
 });
-
-// Tracks the last MFA code that was submitted so the @input auto-login does
-// not re-fire the request for an unchanged code (e.g. after a failed attempt
-// the user deletes and retypes the same digits).
-let lastMfaSubmitted = '';
 
 const captcha = reactive({
     captchaID: '',
@@ -377,38 +373,38 @@ const login = (formEl: FormInstance | undefined) => {
     });
 };
 
-const mfaLogin = async (auto: boolean) => {
-    if (isLoggingIn) return;
-    // The code input fires this on every keystroke; only submit when the code
-    // is complete AND different from the last one submitted, so retyping or
-    // editing after a failed attempt does not spam the mfalogin endpoint.
-    if (auto && (mfaLoginForm.code.length !== 6 || mfaLoginForm.code === lastMfaSubmitted)) {
-        return;
-    }
-    if ((!auto && mfaLoginForm.code) || (auto && mfaLoginForm.code.length === 6)) {
-        lastMfaSubmitted = mfaLoginForm.code;
-        isLoggingIn = true;
-        try {
-            mfaLoginForm.name = loginForm.name;
-            mfaLoginForm.password = encryptPassword(loginForm.password);
-            const res = await mfaLoginApi(mfaLoginForm);
-            if (res.code === 406) {
-                errMfaInfo.value = true;
-                return;
-            }
-            globalStore.setLogStatus(true);
-            menuStore.setMenuList([]);
-            tabsStore.removeAllTabs();
-            MsgSuccess(i18n.t('commons.msg.loginSuccess'));
-            loadDataFromDB();
-            router.push({ name: 'home' });
-        } catch {
-            // The HTTP interceptor already reports request and business errors.
-        } finally {
-            isLoggingIn = false;
-        }
-    }
-};
+const mfaLogin = createMfaLoginController({
+    isLoggingIn: () => isLoggingIn,
+    setLoggingIn: (v) => {
+        isLoggingIn = v;
+    },
+    setErrMfaInfo: (v) => {
+        errMfaInfo.value = v;
+    },
+    refreshCaptcha: () => {
+        loginVerify();
+    },
+    notifyMfaError: () => {
+        // 仅纯网络断连时由控制器调用（拦截器未提示过），此处兜底提示
+        MsgError(i18n.t('commons.msg.requestTimeout'));
+    },
+    submit: async (code) => {
+        mfaLoginForm.code = code;
+        mfaLoginForm.name = loginForm.name;
+        mfaLoginForm.password = encryptPassword(loginForm.password);
+        const res = await mfaLoginApi(mfaLoginForm);
+        return res.code;
+    },
+    onSuccess: () => {
+        globalStore.setLogStatus(true);
+        menuStore.setMenuList([]);
+        tabsStore.removeAllTabs();
+        MsgSuccess(i18n.t('commons.msg.loginSuccess'));
+        loadDataFromDB();
+        router.push({ name: 'home' });
+    },
+});
+
 const loginVerify = async () => {
     const res = await getCaptcha();
     captcha.imagePath = res.data.imagePath ? res.data.imagePath : '';
@@ -451,7 +447,7 @@ const handleKeydown = (e: KeyboardEvent) => {
             }
         }
         if (mfaShow.value && !mfaButtonFocused.value) {
-            mfaLogin(false);
+            mfaLogin.onSubmit(mfaLoginForm.code);
         }
     }
 };
