@@ -59,6 +59,65 @@ func TestCleanupInitialPassword(t *testing.T) {
 	}
 }
 
+func TestLoadOptionalParamFrom(t *testing.T) {
+	t.Run("reads value from control script", func(t *testing.T) {
+		path := writeControlScript(t, "BASE_DIR=/opt\nORIGINAL_PASSWORD=abc123\nLANGUAGE=zh\n")
+		if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "abc123" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "abc123")
+		}
+	})
+
+	t.Run("value containing equals sign is preserved", func(t *testing.T) {
+		path := writeControlScript(t, "ORIGINAL_PASSWORD=a=b\n")
+		if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "a=b" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "a=b")
+		}
+	})
+
+	t.Run("missing key returns empty string", func(t *testing.T) {
+		path := writeControlScript(t, "BASE_DIR=/opt\nLANGUAGE=zh\n")
+		if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "")
+		}
+	})
+
+	t.Run("missing file returns empty string", func(t *testing.T) {
+		path := path.Join(t.TempDir(), "does-not-exist")
+		if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "")
+		}
+	})
+
+	t.Run("multiline script with trailing newline parses correctly", func(t *testing.T) {
+		path := writeControlScript(t, "BASE_DIR=/opt\nORIGINAL_PASSWORD=abc123\nLANGUAGE=zh\n")
+		// Multiple reads confirm no state leakage and stable parsing.
+		for i := 0; i < 2; i++ {
+			if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "abc123" {
+				t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "abc123")
+			}
+		}
+	})
+
+	t.Run("other key lines do not interfere", func(t *testing.T) {
+		path := writeControlScript(t, "ORIGINAL_PASSWORD=abc123\nORIGINAL_USERNAME=admin\nORIGINAL_PASSWORDX=evil\n")
+		if got := loadOptionalParamFrom(path, "ORIGINAL_PASSWORD"); got != "abc123" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "abc123")
+		}
+		if got := loadOptionalParamFrom(path, "ORIGINAL_USERNAME"); got != "admin" {
+			t.Fatalf("loadOptionalParamFrom returned %q, want %q", got, "admin")
+		}
+	})
+}
+
+func writeControlScript(t *testing.T, content string) string {
+	t.Helper()
+	path := path.Join(t.TempDir(), "1pctl")
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestEnsureExistingDatabaseRejectsUninitializedFile(t *testing.T) {
 	baseDir := t.TempDir()
 	dbDir := path.Join(baseDir, "1panel", "db")

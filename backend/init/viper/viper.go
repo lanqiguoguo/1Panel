@@ -131,11 +131,24 @@ func loadParams(param string) string {
 }
 
 func loadOptionalParam(param string) string {
-	stdout, err := cmd.Execf("grep '^%s=' /usr/local/bin/1pctl | cut -d'=' -f2", param)
+	return loadOptionalParamFrom("/usr/local/bin/1pctl", param)
+}
+
+// loadOptionalParamFrom reads a KEY=VALUE line from the local control script.
+// A missing script or key is not an error: the key is optional (callers fall
+// back to other sources).
+func loadOptionalParamFrom(path, param string) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	return strings.ReplaceAll(stdout, "\n", "")
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if found && key == param {
+			return value
+		}
+	}
+	return ""
 }
 
 // loadInitialPassword reads the bootstrap credential written by install.sh.
