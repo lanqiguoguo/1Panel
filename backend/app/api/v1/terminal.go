@@ -241,6 +241,17 @@ func loadMapFromDockerTop(containerID string) map[string]string {
 	return pidMap
 }
 
+// killablePid reports whether a pid string taken from `docker top` output is
+// safe to pass to kill(1) as a parameter. docker top rows start with a numeric
+// pid, but a truncated or merged row could carry anything, and killBash must
+// never forward a non-numeric value (shell metacharacters included) to a shell
+// command line. ParseUint rejects every non-digit form, including the leading
+// "+" sign that Atoi would accept.
+func killablePid(pid string) bool {
+	pidNum, err := strconv.ParseUint(pid, 10, 64)
+	return err == nil && pidNum > 0
+}
+
 func killBash(containerID, comm string, pidMap map[string]string) {
 	sudo := cmd.SudoHandleCmd()
 	newPidMap := loadMapFromDockerTop(containerID)
@@ -252,8 +263,15 @@ func killBash(containerID, comm string, pidMap map[string]string) {
 				break
 			}
 		}
-		if !isOld && command == comm {
-			_, _ = cmd.Execf("%s kill -9 %s", sudo, pid)
+		if !isOld && command == comm && killablePid(pid) {
+			// The pid is validated above and passed as a parameter, so no
+			// shell metacharacter can ever be interpolated into a command
+			// line, and only a real process id can be targeted.
+			if sudo == "" {
+				_, _ = cmd.ExecWithCheck("kill", "-9", pid)
+				continue
+			}
+			_, _ = cmd.ExecWithCheck("sudo", "-n", "kill", "-9", pid)
 		}
 	}
 }

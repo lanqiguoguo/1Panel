@@ -54,6 +54,7 @@ var (
 	ErrApiConfigIPInvalid      = "ErrApiConfigIPInvalid"
 	ErrApiConfigDisable        = "ErrApiConfigDisable"
 	ErrApiConfigKeyTimeInvalid = "ErrApiConfigKeyTimeInvalid"
+	ErrApiConfigKeyNotConfig   = "ErrApiConfigKeyNotConfig"
 )
 
 // app

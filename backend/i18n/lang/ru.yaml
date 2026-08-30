@@ -13,6 +13,7 @@ ErrApiConfigKeyInvalid: "Ошибка ключа API интерфейса: {{ .d
 ErrApiConfigIPInvalid: "IP API интерфейса отсутствует в белом списке: {{ .detail }}"
 ErrApiConfigDisable: "Этот интерфейс запрещает использование вызовов API интерфейса: {{ .detail }}"
 ErrApiConfigKeyTimeInvalid: "Ошибка временной метки интерфейса API: {{ .detail }}"
+ErrApiConfigKeyNotConfig: "Включить API-интерфейс можно только после настройки ключа API"
 
 #common
 ErrNameIsExist: "Имя уже существует"

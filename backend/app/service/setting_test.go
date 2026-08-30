@@ -643,6 +643,28 @@ func proxySettingValue(t *testing.T, key string) string {
 	return got.Value
 }
 
+// settingValue reads a raw setting value from the DB.
+func settingValue(t *testing.T, key string) string {
+	t.Helper()
+	got, err := settingRepo.Get(settingRepo.WithByKey(key))
+	if err != nil {
+		t.Fatalf("read setting %s failed: %v", key, err)
+	}
+	return got.Value
+}
+
+// settingValueOrEmpty reads a raw setting value from the DB, treating a
+// missing row as an empty value (the settings table is only seeded with a
+// subset of keys in tests).
+func settingValueOrEmpty(t *testing.T, key string) string {
+	t.Helper()
+	got, err := settingRepo.Get(settingRepo.WithByKey(key))
+	if err != nil {
+		return ""
+	}
+	return got.Value
+}
+
 // proxyStoredPasswdPlaintext decrypts the stored ProxyPasswd setting.
 func proxyStoredPasswdPlaintext(t *testing.T) string {
 	t.Helper()
@@ -819,4 +841,135 @@ func TestTestProxyKeepPassword(t *testing.T) {
 			t.Errorf("resolveProxyPassword = %q, want proxy-passwd-new", got)
 		}
 	})
+}
+
+// TestUpdateApiConfigEnableRequiresApiKey guards the API-interface enable
+// path: enabling with no usable ApiKey would leave the signing key empty and
+// make the 1Panel-Token check (MD5("1panel"+""+timestamp)) fully predictable,
+// so the request must be refused before any state is written.
+func TestUpdateApiConfigEnableRequiresApiKey(t *testing.T) {
+	setupSettingUpdateTest(t)
+	u := &SettingService{}
+	// mirror the rows the init migrations create; the repo Update is a plain
+	// UPDATE that would silently no-op on missing rows otherwise
+	for _, kv := range [][2]string{
+		{"ApiInterfaceStatus", ""},
+		{"ApiKey", ""},
+		{"IpWhiteList", "127.0.0.1"},
+		{"ApiKeyValidityTime", "120"},
+	} {
+		if err := settingRepo.UpdateOrCreate(kv[0], kv[1]); err != nil {
+			t.Fatalf("seed %s failed: %v", kv[0], err)
+		}
+	}
+
+	// no stored key, empty submitted key -> refused, nothing written
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             "",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err == nil {
+		t.Fatal("UpdateApiConfig enable with empty key and no stored key: want error, got nil")
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "" {
+		t.Errorf("ApiInterfaceStatus = %q after refused enable, want unchanged", got)
+	}
+
+	// no stored key, masked (placeholder) submitted key -> refused too
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             "****",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err == nil {
+		t.Fatal("UpdateApiConfig enable with masked key and no stored key: want error, got nil")
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "" {
+		t.Errorf("ApiInterfaceStatus = %q after refused masked enable, want unchanged", got)
+	}
+
+	// no stored key, real key -> allowed, key persisted
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             "newkey123",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig enable with real key failed: %v", err)
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "enable" {
+		t.Errorf("ApiInterfaceStatus = %q after valid enable, want enable", got)
+	}
+	if got := settingValue(t, "ApiKey"); got != "newkey123" {
+		t.Errorf("ApiKey = %q after valid enable, want newkey123", got)
+	}
+
+	// disable never requires a key (empty submit must keep working)
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "disable",
+		ApiKey:             "",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig disable with empty key failed: %v", err)
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "disable" {
+		t.Errorf("ApiInterfaceStatus = %q after disable, want disable", got)
+	}
+	if got := settingValue(t, "ApiKey"); got != "newkey123" {
+		t.Errorf("ApiKey = %q after disable, want preserved newkey123", got)
+	}
+}
+
+// TestUpdateApiConfigEnableKeepsStoredKey guards the two keep paths that must
+// not be broken by the enable gate: re-enabling with the stored key echoed
+// back (masked form) and with an empty key field both keep the stored key and
+// are allowed.
+func TestUpdateApiConfigEnableKeepsStoredKey(t *testing.T) {
+	setupSettingUpdateTest(t)
+	u := &SettingService{}
+
+	const rawKey = "abcdefghijklmnopqrstuvwxyz123456"
+	if err := settingRepo.UpdateOrCreate("ApiKey", rawKey); err != nil {
+		t.Fatalf("seed ApiKey failed: %v", err)
+	}
+	for _, kv := range [][2]string{
+		{"ApiInterfaceStatus", ""},
+		{"IpWhiteList", "127.0.0.1"},
+		{"ApiKeyValidityTime", "120"},
+	} {
+		if err := settingRepo.UpdateOrCreate(kv[0], kv[1]); err != nil {
+			t.Fatalf("seed %s failed: %v", kv[0], err)
+		}
+	}
+
+	// masked echo (the switch in panel/index.vue submits the loaded value)
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             maskApiKey(rawKey),
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig enable with masked stored key failed: %v", err)
+	}
+	if got := settingValue(t, "ApiKey"); got != rawKey {
+		t.Errorf("ApiKey = %q after masked enable, want preserved %q", got, rawKey)
+	}
+
+	// empty key field with a stored key -> keep, allowed
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             "",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig enable with empty key and stored key failed: %v", err)
+	}
+	if got := settingValue(t, "ApiKey"); got != rawKey {
+		t.Errorf("ApiKey = %q after empty enable, want preserved %q", got, rawKey)
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "enable" {
+		t.Errorf("ApiInterfaceStatus = %q after enable, want enable", got)
+	}
 }

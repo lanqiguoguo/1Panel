@@ -12,6 +12,7 @@ ErrApiConfigStatusInvalid: "Acesso à interface da API proibido: {{ .detail }}"
 ErrApiConfigKeyInvalid: "Erro na chave da interface da API: {{ .detail }}"
 ErrApiConfigIPInvalid: "O IP da interface da API não está na lista de permissões: {{ .detail }}"
 ErrApiConfigDisable: "Esta interface proíbe o uso de chamadas de API: {{ .detail }}"
+ErrApiConfigKeyNotConfig: "A interface da API não pode ser ativada antes de configurar uma chave de API"
 
 #common
 ErrNameIsExist: "O nome já existe"

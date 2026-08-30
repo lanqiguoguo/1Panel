@@ -13,6 +13,7 @@ ErrApiConfigKeyInvalid: "Ralat kunci antara muka API: {{ .detail }}"
 ErrApiConfigIPInvalid: "IP antara muka API tidak berada dalam senarai putih: {{ .detail }}"
 ErrApiConfigDisable: "Antara muka ini melarang penggunaan panggilan API: {{ .detail }}"
 ErrApiConfigKeyTimeInvalid: "Ralat cap waktu antara muka API: {{ .detail }}"
+ErrApiConfigKeyNotConfig: "Antara muka API tidak boleh didayakan sebelum kunci API dikonfigurasikan"
 
 #common
 ErrNameIsExist: "Nama sudah wujud"

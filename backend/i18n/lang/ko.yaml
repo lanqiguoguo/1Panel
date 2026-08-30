@@ -13,6 +13,7 @@ ErrApiConfigKeyInvalid: "API 인터페이스 키 오류: {{ .detail }}"
 ErrApiConfigIPInvalid: "API 인터페이스 IP가 화이트리스트에 없습니다: {{ .detail }}"
 ErrApiConfigDisable: "이 인터페이스는 API 호출을 금지합니다: {{ .detail }}"
 ErrApiConfigKeyTimeInvalid: "API 인터페이스 타임스탬프 오류: {{ .detail }}"
+ErrApiConfigKeyNotConfig: "API 인터페이스를 활성화하려면 먼저 API 키를 구성해야 합니다"
 
 # 공통
 ErrNameIsExist: "이름이 이미 존재합니다"

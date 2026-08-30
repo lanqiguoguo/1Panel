@@ -497,14 +497,24 @@ var DeleteV2Openresty = &gormigrate.Migration{
 var UpdateOnedrive = &gormigrate.Migration{
 	ID: "20250704-update-onedrive",
 	Migrate: func(tx *gorm.DB) error {
+		// The OneDriveID/OneDriveSc settings are a convenience prefill for the
+		// backup-account form only — the OAuth flow always uses the per-account
+		// client_id/client_secret entered by the user — so writing a fresh
+		// hardcoded Azure client id/secret here would just re-seed a public
+		// credential into every upgraded instance. Clear both settings instead
+		// of overwriting them: an empty value keeps the prefill out of the
+		// create form, and any admin who had configured their own values keeps
+		// them untouched. Nothing in the panel writes these rows through the
+		// UI, so there is no functional regression for existing OneDrive
+		// accounts (their credential lives in the account vars).
 		if err := tx.Model(&model.Setting{}).
 			Where("key = ?", "OneDriveID").
-			Update("value", "NTQ0NmNmZTMtNGM3OS00N2EwLWFlMjUtZmM2NDU0NzhlMmQ5").Error; err != nil {
+			Update("value", "").Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&model.Setting{}).
 			Where("key = ?", "OneDriveSc").
-			Update("value", "bGRlOFF+WEVrR1M0b25Vb1VsRWpMYzE2MW9rTXZEM25KdnZ1MGN6MA==").Error; err != nil {
+			Update("value", "").Error; err != nil {
 			return err
 		}
 		return nil

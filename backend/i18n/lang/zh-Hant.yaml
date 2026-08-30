@@ -13,6 +13,7 @@ ErrApiConfigKeyInvalid: "API 介面金鑰錯誤: {{ .detail }}"
 ErrApiConfigIPInvalid: "呼叫 API 介面 IP 不在白名單: {{ .detail }}"
 ErrApiConfigDisable: "此介面禁止使用 API 介面呼叫: {{ .detail }}"
 ErrApiConfigKeyTimeInvalid: "API 介面時間戳記錯誤: {{ .detail }}"
+ErrApiConfigKeyNotConfig: "啟用 API 介面前必須先設定介面金鑰"
 
 #common
 ErrNameIsExist: "名稱已存在"

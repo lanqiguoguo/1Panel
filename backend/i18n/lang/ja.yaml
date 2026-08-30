@@ -12,6 +12,7 @@ ErrApiConfigStatusInvalid: "APIインターフェイスアクセス禁止: {{.De
 ErrApiConfigKeyInvalid: "APIインターフェイスキーエラー: {{.Detail}}"
 ErrApiConfigIPInvalid: "APIインターフェイスIPはホワイトリストにありません: {{.Detail}}"
 ErrApiConfigDisable: "このインターフェイスは、APIインターフェイスコールの使用を禁止しています: {{.Detail}}"
+ErrApiConfigKeyNotConfig: "APIインターフェイスを有効にするには、まずAPIキーを設定する必要があります"
 
 #common
 ErrNameIsExist: "名前はすでに存在しています"

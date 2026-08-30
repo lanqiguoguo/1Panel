@@ -417,10 +417,19 @@ var AddMfaInterval = &gormigrate.Migration{
 		if err := tx.Create(&model.Setting{Key: "SystemIP", Value: ""}).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&model.Setting{Key: "OneDriveID", Value: "MDEwOTM1YTktMWFhOS00ODU0LWExZGMtNmU0NWZlNjI4YzZi"}).Error; err != nil {
+		// OneDriveID/OneDriveSc are created empty instead of seeded with the
+		// publicly-known Azure OAuth client credentials that shipped in earlier
+		// releases. The credentials are only a convenience prefill for the
+		// backup-account form (the OAuth flow always uses the per-account
+		// client_id/client_secret the user fills in), so an empty value is
+		// functionally neutral and no longer bakes a shared, public credential
+		// into every fresh installation. Users who rely on the prefill can set
+		// their own client id/secret directly in the OneDrive backup-account
+		// form (frontend/src/views/setting/backup-account/onedrive/index.vue).
+		if err := tx.Create(&model.Setting{Key: "OneDriveID", Value: ""}).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&model.Setting{Key: "OneDriveSc", Value: "akpuOFF+YkNXOU1OLWRzS1ZSRDdOcG1LT2ZRM0RLNmdvS1RkVWNGRA=="}).Error; err != nil {
+		if err := tx.Create(&model.Setting{Key: "OneDriveSc", Value: ""}).Error; err != nil {
 			return err
 		}
 		return nil

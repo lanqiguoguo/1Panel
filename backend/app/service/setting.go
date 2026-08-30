@@ -675,6 +675,21 @@ func (u *SettingService) GetApiConfig() (*dto.ApiInterfaceConfig, error) {
 }
 
 func (u *SettingService) UpdateApiConfig(req dto.ApiInterfaceConfig) error {
+	// Enabling the API interface without a usable ApiKey leaves the signing
+	// key empty, so isValid1PanelToken would only ever compare against
+	// MD5("1panel"+timestamp) — a value that is fully predictable to anyone
+	// who knows the header format. Refuse the enable before any state is
+	// written. The stored key survives this check: an empty req.ApiKey means
+	// "keep the stored key" when a stored key exists (the frontend submits the
+	// plaintext from /settings/api/config, or the masked form handled below),
+	// and an empty ApiKey with no stored key cannot enable the interface.
+	if req.ApiInterfaceStatus == "enable" {
+		stored, err := settingRepo.Get(settingRepo.WithByKey("ApiKey"))
+		hasStoredKey := err == nil && stored.Value != "" && !strings.HasPrefix(stored.Value, "****")
+		if !hasStoredKey && (req.ApiKey == "" || strings.HasPrefix(req.ApiKey, "****")) {
+			return buserr.New(constant.ErrApiConfigKeyNotConfig)
+		}
+	}
 	if err := settingRepo.Update("ApiInterfaceStatus", req.ApiInterfaceStatus); err != nil {
 		return err
 	}
@@ -686,10 +701,12 @@ func (u *SettingService) UpdateApiConfig(req dto.ApiInterfaceConfig) error {
 	// enable/disable switch which echoes back the value it loaded), treat it as
 	// "keep the stored key" instead of persisting the mask over the real key.
 	// An exact mask match is rejected too, so a masked value can never be
-	// persisted as the actual key.
+	// persisted as the actual key. An empty value also means "keep" (there is
+	// no UI to clear the key; the reset action always generates a new one), so
+	// the stored key survives an empty submit instead of being wiped out.
 	stored, err := settingRepo.Get(settingRepo.WithByKey("ApiKey"))
 	if err == nil && stored.Value != "" {
-		if req.ApiKey == maskApiKey(stored.Value) || strings.HasPrefix(req.ApiKey, "****") {
+		if req.ApiKey == "" || req.ApiKey == maskApiKey(stored.Value) || strings.HasPrefix(req.ApiKey, "****") {
 			req.ApiKey = stored.Value
 		}
 	}
