@@ -246,6 +246,7 @@ function verify_sha256() {
 # partial file between download and install; resume still works within a
 # single run because the retry loop in fetch appends to the same partial file.
 DOWNLOAD_DIR=""
+DOCKER_SCRIPT_DIR=""
 
 function fetch_package() {
     local file_name="1panel-${VERSION}-linux-${ARCH}.tar.gz"
@@ -469,8 +470,37 @@ function install_docker() {
         if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
             log_info "installing docker via get.docker.com ..."
             local proxy_args=()
+            local docker_script
             [[ -n "$PROXY_URL" ]] && proxy_args=(-x "$PROXY_URL")
-            if ! curl -fsSL --connect-timeout 15 "${proxy_args[@]}" https://get.docker.com -o /tmp/get-docker.sh; then
+            DOCKER_SCRIPT_DIR=$(mktemp -d /tmp/1panel-docker.XXXXXX) || {
+                log_err "failed to create a private directory for the docker install script"
+                log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
+                return
+            }
+            chmod 700 "$DOCKER_SCRIPT_DIR" || {
+                rm -rf -- "$DOCKER_SCRIPT_DIR"
+                DOCKER_SCRIPT_DIR=""
+                log_err "failed to secure the docker install script directory"
+                log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
+                return
+            }
+            docker_script=$(mktemp "$DOCKER_SCRIPT_DIR/get-docker.XXXXXX") || {
+                rm -rf -- "$DOCKER_SCRIPT_DIR"
+                DOCKER_SCRIPT_DIR=""
+                log_err "failed to create the docker install script"
+                log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
+                return
+            }
+            chmod 600 "$docker_script" || {
+                rm -rf -- "$DOCKER_SCRIPT_DIR"
+                DOCKER_SCRIPT_DIR=""
+                log_err "failed to secure the docker install script"
+                log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
+                return
+            }
+            if ! curl -fsSL --connect-timeout 15 "${proxy_args[@]}" https://get.docker.com -o "$docker_script"; then
+                rm -rf -- "$DOCKER_SCRIPT_DIR"
+                DOCKER_SCRIPT_DIR=""
                 log_err "failed to download the docker install script${PROXY_URL:+ through $PROXY_URL}"
                 log_warn "docker skipped; install it manually (make sure the apt/yum sources can be reached)"
                 return
@@ -480,11 +510,12 @@ function install_docker() {
             if [[ -n "$PROXY_URL" ]]; then
                 http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" \
                     HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" \
-                    sh /tmp/get-docker.sh 2>&1 | tee -a "$LOG_FILE"
+                    sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
             else
-                sh /tmp/get-docker.sh 2>&1 | tee -a "$LOG_FILE"
+                sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
             fi
-            rm -f /tmp/get-docker.sh
+            rm -rf -- "$DOCKER_SCRIPT_DIR"
+            DOCKER_SCRIPT_DIR=""
             if ! command -v docker >/dev/null 2>&1; then
                 log_warn "docker install failed${PROXY_URL:+ (was routed through $PROXY_URL)}"
                 log_warn "docker skipped; install it manually and rerun app-store features afterwards"
@@ -746,6 +777,7 @@ function main() {
 function cleanup_temp_dirs() {
     [[ -n "$EXTRACT_ROOT" ]] && rm -rf "$EXTRACT_ROOT"
     [[ -n "$DOWNLOAD_DIR" ]] && rm -rf "$DOWNLOAD_DIR"
+    [[ -n "$DOCKER_SCRIPT_DIR" ]] && rm -rf -- "$DOCKER_SCRIPT_DIR"
     return 0
 }
 trap cleanup_temp_dirs EXIT
