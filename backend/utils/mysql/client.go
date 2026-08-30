@@ -31,7 +31,11 @@ type MysqlClient interface {
 
 func NewMysqlClient(conn client.DBInfo) (MysqlClient, error) {
 	if conn.From == "local" {
-		connArgs := []string{"exec", conn.Address, conn.Type, "-u" + conn.Username, "-p" + conn.Password, "-e"}
+		// The password is deliberately NOT part of the docker exec argv here:
+		// it is injected per-invocation through `docker exec --env-file`
+		// (MYSQL_PWD) in client/local.go, so it never appears in the
+		// world-readable process command line.
+		connArgs := []string{"exec", conn.Address, conn.Type, "-u" + conn.Username, "-e"}
 		return client.NewLocal(connArgs, conn.Type, conn.Address, conn.Password, conn.Database), nil
 	}
 

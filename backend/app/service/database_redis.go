@@ -11,6 +11,8 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
@@ -132,8 +134,13 @@ func (u *RedisService) LoadStatus(req dto.OperationWithName) (*dto.RedisStatus, 
 		return nil, err
 	}
 	commands := append(redisExec(redisInfo.ContainerName, redisInfo.Password), "info")
-	cmd := exec.Command("docker", commands...)
-	stdout, err := cmd.CombinedOutput()
+	fullArgs, cleanup, err := redisExecEnvFile(commands, redisInfo.Password)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cmdItem := exec.Command("docker", fullArgs...)
+	stdout, err := cmdItem.CombinedOutput()
 	if err != nil {
 		return nil, errors.New(string(stdout))
 	}
@@ -191,8 +198,13 @@ func (u *RedisService) LoadPersistenceConf(req dto.OperationWithName) (*dto.Redi
 
 func configGetStr(containerName, password, param string) (string, error) {
 	commands := append(redisExec(containerName, password), []string{"config", "get", param}...)
-	cmd := exec.Command("docker", commands...)
-	stdout, err := cmd.CombinedOutput()
+	fullArgs, cleanup, err := redisExecEnvFile(commands, password)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	cmdItem := exec.Command("docker", fullArgs...)
+	stdout, err := cmdItem.CombinedOutput()
 	if err != nil {
 		return "", errors.New(string(stdout))
 	}
@@ -286,9 +298,33 @@ func confSet(redisName string, updateType string, changeConf []redisConfig) erro
 }
 
 func redisExec(containerName, password string) []string {
-	cmds := []string{"exec", containerName, "redis-cli", "-a", password, "--no-auth-warning"}
+	// The password is NOT passed as `-a <password>` (world-readable in the
+	// process argv under /proc): callers inject it through
+	// redisExecEnvFile with `docker exec --env-file` instead, and redis-cli
+	// picks it up from the REDISCLI_AUTH environment variable (redis >= 6).
+	cmds := []string{"exec", containerName, "redis-cli", "--no-auth-warning"}
 	if len(password) == 0 {
 		cmds = []string{"exec", containerName, "redis-cli"}
 	}
 	return cmds
+}
+
+// redisExecEnvFile writes the redis password to a fresh 0600 file and wraps
+// the given docker exec args with `--env-file`, so the password never shows
+// up in the world-readable process argv. The file is removed as soon as the
+// command finishes.
+func redisExecEnvFile(commands []string, password string) ([]string, func(), error) {
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"REDISCLI_AUTH": password})
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(commands) == 0 {
+		_ = os.Remove(envFile)
+		return nil, nil, errors.New("empty docker exec command")
+	}
+	cleanup := func() { _ = os.Remove(envFile) }
+	fullArgs := make([]string, 0, len(commands)+2)
+	fullArgs = append(fullArgs, "exec", "--env-file", envFile)
+	fullArgs = append(fullArgs, commands[1:]...)
+	return fullArgs, cleanup, nil
 }

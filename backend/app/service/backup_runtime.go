@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"strings"
@@ -30,7 +29,9 @@ func handleRuntimeBackup(runtime *model.Runtime, backupDir, fileName string, exc
 
 	remarkInfo, _ := json.Marshal(runtime)
 	remarkInfoPath := fmt.Sprintf("%s/runtime.json", tmpDir)
-	if err := fileOp.SaveFile(remarkInfoPath, string(remarkInfo), fs.ModePerm); err != nil {
+	// 0640, not fs.ModePerm (0777): the staging json embeds runtime env
+	// (including credentials) and must not be world-writable or readable.
+	if err := fileOp.SaveFile(remarkInfoPath, string(remarkInfo), 0640); err != nil {
 		return err
 	}
 

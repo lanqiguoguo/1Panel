@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -174,7 +175,12 @@ func (u *ImageRepoService) Update(req dto.ImageRepoUpdate) error {
 }
 
 func (u *ImageRepoService) CheckConn(host, user, password string) error {
-	stdout, err := cmd.ExecWithCheck("docker", "login", "-u", user, "-p", password, host)
+	// `--password-stdin` keeps the password out of the process argv, which
+	// is world-readable under /proc; the previous `-p <password>` form
+	// exposed every registry credential to any local user.
+	cmdItem := exec.Command("docker", "login", "-u", user, "--password-stdin", host)
+	cmdItem.Stdin = strings.NewReader(password)
+	stdout, err := cmdItem.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("stdout: %s, stderr: %v", stdout, err)
 	}

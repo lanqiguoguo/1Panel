@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"strings"
@@ -101,7 +100,10 @@ func handleAppBackup(install *model.AppInstall, backupDir, fileName string, excl
 
 	remarkInfo, _ := json.Marshal(install)
 	remarkInfoPath := fmt.Sprintf("%s/app.json", tmpDir)
-	if err := fileOp.SaveFile(remarkInfoPath, string(remarkInfo), fs.ModePerm); err != nil {
+	// 0640, not fs.ModePerm (0777): the staging json embeds the install env
+	// (including database/redis passwords) and must not be world-writable or
+	// world-readable.
+	if err := fileOp.SaveFile(remarkInfoPath, string(remarkInfo), 0640); err != nil {
 		return err
 	}
 

@@ -84,7 +84,15 @@ func handleRedisBackup(redisInfo *repo.RootInfo, backupDir, fileName string, sec
 		}
 	}
 
-	stdout, err := cmd.Execf("docker exec %s redis-cli -a %s --no-auth-warning save", redisInfo.ContainerName, redisInfo.Password)
+	// The password is handed to redis-cli through the REDISCLI_AUTH env var
+	// via `docker exec --env-file` (redis >= 6), so it never appears in the
+	// world-readable process argv of the docker exec command.
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"REDISCLI_AUTH": redisInfo.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
+	stdout, err := cmd.Execf("docker exec --env-file %s %s redis-cli --no-auth-warning save", envFile, redisInfo.ContainerName)
 	if err != nil {
 		return errors.New(string(stdout))
 	}

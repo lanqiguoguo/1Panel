@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -251,6 +252,49 @@ func CheckIllegal(args ...string) bool {
 		}
 	}
 	return false
+}
+
+// WriteDockerEnvFile writes key=value pairs to a fresh 0600 file under dir and
+// returns its path. The caller must pass the path to `docker exec --env-file`
+// and is responsible for removing the file (typically via defer os.Remove).
+//
+// Rationale: passing a credential as a docker exec argument (`-p <password>`,
+// `-a <password>` or `-e VAR=<password>`) leaks it into the process argv,
+// which is world-readable on Linux by default (/proc/<pid>/cmdline is 0444
+// even for root-owned processes). `--env-file` hands the values to the docker
+// CLI (running as root, started by the panel) over the daemon socket and keeps
+// them out of argv entirely; the panel then only has to secure the file
+// itself, which is enforced here with a root-owned 0600 mode.
+func WriteDockerEnvFile(dir string, envs map[string]string) (string, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	file, err := os.CreateTemp(dir, "docker-env-*")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if err := os.Chmod(file.Name(), 0600); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	var builder strings.Builder
+	for key, value := range envs {
+		builder.WriteString(key)
+		builder.WriteString("=")
+		builder.WriteString(value)
+		builder.WriteString("\n")
+	}
+	if _, err := file.WriteString(builder.String()); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	abs, err := filepath.Abs(file.Name())
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	return abs, nil
 }
 
 func HasNoPasswordSudo() bool {

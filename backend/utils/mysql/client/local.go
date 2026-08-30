@@ -15,6 +15,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 )
 
@@ -234,16 +235,24 @@ func (r *Local) Backup(info BackupInfo) error {
 		dumpCmd = "mariadb-dump"
 	}
 	global.LOG.Infof("start to %s | gzip > %s.gzip", dumpCmd, info.TargetDir+"/"+info.FileName)
-	cmd := exec.Command("docker", "exec", r.ContainerName, dumpCmd, "--routines", "-uroot", "-p"+r.Password, "--default-character-set="+info.Format, info.Name)
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
+	// MYSQL_PWD reaches the container through `docker exec --env-file` (read
+	// by the docker CLI over the daemon socket), so the password never
+	// appears in the docker exec argv that is world-readable under /proc.
+	cmdItem := exec.Command("docker", "exec", "--env-file", envFile, r.ContainerName, dumpCmd, "--routines", "-uroot", "--default-character-set="+info.Format, info.Name)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmdItem.Stderr = &stderr
 
 	gzipCmd := exec.Command("gzip", "-cf")
-	gzipCmd.Stdin, _ = cmd.StdoutPipe()
+	gzipCmd.Stdin, _ = cmdItem.StdoutPipe()
 	gzipCmd.Stdout = outfile
 	_ = gzipCmd.Start()
 
-	if err := cmd.Run(); err != nil {
+	if err := cmdItem.Run(); err != nil {
 		return fmt.Errorf("handle backup database failed, err: %v", stderr.String())
 	}
 	_ = gzipCmd.Wait()
@@ -253,7 +262,14 @@ func (r *Local) Backup(info BackupInfo) error {
 func (r *Local) Recover(info RecoverInfo) error {
 	fi, _ := os.Open(info.SourceFile)
 	defer fi.Close()
-	cmd := exec.Command("docker", "exec", "-i", r.ContainerName, r.Type, "-uroot", "-p"+r.Password, "--default-character-set="+info.Format, info.Name)
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
+	// See Backup: the password travels via `docker exec --env-file` only, so
+	// it never shows up in the world-readable process argv.
+	cmdItem := exec.Command("docker", "exec", "-i", "--env-file", envFile, r.ContainerName, r.Type, "-uroot", "--default-character-set="+info.Format, info.Name)
 	if strings.HasSuffix(info.SourceFile, ".gz") {
 		gzipFile, err := os.Open(info.SourceFile)
 		if err != nil {
@@ -265,11 +281,11 @@ func (r *Local) Recover(info RecoverInfo) error {
 			return err
 		}
 		defer gzipReader.Close()
-		cmd.Stdin = gzipReader
+		cmdItem.Stdin = gzipReader
 	} else {
-		cmd.Stdin = fi
+		cmdItem.Stdin = fi
 	}
-	stdout, err := cmd.CombinedOutput()
+	stdout, err := cmdItem.CombinedOutput()
 	stdStr := strings.ReplaceAll(string(stdout), "mysql: [Warning] Using a password on the command line interface can be insecure.\n", "")
 	if err != nil || strings.HasPrefix(string(stdStr), "ERROR ") {
 		return errors.New(stdStr)
@@ -351,8 +367,12 @@ func (r *Local) ExecSQL(command string, timeout uint) error {
 	itemCommand = append(itemCommand, command)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", itemCommand...)
-	stdout, err := cmd.CombinedOutput()
+	cmdItem, cleanup, err := r.execWithEnvFile(ctx, itemCommand)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	stdout, err := cmdItem.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return buserr.New(constant.ErrExecTimeOut)
 	}
@@ -368,8 +388,12 @@ func (r *Local) ExecSQLForRows(command string, timeout uint) ([]string, error) {
 	itemCommand = append(itemCommand, command)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", itemCommand...)
-	stdout, err := cmd.CombinedOutput()
+	cmdItem, cleanup, err := r.execWithEnvFile(ctx, itemCommand)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	stdout, err := cmdItem.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, buserr.New(constant.ErrExecTimeOut)
 	}
@@ -378,4 +402,23 @@ func (r *Local) ExecSQLForRows(command string, timeout uint) ([]string, error) {
 		return nil, errors.New(stdStr)
 	}
 	return strings.Split(stdStr, "\n"), nil
+}
+
+// execWithEnvFile builds the docker exec command for the given args, handing
+// the database password to the container through `--env-file` (MYSQL_PWD) so
+// it never appears in the world-readable process argv. The returned cleanup
+// removes the env file; the caller must invoke it after the command finishes.
+func (r *Local) execWithEnvFile(ctx context.Context, itemCommand []string) (*exec.Cmd, func(), error) {
+	if len(itemCommand) == 0 {
+		return nil, nil, errors.New("empty docker exec command")
+	}
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": r.Password})
+	if err != nil {
+		return nil, nil, err
+	}
+	fullArgs := make([]string, 0, len(itemCommand)+2)
+	fullArgs = append(fullArgs, "exec", "--env-file", envFile)
+	fullArgs = append(fullArgs, itemCommand[1:]...)
+	cmdItem := exec.CommandContext(ctx, "docker", fullArgs...)
+	return cmdItem, func() { _ = os.Remove(envFile) }, nil
 }

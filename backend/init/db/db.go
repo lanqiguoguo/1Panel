@@ -13,6 +13,9 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// Init creates the panel sqlite database (and the monitor database) with a
+// root-owned 0600 mode so the credential-carrying settings table is never
+// world-readable.
 func Init() {
 	if _, err := os.Stat(global.CONF.System.DbPath); err != nil {
 		if err := os.MkdirAll(global.CONF.System.DbPath, os.ModePerm); err != nil {
@@ -26,6 +29,9 @@ func Init() {
 			panic(fmt.Errorf("init db file failed, err: %v", err))
 		}
 		_ = f.Close()
+	}
+	if err := secureDBFile(fullPath); err != nil {
+		panic(fmt.Errorf("init db file mode failed, err: %v", err))
 	}
 
 	newLogger := logger.New(
@@ -73,6 +79,9 @@ func initMonitorDB(newLogger logger.Interface) {
 		}
 		_ = f.Close()
 	}
+	if err := secureDBFile(fullPath); err != nil {
+		panic(fmt.Errorf("init monitor db file mode failed, err: %v", err))
+	}
 
 	db, err := gorm.Open(sqlite.Open(fullPath), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
@@ -91,4 +100,12 @@ func initMonitorDB(newLogger logger.Interface) {
 
 	global.MonitorDB = db
 	global.LOG.Info("init monitor db successfully")
+}
+
+// secureDBFile tightens an existing database file to 0600. os.Chmod is
+// idempotent, so re-running it on every startup is harmless for files that
+// are already private; WAL sidecar files (-wal/-shm) inherit the mode of the
+// main database on sqlite.
+func secureDBFile(fullPath string) error {
+	return os.Chmod(fullPath, 0600)
 }

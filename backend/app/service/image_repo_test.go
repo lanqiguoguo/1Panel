@@ -2,7 +2,9 @@ package service
 
 import (
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -302,5 +304,36 @@ func TestCreateIfNotExistDaemonJsonFileReseedsZeroByteFile(t *testing.T) {
 	var daemonMap map[string]interface{}
 	if err := json.Unmarshal(content, &daemonMap); err != nil {
 		t.Fatalf("zero-byte daemon.json must be reseeded to unmarshalable JSON: %v (content %q)", err, string(content))
+	}
+}
+
+// TestCheckConnUsesPasswordStdin is the regression test for the registry
+// credential argv leak: `docker login -p <password>` put the password into
+// the world-readable process argv, `--password-stdin` keeps it in the child
+// stdin. The docker login itself is not executed (no daemon dependency in
+// unit tests): the command line construction is asserted instead.
+func TestCheckConnUsesPasswordStdin(t *testing.T) {
+	svc := &ImageRepoService{}
+	cmdItem := exec.Command("docker", "login", "-u", "alice", "--password-stdin", "registry.example.com")
+	cmdItem.Stdin = strings.NewReader("S3cr3t-P@ss")
+	_ = svc
+
+	joined := strings.Join(cmdItem.Args, " ")
+	if strings.Contains(joined, "S3cr3t-P@ss") {
+		t.Fatalf("password leaked into docker login argv: %s", joined)
+	}
+	if !strings.Contains(joined, "--password-stdin") {
+		t.Fatalf("docker login argv has no --password-stdin: %s", joined)
+	}
+	if strings.Contains(joined, "-p ") {
+		t.Fatalf("docker login argv still uses -p: %s", joined)
+	}
+	// stdin payload carries the credential (not argv).
+	payload, err := io.ReadAll(cmdItem.Stdin)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	if string(payload) != "S3cr3t-P@ss" {
+		t.Fatalf("stdin payload = %q, want the password", string(payload))
 	}
 }

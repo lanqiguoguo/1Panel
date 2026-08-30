@@ -78,12 +78,12 @@ func OperationLog() gin.HandlerFunc {
 		}
 
 		formatMap := make(map[string]interface{})
+		bodyMap := make(map[string]interface{})
 		if len(operationDic.BodyKeys) != 0 {
 			body, err := io.ReadAll(c.Request.Body)
 			if err == nil {
 				c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 			}
-			bodyMap := make(map[string]interface{})
 			_ = json.Unmarshal(body, &bodyMap)
 			for _, key := range operationDic.BodyKeys {
 				if _, ok := bodyMap[key]; ok {
@@ -109,6 +109,12 @@ func OperationLog() gin.HandlerFunc {
 				}
 			}
 		}
+		// Mask plaintext credentials before they reach the operation log. The
+		// generic `bodyKeys:["key","value"]` annotations persist
+		// "update [key] => [value]" verbatim, so a request body that declares
+		// a sensitive key name (e.g. {"key":"ApiKey","value":"..."}) must have
+		// its value redacted in the log.
+		maskSensitiveLogValue(formatMap, bodyMap, operationDic.BodyKeys)
 		record.DetailZH, record.DetailEN = renderOperationDetail(operationDic, formatMap)
 		record.DetailEN = strings.ReplaceAll(record.DetailEN, "[]", "")
 		record.DetailZH = strings.ReplaceAll(record.DetailZH, "[]", "")
@@ -204,6 +210,48 @@ type operationJson struct {
 	FormatZH        string         `json:"formatZH"`
 	FormatEN        string         `json:"formatEN"`
 }
+
+// sensitiveSettingKeys are setting keys whose values must never be persisted
+// in plaintext by the operation log. The set is matched case-insensitively
+// against the "key" field of generic `bodyKeys:["key","value"]` requests
+// (system settings, sshd config, device params, fail2ban jail, daemon.json).
+// Substring matching keeps compound names covered (ApiKeySecret, DBPassword,
+// AccessKey, ProxyKey, ...).
+var sensitiveSettingKeys = []string{
+	"apikey",
+	"apisecret",
+	"password",
+	"passwd",
+	"secret",
+	"token",
+	"authorization",
+	"accesskey",
+	"privatekey",
+	"proxykey",
+}
+
+// maskSensitiveLogValue redacts the "value" placeholder of generic
+// `bodyKeys:["key","value"]` operation logs when the request body names a
+// sensitive setting key. Non-sensitive keys (e.g. "port", "bantime") are
+// kept verbatim so the operation history stays useful.
+func maskSensitiveLogValue(formatMap, bodyMap map[string]interface{}, bodyKeys []string) {
+	keyName, ok := bodyMap["key"].(string)
+	if !ok {
+		return
+	}
+	lower := strings.ToLower(keyName)
+	for _, sensitive := range sensitiveSettingKeys {
+		if strings.Contains(lower, sensitive) {
+			for _, key := range bodyKeys {
+				if key == "value" {
+					formatMap["value"] = "******"
+				}
+			}
+			return
+		}
+	}
+}
+
 type functionInfo struct {
 	InputColumn  string `json:"input_column"`
 	InputValue   string `json:"input_value"`

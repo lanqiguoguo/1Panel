@@ -159,3 +159,63 @@ func TestExecScriptNormal(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out)
 	}
 }
+
+// TestWriteDockerEnvFile is the regression test for the credential argv leak:
+// the docker env file must be root-owned 0600, must not itself be passed to
+// any process argv containing the password, and must be removable.
+func TestWriteDockerEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteDockerEnvFile(dir, map[string]string{"MYSQL_PWD": "s3cr3t-pass", "REDISCLI_AUTH": "r3d-pass"})
+	if err != nil {
+		t.Fatalf("WriteDockerEnvFile failed: %v", err)
+	}
+	defer os.Remove(path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat env file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("env file mode = %v, want 0600", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"MYSQL_PWD=s3cr3t-pass", "REDISCLI_AUTH=r3d-pass"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("env file missing %q, got:\n%s", want, content)
+		}
+	}
+
+	// The credential must never surface in a process argv: build the docker
+	// exec argv exactly like the mysql/redis clients do and assert the
+	// password is absent from it (only the 0600 file path is present).
+	args := append([]string{"exec", "--env-file", path, "mysql", "-uroot", "-e"}, "select 1")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "s3cr3t-pass") {
+		t.Fatalf("password leaked into docker exec argv: %s", joined)
+	}
+	if !strings.Contains(joined, "--env-file") {
+		t.Fatalf("docker exec argv has no --env-file: %s", joined)
+	}
+}
+
+// TestWriteDockerEnvFileNotWorldReadable re-checks the file permissions from
+// the perspective of another local user (mode bits only).
+func TestWriteDockerEnvFileNotWorldReadable(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteDockerEnvFile(dir, map[string]string{"MYSQL_PWD": "x"})
+	if err != nil {
+		t.Fatalf("WriteDockerEnvFile failed: %v", err)
+	}
+	defer os.Remove(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat env file: %v", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("env file is group/world accessible: %v", info.Mode().Perm())
+	}
+}

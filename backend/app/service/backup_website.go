@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"strings"
@@ -201,7 +200,10 @@ func handleWebsiteBackup(website *model.Website, backupDir, fileName string, exc
 	}()
 
 	remarkInfo, _ := json.Marshal(website)
-	if err := fileOp.SaveFile(tmpDir+"/website.json", string(remarkInfo), fs.ModePerm); err != nil {
+	// 0640, not fs.ModePerm (0777): the staging json embeds website config
+	// (including ftp/database credentials) and must not be world-writable or
+	// world-readable.
+	if err := fileOp.SaveFile(tmpDir+"/website.json", string(remarkInfo), 0640); err != nil {
 		return err
 	}
 	global.LOG.Info("put website.json into tmp dir successful")

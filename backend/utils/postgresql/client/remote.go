@@ -24,6 +24,13 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// shellquote wraps a value in single quotes so it can be interpolated safely
+// into the host `bash -c` command line: single quotes are closed, escaped
+// and reopened, which makes the value opaque to the outer shell.
+func shellquote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 type Remote struct {
 	Client   *sql.DB
 	From     string
@@ -134,9 +141,13 @@ func (r *Remote) Backup(info BackupInfo) error {
 		}
 	}
 	fileNameItem := info.TargetDir + "/" + strings.TrimSuffix(info.FileName, ".gz")
+	// The password travels inside the container via `docker run -e PGPASSWORD`
+	// (over the daemon socket), so it never appears in the world-readable
+	// host argv of `bash -c` (the previous PGPASSWORD="..." inline form was
+	// visible to every local user under /proc/<pid>/cmdline).
 	backupCommand := exec.Command("bash", "-c",
-		fmt.Sprintf("docker run --rm --net=host -i %s /bin/bash -c 'PGPASSWORD=\"%s\" pg_dump -h %s -p %d --no-owner -Fc -U %s %s' > %s",
-			imageTag, r.Password, r.Address, r.Port, r.User, info.Name, fileNameItem))
+		fmt.Sprintf("docker run --rm --net=host -i -e PGPASSWORD=%s %s /bin/bash -c 'pg_dump -h %s -p %d --no-owner -Fc -U %s %s' > %s",
+			shellquote(r.Password), imageTag, r.Address, r.Port, r.User, info.Name, fileNameItem))
 	_ = backupCommand.Run()
 	b := make([]byte, 5)
 	n := []byte{80, 71, 68, 77, 80}
@@ -177,9 +188,12 @@ func (r *Remote) Recover(info RecoverInfo) error {
 			_, _ = gzipCmd.CombinedOutput()
 		}()
 	}
+	// The password travels inside the container via `docker run -e PGPASSWORD`
+	// (over the daemon socket), so it never appears in the world-readable
+	// host argv of `bash -c` (see Backup for the rationale).
 	recoverCommand := exec.Command("bash", "-c",
-		fmt.Sprintf("docker run --rm --net=host -i %s /bin/bash -c 'PGPASSWORD=\"%s\" pg_restore -h %s -p %d --verbose --clean --no-privileges --no-owner -Fc -U %s -d %s --role=%s' < %s",
-			imageTag, r.Password, r.Address, r.Port, r.User, info.Name, info.Username, fileName))
+		fmt.Sprintf("docker run --rm --net=host -i -e PGPASSWORD=%s %s /bin/bash -c 'pg_restore -h %s -p %d --verbose --clean --no-privileges --no-owner -Fc -U %s -d %s --role=%s' < %s",
+			shellquote(r.Password), imageTag, r.Address, r.Port, r.User, info.Name, info.Username, fileName))
 	pipe, _ := recoverCommand.StdoutPipe()
 	stderrPipe, _ := recoverCommand.StderrPipe()
 	defer pipe.Close()

@@ -1,6 +1,9 @@
 package middleware
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRenderOperationDetail(t *testing.T) {
 	tests := []struct {
@@ -110,5 +113,71 @@ func TestRenderOperationDetail(t *testing.T) {
 				t.Errorf("FormatEN = %q, want %q", gotEN, tt.wantEN)
 			}
 		})
+	}
+}
+
+// TestMaskSensitiveLogValue is the regression test for the plaintext
+// credential leak in operation logs: generic `bodyKeys:["key","value"]`
+// requests must have their value redacted when the named key is sensitive.
+func TestMaskSensitiveLogValue(t *testing.T) {
+	cases := []struct {
+		name     string
+		bodyMap  map[string]interface{}
+		bodyKeys []string
+		want     string
+	}{
+		{name: "apikey masked", bodyMap: map[string]interface{}{"key": "ApiKey", "value": "secret-test-xyz"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "password masked", bodyMap: map[string]interface{}{"key": "Password", "value": "hunter2"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "lowercase secret masked", bodyMap: map[string]interface{}{"key": "secret", "value": "xyz"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "token masked", bodyMap: map[string]interface{}{"key": "ApiToken", "value": "tok"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "proxykey masked", bodyMap: map[string]interface{}{"key": "ProxyKey", "value": "p"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "non-sensitive kept", bodyMap: map[string]interface{}{"key": "port", "value": "22"}, bodyKeys: []string{"key", "value"}, want: "22"},
+		{name: "bantime kept", bodyMap: map[string]interface{}{"key": "bantime", "value": "600"}, bodyKeys: []string{"key", "value"}, want: "600"},
+		{name: "key not string noop", bodyMap: map[string]interface{}{"key": 1, "value": "v"}, bodyKeys: []string{"key", "value"}, want: "v"},
+		{name: "value not in bodyKeys noop", bodyMap: map[string]interface{}{"key": "ApiKey", "value": "v"}, bodyKeys: []string{"key"}, want: ""},
+		{name: "compound name masked", bodyMap: map[string]interface{}{"key": "DBPassword", "value": "v"}, bodyKeys: []string{"key", "value"}, want: "******"},
+		{name: "accesskeysecret masked", bodyMap: map[string]interface{}{"key": "AccessKeySecret", "value": "v"}, bodyKeys: []string{"key", "value"}, want: "******"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			formatMap := make(map[string]interface{})
+			for _, k := range tt.bodyKeys {
+				if v, ok := tt.bodyMap[k]; ok {
+					formatMap[k] = v
+				}
+			}
+			maskSensitiveLogValue(formatMap, tt.bodyMap, tt.bodyKeys)
+			got, exists := formatMap["value"]
+			if tt.want == "" {
+				if exists {
+					t.Fatalf("formatMap[value] = %v, want absent", got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("formatMap[value] = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMaskSensitiveLogValueThroughRender ties the mask into the rendered log
+// detail exactly as the middleware does.
+func TestMaskSensitiveLogValueThroughRender(t *testing.T) {
+	bodyMap := map[string]interface{}{"key": "ApiKey", "value": "secret-test-xyz"}
+	formatMap := map[string]interface{}{"key": "ApiKey", "value": "secret-test-xyz"}
+	bodyKeys := []string{"key", "value"}
+	maskSensitiveLogValue(formatMap, bodyMap, bodyKeys)
+	zh, en := renderOperationDetail(operationJson{
+		FormatZH: "修改系统配置 [key] => [value]",
+		FormatEN: "update system setting [key] => [value]",
+	}, formatMap)
+	for _, detail := range []string{zh, en} {
+		if strings.Contains(detail, "secret-test-xyz") {
+			t.Fatalf("rendered operation log leaks the credential: %s", detail)
+		}
+		if !strings.Contains(detail, "******") {
+			t.Fatalf("rendered operation log has no mask placeholder: %s", detail)
+		}
 	}
 }

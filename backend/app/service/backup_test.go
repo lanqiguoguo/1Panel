@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -176,5 +178,34 @@ func TestMergeMaskedVars(t *testing.T) {
 	_ = json.Unmarshal([]byte(got3), &m3)
 	if m3["client_secret"] != "brand-new-secret" {
 		t.Fatalf("client_secret = %v, want brand-new-secret", m3["client_secret"])
+	}
+}
+
+// TestBackupJsonFilesNotWorldWritable is the regression test for the 0777
+// backup staging files: app.json / runtime.json / website.json embed install
+// env including credentials, so they must be written with 0640 instead of
+// fs.ModePerm (0777).
+func TestBackupJsonFilesNotWorldWritable(t *testing.T) {
+	fileOp := fileUtils.NewFileOp()
+	dir := t.TempDir()
+
+	for _, name := range []string{"app.json", "runtime.json", "website.json"} {
+		path := filepath.Join(dir, name)
+		if err := fileOp.SaveFile(path, `{"key":"secret-value"}`, 0640); err != nil {
+			t.Fatalf("SaveFile %s failed: %v", name, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != 0640 {
+			t.Fatalf("%s mode = %v, want 0640", name, got)
+		}
+		if got := info.Mode().Perm() & 0o007; got != 0 {
+			t.Fatalf("%s is world-accessible: %v", name, got)
+		}
+		if got := info.Mode().Perm() & 0o020; got != 0 {
+			t.Fatalf("%s is group-writable: %v", name, got)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package toolbox
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -14,6 +15,19 @@ import (
 type Fail2ban struct{}
 
 const defaultPath = "/etc/fail2ban/jail.local"
+
+// ValidateBanIPs rejects any entry that is not a strict IP literal
+// (IPv4/IPv6). The entries are interpolated into the shell-backed
+// `fail2ban-client set sshd banip <ips>` command line, so anything broader
+// (CIDR, hostname, shell metacharacters) is a command injection vector.
+func ValidateBanIPs(ips []string) error {
+	for _, ip := range ips {
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf("invalid ip address: %s", ip)
+		}
+	}
+	return nil
+}
 
 type FirewallClient interface {
 	Status() (bool, bool, bool)
@@ -81,6 +95,13 @@ func (f *Fail2ban) Operate(operate string) error {
 }
 
 func (f *Fail2ban) ReBanIPs(ips []string) error {
+	// Each entry is interpolated into `fail2ban-client set sshd banip <ips>`
+	// and executed through a shell: only strict IP literals (IPv4/IPv6) may
+	// reach that command line, anything else would be a command injection
+	// vector (`1.2.3.4; id`).
+	if err := ValidateBanIPs(ips); err != nil {
+		return err
+	}
 	ipItems, _ := f.ListBanned()
 	stdout, err := cmd.Execf("fail2ban-client unban --all")
 	if err != nil {
