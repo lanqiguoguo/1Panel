@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -113,13 +115,15 @@ func TestValidCronjobExclusionRules(t *testing.T) {
 func TestValidateCronjobFields(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "pwned")
 	tests := []struct {
-		name      string
-		cronType  string
-		cronName  string
-		sourceDir string
-		exclusion string
-		url       string
-		wantErr   bool
+		name          string
+		cronType      string
+		cronName      string
+		sourceDir     string
+		exclusion     string
+		url           string
+		containerName string
+		command       string
+		wantErr       bool
 	}{
 		{
 			name:      "legit directory",
@@ -176,10 +180,93 @@ func TestValidateCronjobFields(t *testing.T) {
 			cronName: "a; touch " + marker,
 			wantErr:  true,
 		},
+		{
+			name:          "shell container legit",
+			cronType:      "shell",
+			cronName:      "container-job",
+			containerName: "mycontainer",
+			command:       "sh",
+		},
+		{
+			name:     "shell empty container and command",
+			cronType: "shell",
+			cronName: "host-job",
+		},
+		{
+			name:          "shell absolute shell path",
+			cronType:      "shell",
+			cronName:      "abs-shell",
+			containerName: "mycontainer",
+			command:       "/bin/bash",
+		},
+		{
+			name:          "shell container injection",
+			cronType:      "shell",
+			cronName:      "inject-1",
+			containerName: "x; touch " + marker,
+			command:       "sh",
+			wantErr:       true,
+		},
+		{
+			name:          "shell container dollar paren",
+			cronType:      "shell",
+			cronName:      "inject-2",
+			containerName: "x$(touch " + marker + ")",
+			command:       "sh",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command injection",
+			cronType:      "shell",
+			cronName:      "inject-3",
+			containerName: "mycontainer",
+			command:       "sh; id",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command with space",
+			cronType:      "shell",
+			cronName:      "inject-4",
+			containerName: "mycontainer",
+			command:       "sh -c",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command ampersand",
+			cronType:      "shell",
+			cronName:      "inject-5",
+			containerName: "mycontainer",
+			command:       "a&b",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command pipe",
+			cronType:      "shell",
+			cronName:      "inject-6",
+			containerName: "mycontainer",
+			command:       "a|b",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command quote",
+			cronType:      "shell",
+			cronName:      "inject-7",
+			containerName: "mycontainer",
+			command:       "a'b",
+			wantErr:       true,
+		},
+		{
+			name:          "shell command traversal",
+			cronType:      "shell",
+			cronName:      "inject-8",
+			containerName: "mycontainer",
+			command:       "../x",
+			wantErr:       true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateCronjobFields(tc.cronType, tc.cronName, tc.sourceDir, tc.exclusion, tc.url)
+			err := validateCronjobFields(tc.cronType, tc.cronName, tc.sourceDir, tc.exclusion, tc.url, tc.containerName, tc.command)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("validateCronjobFields() error = nil, want ErrCmdIllegal")
@@ -196,6 +283,152 @@ func TestValidateCronjobFields(t *testing.T) {
 				t.Fatalf("validateCronjobFields() error = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestValidCronjobContainerFields covers the pure function shared by the
+// entry-point (validateCronjobFields) and the runtime HandleJob guard: the
+// docker-exec container name must match the docker name charset and the
+// in-container shell command must be free of shell metacharacters,
+// whitespace and ".." components.
+func TestValidCronjobContainerFields(t *testing.T) {
+	legal := []struct {
+		containerName string
+		command       string
+	}{
+		{"", ""}, // host-shell branch, both defaults
+		{"", "sh"},
+		{"mycontainer", ""}, // empty command defaults to sh
+		{"mycontainer", "sh"},
+		{"mycontainer", "bash"},
+		{"mycontainer", "/bin/sh"},
+		{"mycontainer", "/bin/bash"},
+		{"my.1panel_web-01", "sh"},
+		{"a", "zsh"},
+	}
+	for _, c := range legal {
+		if !validCronjobContainerFields(c.containerName, c.command) {
+			t.Errorf("validCronjobContainerFields(%q, %q) = false, want true", c.containerName, c.command)
+		}
+	}
+
+	illegal := []struct {
+		containerName string
+		command       string
+	}{
+		{"x; touch /tmp/pwned", "sh"},
+		{"x$(touch /tmp/pwned)", "sh"},
+		{"x`touch /tmp/pwned`", "sh"},
+		{"a&b", "sh"},
+		{"a|b", "sh"},
+		{"a'b", "sh"},
+		{"a\"b", "sh"},
+		{"a>b", "sh"},
+		{"a\nb", "sh"},
+		{"-i", "sh"},        // docker flag smuggling: must start with alnum
+		{"../../pwned", ""}, // slash and traversal are not in the docker charset
+		{"a b", "sh"},
+		{"mycontainer", "sh; id"},
+		{"mycontainer", "sh -c"},
+		{"mycontainer", "$(touch /tmp/pwned)"},
+		{"mycontainer", "a'b"},
+		{"mycontainer", "../x"},
+		{"mycontainer", "sh\t-x"},
+	}
+	for _, c := range illegal {
+		if validCronjobContainerFields(c.containerName, c.command) {
+			t.Errorf("validCronjobContainerFields(%q, %q) = true, want false", c.containerName, c.command)
+		}
+	}
+}
+
+// TestHandleJobSkipsIllegalContainerFields verifies the runtime guard: a
+// legacy shell cronjob record carrying an illegal container name must be
+// skipped before any shell command is built, so the injection marker is never
+// created and no record state is written.
+func TestHandleJobSkipsIllegalContainerFields(t *testing.T) {
+	ensureValidateLogger(t)
+	marker := "/tmp/pwned-cron-valid-test"
+
+	tests := []struct {
+		name    string
+		cronjob *model.Cronjob
+	}{
+		{
+			name: "container name injection",
+			cronjob: &model.Cronjob{
+				BaseModel:     model.BaseModel{ID: 9001},
+				Name:          "legacy-inject",
+				Type:          "shell",
+				Spec:          "* * * * *",
+				Script:        "echo hi",
+				ContainerName: "x; touch " + marker,
+				Command:       "sh",
+			},
+		},
+		{
+			name: "command injection",
+			cronjob: &model.Cronjob{
+				BaseModel:     model.BaseModel{ID: 9002},
+				Name:          "legacy-inject-2",
+				Type:          "shell",
+				Spec:          "* * * * *",
+				Script:        "echo hi",
+				ContainerName: "mycontainer",
+				Command:       "sh; touch " + marker,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(marker)
+			u := &CronjobService{}
+			u.HandleJob(tc.cronjob)
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("injection marker was created by HandleJob")
+			}
+		})
+	}
+	_ = os.Remove(marker)
+}
+
+// TestHandleJobIllegalContainerNameNotInRecordNamePath is a regression check
+// that a skip for illegal container fields logs the job name without touching
+// the task directory (the record name path never becomes part of a shell
+// command in the skip branch).
+func TestHandleJobIllegalContainerNameNotInRecordNamePath(t *testing.T) {
+	ensureValidateLogger(t)
+	u := &CronjobService{}
+	u.HandleJob(&model.Cronjob{
+		BaseModel:     model.BaseModel{ID: 9003},
+		Name:          "legacy-inject-3",
+		Type:          "shell",
+		Spec:          "* * * * *",
+		Script:        "echo hi",
+		ContainerName: "../../pwned",
+		Command:       "sh",
+	})
+	if _, err := os.Stat("/tmp/pwned"); err == nil {
+		t.Fatal("unexpected path created by skipped job")
+	}
+}
+
+// TestValidCronjobContainerFieldsRejectsAllMetacharacters cross-checks that
+// the whitelist charset of the container-name check subsumes every character
+// rejected by cmd.CheckIllegal: no string that passes the container check may
+// contain a shell metacharacter.
+func TestValidCronjobContainerFieldsRejectsAllMetacharacters(t *testing.T) {
+	illegalChars := "&|;$'`()\"\n\r<>"
+	for _, ch := range illegalChars {
+		s := "a" + string(ch) + "b"
+		if validCronjobContainerFields(s, "") {
+			t.Errorf("validCronjobContainerFields(%q, '') = true, want false", s)
+		}
+		if !strings.ContainsAny(s, " ") { // only the container branch is whitelist-checked here
+			if validCronjobContainerFields("mycontainer", "sh"+string(ch)) {
+				t.Errorf("validCronjobContainerFields('mycontainer', %q) = true, want false", "sh"+string(ch))
+			}
+		}
 	}
 }
 

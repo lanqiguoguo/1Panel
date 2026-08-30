@@ -225,15 +225,44 @@ func validCronjobExclusionRules(rules string) bool {
 	return true
 }
 
+// validCronjobContainerFields reports whether the docker-exec container name
+// and the in-container shell command of a shell cronjob are safe to
+// interpolate into `docker exec -i <container> <command>`, which the host
+// shell runs via bash -c (cmd.ExecCronjobWithTimeOutStdin). The container
+// name must match the docker name charset, a strict whitelist
+// ([a-zA-Z0-9][a-zA-Z0-9_.-]*) that also excludes every shell metacharacter,
+// so cmd.CheckIllegal is subsumed for it. The command is the path of the
+// shell executable inside the container (e.g. "sh", "bash", "/bin/sh"): it
+// must be free of shell metacharacters, whitespace (multi-word commands would
+// smuggle extra docker exec arguments) and ".." components. Empty values are
+// legal: an empty container name runs the script on the host shell and an
+// empty command defaults to "sh".
+func validCronjobContainerFields(containerName, command string) bool {
+	if containerName != "" && !files.ValidContainerName(containerName) {
+		return false
+	}
+	if command != "" && (cmd.CheckIllegal(command) || strings.ContainsAny(command, " \t") || strings.Contains(command, "..")) {
+		return false
+	}
+	return true
+}
+
 // validateCronjobFields enforces the entry-point checks shared by Create and
 // Update. Every value that later lands in a shell command or in a filesystem
 // path derived from the cronjob name is validated here; handleTar and the
 // handleShell/mkdirAndWriteFile paths re-check defensively at runtime.
-func validateCronjobFields(cronjobType, name, sourceDir, exclusionRules, url string) error {
+func validateCronjobFields(cronjobType, name, sourceDir, exclusionRules, url, containerName, command string) error {
 	if !validCronjobName(name) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
 	switch cronjobType {
+	case "shell":
+		// ContainerName and Command are interpolated into
+		// `docker exec -i <container> <command>` executed by the host shell;
+		// reject anything that could break out of the word boundaries.
+		if !validCronjobContainerFields(containerName, command) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 	case "directory":
 		// An empty sourceDir is legal (the job body no-ops on it), so only
 		// values that will actually reach a shell command are validated.
@@ -259,7 +288,7 @@ func validateCronjobFields(cronjobType, name, sourceDir, exclusionRules, url str
 }
 
 func (u *CronjobService) Create(cronjobDto dto.CronjobCreate) error {
-	if err := validateCronjobFields(cronjobDto.Type, cronjobDto.Name, cronjobDto.SourceDir, cronjobDto.ExclusionRules, cronjobDto.URL); err != nil {
+	if err := validateCronjobFields(cronjobDto.Type, cronjobDto.Name, cronjobDto.SourceDir, cronjobDto.ExclusionRules, cronjobDto.URL, cronjobDto.ContainerName, cronjobDto.Command); err != nil {
 		return err
 	}
 	cronjob, _ := cronjobRepo.Get(commonRepo.WithByName(cronjobDto.Name))
@@ -331,7 +360,7 @@ func (u *CronjobService) Delete(req dto.CronjobBatchDelete) error {
 }
 
 func (u *CronjobService) Update(id uint, req dto.CronjobUpdate) error {
-	if err := validateCronjobFields(req.Type, req.Name, req.SourceDir, req.ExclusionRules, req.URL); err != nil {
+	if err := validateCronjobFields(req.Type, req.Name, req.SourceDir, req.ExclusionRules, req.URL, req.ContainerName, req.Command); err != nil {
 		return err
 	}
 	var cronjob model.Cronjob

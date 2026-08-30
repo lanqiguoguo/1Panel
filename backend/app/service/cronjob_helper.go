@@ -65,6 +65,16 @@ func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 			global.LOG.Errorf("cronjob %s name contains illegal characters, skip execution", cronjob.Name)
 			return
 		}
+		// Defense in depth: re-validate the docker-exec container name and
+		// in-container shell command for shell cronjobs before they are
+		// interpolated into `docker exec -i <container> <command>` run by the
+		// host shell. Covers legacy records stored before the entry-point
+		// checks existed; such a job is skipped instead of giving an attacker
+		// host root command execution.
+		if cronjob.Type == "shell" && !validCronjobContainerFields(cronjob.ContainerName, cronjob.Command) {
+			global.LOG.Errorf("cronjob %s container name or command contains illegal characters, skip execution", cronjob.Name)
+			return
+		}
 		var (
 			message []byte
 			err     error
@@ -235,16 +245,16 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 		path = sourceDir
 	}
 
-		commands := ""
+	commands := ""
 
-		if len(secret) != 0 {
-			extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
-			commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+excludeRules, path, extraCmd, targetDir+"/"+name)
-			// The secret appears quoted in the command (-k '<secret>'); the old
-			// ' %s ' pattern never matched that form, leaking the key into the
-			// debug log. Mask both the quoted and the bare form.
-			global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
-		} else {
+	if len(secret) != 0 {
+		extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
+		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+excludeRules, path, extraCmd, targetDir+"/"+name)
+		// The secret appears quoted in the command (-k '<secret>'); the old
+		// ' %s ' pattern never matched that form, leaking the key into the
+		// debug log. Mask both the quoted and the bare form.
+		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
+	} else {
 		itemPrefix := pathUtils.Base(sourceDir)
 		if itemPrefix == "/" {
 			itemPrefix = ""
