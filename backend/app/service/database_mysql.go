@@ -553,9 +553,29 @@ func (u *MysqlService) LoadStatus(req dto.OperationWithNameAndType) (*dto.MysqlS
 	return &info, nil
 }
 
+// mysqlExecArgs builds the docker exec argv for running a SQL command inside
+// the mysql/mariadb container. The password reaches the container via
+// MYSQL_PWD from the --env-file (see cmd.WriteDockerEnvFile); it must never
+// be passed as a `-p<password>` argument, which would leak into the
+// world-readable process argv.
+func mysqlExecArgs(envFile, containerName, dbType, command string) []string {
+	return []string{"docker", "exec", "--env-file", envFile, containerName, dbType, "-uroot", "-e", command}
+}
+
+// executeSqlForMaps runs a SQL command inside the mysql/mariadb container.
+// The root password is handed to the container through `docker exec
+// --env-file` (MYSQL_PWD, see cmd.WriteDockerEnvFile) so it never appears in
+// the world-readable process argv; the old `-p<password>` argument leaked the
+// credential under /proc.
 func executeSqlForMaps(containerName, dbType, password, command string) (map[string]string, error) {
-	cmd := exec.Command("docker", "exec", containerName, dbType, "-uroot", "-p"+password, "-e", command)
-	stdout, err := cmd.CombinedOutput()
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": password})
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(envFile)
+	fullArgs := mysqlExecArgs(envFile, containerName, dbType, command)
+	cmdItem := exec.Command(fullArgs[0], fullArgs[1:]...)
+	stdout, err := cmdItem.CombinedOutput()
 	stdStr := strings.ReplaceAll(string(stdout), "mysql: [Warning] Using a password on the command line interface can be insecure.\n", "")
 	if err != nil || strings.HasPrefix(string(stdStr), "ERROR ") {
 		return nil, errors.New(stdStr)
@@ -573,8 +593,14 @@ func executeSqlForMaps(containerName, dbType, password, command string) (map[str
 }
 
 func executeSqlForRows(containerName, dbType, password, command string) ([]string, error) {
-	cmd := exec.Command("docker", "exec", containerName, dbType, "-uroot", "-p"+password, "-e", command)
-	stdout, err := cmd.CombinedOutput()
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": password})
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(envFile)
+	fullArgs := mysqlExecArgs(envFile, containerName, dbType, command)
+	cmdItem := exec.Command(fullArgs[0], fullArgs[1:]...)
+	stdout, err := cmdItem.CombinedOutput()
 	stdStr := strings.ReplaceAll(string(stdout), "mysql: [Warning] Using a password on the command line interface can be insecure.\n", "")
 	if err != nil || strings.HasPrefix(string(stdStr), "ERROR ") {
 		return nil, errors.New(stdStr)

@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -106,6 +107,13 @@ func (f *Ftp) Operate(operate string) error {
 }
 
 func (f *Ftp) UserAdd(username, passwd, path string) error {
+	// Defense in depth: reject shell metacharacters even for values that a
+	// future caller might not have validated. UserAdd writes the entry into
+	// /etc/pure-ftpd/pureftpd.passwd and chowns the directory; the user and
+	// path also reach a host shell command below.
+	if cmd.CheckIllegal(username, passwd, path) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	entry, err := generatePureFtpEntrySimple(username, passwd, path)
 	if err != nil {
 		return err
@@ -121,7 +129,7 @@ func (f *Ftp) UserAdd(username, passwd, path string) error {
 		return err
 	}
 	_ = f.Reload()
-	std2, err := cmd.Execf("chown -R %s:%s %s", f.DefaultUser, f.DefaultGroup, path)
+	std2, err := cmd.ExecWithCheck("chown", "-R", f.DefaultUser+":"+f.DefaultGroup, path)
 	if err != nil {
 		return errors.New(std2)
 	}
@@ -129,7 +137,11 @@ func (f *Ftp) UserAdd(username, passwd, path string) error {
 }
 
 func (f *Ftp) UserDel(username string) error {
-	std, err := cmd.Execf("pure-pw userdel %s", username)
+	// Defense in depth: the username lands in the host shell command below.
+	if cmd.CheckIllegal(username) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	std, err := cmd.ExecWithCheck("pure-pw", "userdel", username)
 	if err != nil {
 		return errors.New(std)
 	}
@@ -138,6 +150,14 @@ func (f *Ftp) UserDel(username string) error {
 }
 
 func (f *Ftp) SetPasswd(username, passwd string) error {
+	// Defense in depth: the username is compared against passwd file entries
+	// and never reaches a shell command, but reject metacharacters anyway so
+	// a malformed record cannot be created for a future caller. The password
+	// is bcrypt-hashed and written into the passwd file only; special
+	// characters in the password are legal (no shell interpolation).
+	if cmd.CheckIllegal(username) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	hashedPassword, err := hashPassword(passwd)
 	if err != nil {
 		return err
@@ -190,11 +210,17 @@ func (f *Ftp) SetPasswd(username, passwd string) error {
 }
 
 func (f *Ftp) SetPath(username, path string) error {
-	std, err := cmd.Execf("pure-pw usermod %s -d %s", username, path)
+	// Defense in depth: username and path land in host shell commands
+	// (pure-pw usermod, chown -R) below, so reject shell metacharacters even
+	// if the caller did not validate them.
+	if cmd.CheckIllegal(username, path) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	std, err := cmd.ExecWithCheck("pure-pw", "usermod", username, "-d", path)
 	if err != nil {
 		return errors.New(std)
 	}
-	std2, err := cmd.Execf("chown -R %s:%s %s", f.DefaultUser, f.DefaultGroup, path)
+	std2, err := cmd.ExecWithCheck("chown", "-R", f.DefaultUser+":"+f.DefaultGroup, path)
 	if err != nil {
 		return errors.New(std2)
 	}
@@ -202,11 +228,15 @@ func (f *Ftp) SetPath(username, path string) error {
 }
 
 func (f *Ftp) SetStatus(username, status string) error {
-	statusItem := "''"
+	// Defense in depth: the username lands in the host shell command below.
+	if cmd.CheckIllegal(username) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	statusItem := ""
 	if status == constant.StatusDisable {
 		statusItem = "1"
 	}
-	std, err := cmd.Execf("pure-pw usermod %s -r %s", username, statusItem)
+	std, err := cmd.ExecWithCheck("pure-pw", "usermod", username, "-r", statusItem)
 	if err != nil {
 		return errors.New(std)
 	}
@@ -225,15 +255,28 @@ func (f *Ftp) LoadList() ([]FtpList, error) {
 		if len(parts) < 2 {
 			continue
 		}
-		std2, err := cmd.Execf("pure-pw  show %s | grep 'Allowed client IPs :'", parts[0])
+		// The account name comes from the passwd file; even though entries
+		// are written through validated paths, skip anything that carries
+		// shell metacharacters instead of interpolating it into a command.
+		if cmd.CheckIllegal(parts[0]) {
+			global.LOG.Errorf("skip pure-ftpd account %q with illegal characters", parts[0])
+			continue
+		}
+		std2, err := cmd.ExecWithCheck("pure-pw", "show", parts[0])
 		if err != nil {
 			global.LOG.Errorf("handle pure-pw show %s failed, err: %v", parts[0], std2)
 			continue
 		}
 		status := constant.StatusDisable
-		itemStd := strings.ReplaceAll(std2, "\n", "")
-		if len(strings.TrimSpace(strings.ReplaceAll(itemStd, "Allowed client IPs :", ""))) == 0 {
-			status = constant.StatusEnable
+		for _, itemLine := range strings.Split(std2, "\n") {
+			if !strings.Contains(itemLine, "Allowed client IPs :") {
+				continue
+			}
+			itemStd := strings.TrimSpace(strings.SplitN(itemLine, ":", 2)[1])
+			if len(itemStd) == 0 {
+				status = constant.StatusEnable
+			}
+			break
 		}
 		lists = append(lists, FtpList{User: parts[0], Path: strings.ReplaceAll(parts[1], "/./", ""), Status: status})
 	}

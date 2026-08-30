@@ -2,11 +2,16 @@ package service
 
 import (
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
 	"github.com/1Panel-dev/1Panel/backend/utils/toolbox"
 	"github.com/jinzhu/copier"
@@ -133,7 +138,68 @@ func (f *FtpService) Sync() error {
 	return nil
 }
 
+// validFtpUser reports whether a pure-ftpd account name is safe. The name is
+// written into the pureftpd.passwd record and, through pure-pw userdel/
+// usermod, interpolated into host shell commands, so it must match the pure
+// FTP account charset (letters, digits, underscore, dot, dash; 1-32 chars)
+// which also excludes every shell metacharacter, whitespace and "/".
+var validFtpUserRegexp = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,32}$`)
+
+func validFtpUser(user string) bool {
+	if user == "." || user == ".." {
+		return false
+	}
+	return validFtpUserRegexp.MatchString(user)
+}
+
+// validFtpPath reports whether an FTP home directory is safe to pass to
+// pure-pw usermod / chown -R and to store in the pureftpd.passwd record. The
+// path must be absolute, free of shell metacharacters (cmd.CheckIllegal),
+// free of ".." components that would escape the intended directory tree, and
+// must not end with "/" (the entry is stored as "<path>/./" in the passwd
+// file, so a trailing slash would render as "<path>//./" and change the
+// resolved home directory). It is a directory, so it is also required not to
+// end with a "/" — see the chown -R argument below.
+func validFtpPath(path string) bool {
+	if !strings.HasPrefix(path, "/") {
+		return false
+	}
+	if strings.HasSuffix(path, "/") {
+		return false
+	}
+	if path == "/" {
+		return false
+	}
+	if cmd.CheckIllegal(path) {
+		return false
+	}
+	for _, item := range strings.Split(path, "/") {
+		if item == ".." {
+			return false
+		}
+	}
+	return filepath.Clean(path) == path
+}
+
+// validateFtpEntry enforces the shared entry-point checks for FTP user
+// creation and update. req.User and req.Path are interpolated into host shell
+// commands (pure-pw usermod/userdel, chown -R) and written into
+// /etc/pure-ftpd/pureftpd.passwd, so both are validated here before any
+// filesystem or shell side effect takes place.
+func validateFtpEntry(user, path string) error {
+	if !validFtpUser(user) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !validFtpPath(path) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return nil
+}
+
 func (f *FtpService) Create(req dto.FtpCreate) (uint, error) {
+	if err := validateFtpEntry(req.User, req.Path); err != nil {
+		return 0, err
+	}
 	if _, err := os.Stat(req.Path); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(req.Path, os.ModePerm); err != nil {
@@ -187,6 +253,16 @@ func (f *FtpService) Delete(req dto.BatchDeleteReq) error {
 }
 
 func (f *FtpService) Update(req dto.FtpUpdate) error {
+	ftpItem, _ := ftpRepo.Get(commonRepo.WithByID(req.ID))
+	if ftpItem.ID == 0 {
+		return constant.ErrRecordNotFound
+	}
+	// The account name is immutable; it comes from the stored record. The
+	// path is user-controlled and lands in pure-pw usermod / chown -R, so it
+	// is validated here before any filesystem side effect.
+	if err := validateFtpEntry(ftpItem.User, req.Path); err != nil {
+		return err
+	}
 	if _, err := os.Stat(req.Path); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(req.Path, os.ModePerm); err != nil {
@@ -200,10 +276,6 @@ func (f *FtpService) Update(req dto.FtpUpdate) error {
 	pass, err := encrypt.StringEncrypt(req.Password)
 	if err != nil {
 		return err
-	}
-	ftpItem, _ := ftpRepo.Get(commonRepo.WithByID(req.ID))
-	if ftpItem.ID == 0 {
-		return constant.ErrRecordNotFound
 	}
 	passItem, err := encrypt.StringDecrypt(ftpItem.Password)
 	if err != nil {

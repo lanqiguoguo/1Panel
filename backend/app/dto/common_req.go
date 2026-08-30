@@ -24,6 +24,9 @@ type OperateByID struct {
 }
 
 type Operate struct {
+	// Operation is shared by several services (ftp, clam, fail2ban, ssh),
+	// each of which switches on it with its own whitelist before the value
+	// reaches any command layer; keep it free-form here.
 	Operation string `json:"operation" validate:"required"`
 }
 
