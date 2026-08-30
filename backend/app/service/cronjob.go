@@ -8,11 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
+	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
 	"github.com/robfig/cron/v3"
@@ -182,7 +186,82 @@ func (u *CronjobService) HandleOnce(id uint) error {
 	return nil
 }
 
+// validCronjobName reports whether name is safe to embed into shell commands
+// and filesystem paths under DataDir/task/<type>/<name>. The frontend only
+// enforces required + no-space for cronjob names and Chinese names are a
+// pre-existing legal value, so the check is a denylist rather than an ASCII
+// whitelist: valid UTF-8, no control characters, no shell metacharacters and
+// no path separators or ".." components (which would escape the per-job task
+// and backup directories).
+func validCronjobName(name string) bool {
+	if name == "" || len(name) > 255 || !utf8.ValidString(name) {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return false
+	}
+	return !cmd.CheckIllegal(name)
+}
+
+// validCronjobExclusionRules reports whether every comma-separated exclusion
+// rule is free of shell metacharacters. Glob characters ('*', '?', '[]') and
+// path separators are legal here because rules look like "*.log" or
+// "/path/to/dir", so cmd.CheckIllegal (which rejects &, |, ;, $, quotes,
+// backticks, parentheses, redirections and newlines) is the right fit.
+func validCronjobExclusionRules(rules string) bool {
+	if rules == "" {
+		return true
+	}
+	for _, rule := range strings.Split(rules, ",") {
+		if len(rule) != 0 && cmd.CheckIllegal(rule) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateCronjobFields enforces the entry-point checks shared by Create and
+// Update. Every value that later lands in a shell command or in a filesystem
+// path derived from the cronjob name is validated here; handleTar and the
+// handleShell/mkdirAndWriteFile paths re-check defensively at runtime.
+func validateCronjobFields(cronjobType, name, sourceDir, exclusionRules, url string) error {
+	if !validCronjobName(name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	switch cronjobType {
+	case "directory":
+		// An empty sourceDir is legal (the job body no-ops on it), so only
+		// values that will actually reach a shell command are validated.
+		if sourceDir != "" && !files.ValidShellArgs(sourceDir) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+		if !validCronjobExclusionRules(exclusionRules) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	case "curl":
+		if len(url) != 0 {
+			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+			// The URL is interpolated into `curl '<url>'`; a quote or any
+			// shell metacharacter would break out of it.
+			if cmd.CheckIllegal(url) || strings.ContainsAny(url, `"'`) {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+		}
+	}
+	return nil
+}
+
 func (u *CronjobService) Create(cronjobDto dto.CronjobCreate) error {
+	if err := validateCronjobFields(cronjobDto.Type, cronjobDto.Name, cronjobDto.SourceDir, cronjobDto.ExclusionRules, cronjobDto.URL); err != nil {
+		return err
+	}
 	cronjob, _ := cronjobRepo.Get(commonRepo.WithByName(cronjobDto.Name))
 	if cronjob.ID != 0 {
 		return constant.ErrRecordExist
@@ -252,6 +331,9 @@ func (u *CronjobService) Delete(req dto.CronjobBatchDelete) error {
 }
 
 func (u *CronjobService) Update(id uint, req dto.CronjobUpdate) error {
+	if err := validateCronjobFields(req.Type, req.Name, req.SourceDir, req.ExclusionRules, req.URL); err != nil {
+		return err
+	}
 	var cronjob model.Cronjob
 	if err := copier.Copy(&cronjob, &req); err != nil {
 		return errors.WithMessage(constant.ErrStructTransform, err.Error())

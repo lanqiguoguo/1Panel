@@ -57,6 +57,14 @@ func runJobBody(jobID uint, jobName string, fn func()) {
 // overlap.
 func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 	runJobBody(cronjob.ID, cronjob.Name, func() {
+		// Defense in depth: re-validate the name before any task/log/backup
+		// path is derived from it. This also covers legacy records that were
+		// stored before the Create/Update entry-point checks existed; such a
+		// job is skipped instead of writing outside its task directory.
+		if !validCronjobName(cronjob.Name) {
+			global.LOG.Errorf("cronjob %s name contains illegal characters, skip execution", cronjob.Name)
+			return
+		}
 		var (
 			message []byte
 			err     error
@@ -189,6 +197,18 @@ func (u *CronjobService) handleNtpSync() error {
 }
 
 func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string) error {
+	// Defense in depth: every user-influenced argument is validated before it
+	// is interpolated into the bash -c archive command. The entry-point
+	// checks in Create/Update already cover cronjob.SourceDir and
+	// cronjob.ExclusionRules; this re-check also protects every other handleTar
+	// call site (app/website/runtime/redis/upgrade) whose arguments come from
+	// installer paths or other user input.
+	if !files.ValidShellArgs(sourceDir, targetDir, name) || (secret != "" && !files.ValidShellArgs(secret)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !validCronjobExclusionRules(exclusionRules) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(targetDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(targetDir, os.ModePerm); err != nil {
 			return err
