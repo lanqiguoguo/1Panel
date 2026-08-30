@@ -25,8 +25,20 @@
                         <el-form-item label="Access key ID" prop="accessKey" :rules="Rules.requiredInput">
                             <el-input v-model.trim="s3Data.rowData!.accessKey" />
                         </el-form-item>
-                        <el-form-item label="Secret Key" prop="credential" :rules="Rules.requiredInput">
-                            <el-input show-password clearable v-model.trim="s3Data.rowData!.credential" />
+                        <el-form-item label="Secret Key" prop="credential" :rules="credentialRule">
+                            <el-input
+                                show-password
+                                clearable
+                                v-model.trim="s3Data.rowData!.credential"
+                                :placeholder="credentialPlaceholder"
+                            />
+                            <el-checkbox
+                                v-if="isEdit && hasStoredCredential"
+                                v-model="keepCredential"
+                                style="margin-top: 5px"
+                            >
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item label="Region" prop="varsJson.region" :rules="Rules.requiredInput">
                             <el-input pro v-model.trim="s3Data.rowData!.varsJson['region']" />
@@ -93,10 +105,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import { ElForm } from 'element-plus';
+import { ElForm, FormItemRule } from 'element-plus';
 import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup, listBucket } from '@/api/modules/setting';
@@ -120,9 +132,37 @@ const drawerVisible = ref(false);
 const s3Data = ref<DialogProps>({
     title: '',
 });
+
+// 编辑态凭据 keep 语义：后端不回显明文，留空并默认“沿用原凭据”
+const isEdit = ref(false);
+const hasStoredCredential = ref(false);
+const keepCredential = ref(true);
+
+const credentialPlaceholder = computed(() =>
+    isEdit.value && hasStoredCredential.value && keepCredential.value
+        ? i18n.global.t('setting.keepCredentialPlaceholder')
+        : '',
+);
+const credentialRule = computed<FormItemRule[]>(() => {
+    if (isEdit.value && hasStoredCredential.value && keepCredential.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 const acceptParams = (params: DialogProps): void => {
     buckets.value = [];
     s3Data.value = params;
+    if (s3Data.value.title === 'create') {
+        isEdit.value = false;
+        hasStoredCredential.value = false;
+        keepCredential.value = false;
+    } else {
+        isEdit.value = true;
+        hasStoredCredential.value = !!s3Data.value.rowData.id;
+        keepCredential.value = true;
+        s3Data.value.rowData.credential = '';
+    }
     if (!s3Data.value.rowData.varsJson['scType']) {
         s3Data.value.rowData.varsJson['scType'] = 'STANDARD';
     }
@@ -147,6 +187,7 @@ const getBuckets = async () => {
     loading.value = true;
     let item = deepCopy(s3Data.value.rowData!.varsJson);
     item['endpoint'] = spliceHttp(endpointProto.value, s3Data.value.rowData!.varsJson['endpointItem']);
+    // keep 语义：凭据字段留空时后端自动取库内原值
     listBucket({
         type: s3Data.value.rowData!.type,
         vars: JSON.stringify(item),
@@ -172,6 +213,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
             endpointProto.value,
             s3Data.value.rowData!.varsJson['endpointItem'],
         );
+        // keep 语义：凭据字段留空时后端自动保留原值，填写则替换
         s3Data.value.rowData.vars = JSON.stringify(s3Data.value.rowData!.varsJson);
         loading.value = true;
         if (s3Data.value.title === 'create') {

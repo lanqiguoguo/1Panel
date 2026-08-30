@@ -41,17 +41,21 @@
                         >
                             <el-input v-model.trim="webdavData.rowData!.accessKey" />
                         </el-form-item>
-                        <el-form-item
-                            :label="$t('commons.login.password')"
-                            prop="credential"
-                            :rules="[Rules.requiredInput]"
-                        >
+                        <el-form-item :label="$t('commons.login.password')" prop="credential" :rules="credentialRule">
                             <el-input
                                 type="password"
                                 clearable
                                 show-password
                                 v-model.trim="webdavData.rowData!.credential"
+                                :placeholder="credentialPlaceholder"
                             />
+                            <el-checkbox
+                                v-if="isEdit && hasStoredCredential"
+                                v-model="keepCredential"
+                                style="margin-top: 5px"
+                            >
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item :label="$t('setting.backupDir')" prop="bucket" :rules="[Rules.requiredInput]">
                             <el-input v-model.trim="webdavData.rowData!.bucket" />
@@ -74,10 +78,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import { ElForm } from 'element-plus';
+import { ElForm, FormItemRule } from 'element-plus';
 import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup } from '@/api/modules/setting';
@@ -102,8 +106,35 @@ const webdavData = ref<DialogProps>({
     title: '',
 });
 
+// 编辑态凭据 keep 语义：后端不回显明文，留空并默认“沿用原密码”
+const isEdit = ref(false);
+const hasStoredCredential = ref(false);
+const keepCredential = ref(true);
+
+const credentialPlaceholder = computed(() =>
+    isEdit.value && hasStoredCredential.value && keepCredential.value
+        ? i18n.global.t('setting.keepCredentialPlaceholder')
+        : '',
+);
+const credentialRule = computed<FormItemRule[]>(() => {
+    if (isEdit.value && hasStoredCredential.value && keepCredential.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 const acceptParams = (params: DialogProps): void => {
     webdavData.value = params;
+    if (webdavData.value.title === 'create') {
+        isEdit.value = false;
+        hasStoredCredential.value = false;
+        keepCredential.value = false;
+    } else {
+        isEdit.value = true;
+        hasStoredCredential.value = !!webdavData.value.rowData.id;
+        keepCredential.value = true;
+        webdavData.value.rowData.credential = '';
+    }
     title.value = i18n.global.t('commons.button.' + webdavData.value.title);
     drawerVisible.value = true;
 };
@@ -123,6 +154,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
     formEl.validate(async (valid) => {
         if (!valid) return;
         if (!webdavData.value.rowData) return;
+        // keep 语义：凭据字段留空时后端自动保留原值，填写则替换
         webdavData.value.rowData.vars = JSON.stringify(webdavData.value.rowData!.varsJson);
         loading.value = true;
         if (webdavData.value.title === 'create') {

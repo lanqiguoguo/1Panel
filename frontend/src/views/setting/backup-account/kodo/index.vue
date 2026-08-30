@@ -19,8 +19,20 @@
                         <el-form-item label="Access key ID" prop="accessKey" :rules="Rules.requiredInput">
                             <el-input v-model.trim="kodoData.rowData!.accessKey" />
                         </el-form-item>
-                        <el-form-item label="Secret key" prop="credential" :rules="Rules.requiredInput">
-                            <el-input show-password clearable v-model.trim="kodoData.rowData!.credential" />
+                        <el-form-item label="Secret key" prop="credential" :rules="credentialRule">
+                            <el-input
+                                show-password
+                                clearable
+                                v-model.trim="kodoData.rowData!.credential"
+                                :placeholder="credentialPlaceholder"
+                            />
+                            <el-checkbox
+                                v-if="isEdit && hasStoredCredential"
+                                v-model="keepCredential"
+                                style="margin-top: 5px"
+                            >
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item
                             :label="$t('setting.domain')"
@@ -84,10 +96,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import { ElForm } from 'element-plus';
+import { ElForm, FormItemRule } from 'element-plus';
 import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup, listBucket } from '@/api/modules/setting';
@@ -102,6 +114,23 @@ const buckets = ref();
 const domainProto = ref('http');
 const emit = defineEmits(['search']);
 
+// 编辑态凭据 keep 语义：后端不回显明文，留空并默认“沿用原凭据”
+const isEdit = ref(false);
+const hasStoredCredential = ref(false);
+const keepCredential = ref(true);
+
+const credentialPlaceholder = computed(() =>
+    isEdit.value && hasStoredCredential.value && keepCredential.value
+        ? i18n.global.t('setting.keepCredentialPlaceholder')
+        : '',
+);
+const credentialRule = computed<FormItemRule[]>(() => {
+    if (isEdit.value && hasStoredCredential.value && keepCredential.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 interface DialogProps {
     title: string;
     rowData?: Backup.BackupInfo;
@@ -114,6 +143,16 @@ const kodoData = ref<DialogProps>({
 const acceptParams = (params: DialogProps): void => {
     buckets.value = [];
     kodoData.value = params;
+    if (kodoData.value.title === 'create') {
+        isEdit.value = false;
+        hasStoredCredential.value = false;
+        keepCredential.value = false;
+    } else {
+        isEdit.value = true;
+        hasStoredCredential.value = !!kodoData.value.rowData.id;
+        keepCredential.value = true;
+        kodoData.value.rowData.credential = '';
+    }
     if (kodoData.value.title === 'edit') {
         let httpItem = splitHttp(kodoData.value.rowData!.varsJson['domain']);
         kodoData.value.rowData!.varsJson['domainItem'] = httpItem.url;
@@ -135,6 +174,7 @@ const getBuckets = async () => {
     loading.value = true;
     let item = deepCopy(kodoData.value.rowData!.varsJson);
     item['domain'] = spliceHttp(domainProto.value, kodoData.value.rowData!.varsJson['domainItem']);
+    // keep 语义：凭据字段留空时后端自动取库内原值
     listBucket({
         type: kodoData.value.rowData!.type,
         vars: JSON.stringify(item),
@@ -160,6 +200,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
             domainProto.value,
             kodoData.value.rowData!.varsJson['domainItem'],
         );
+        // keep 语义：凭据字段留空时后端自动保留原值，填写则替换
         kodoData.value.rowData.vars = JSON.stringify(kodoData.value.rowData!.varsJson);
         loading.value = true;
         if (kodoData.value.title === 'create') {

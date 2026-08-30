@@ -49,9 +49,15 @@
                         <el-form-item
                             :label="$t('setting.client_secret')"
                             prop="varsJson.client_secret"
-                            :rules="Rules.requiredInput"
+                            :rules="secretRule"
                         >
-                            <el-input v-model.trim="oneDriveData.rowData!.varsJson['client_secret']" />
+                            <el-input
+                                v-model.trim="oneDriveData.rowData!.varsJson['client_secret']"
+                                :placeholder="secretPlaceholder"
+                            />
+                            <el-checkbox v-if="isEdit" v-model="keepSecret" style="margin-top: 5px">
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item
                             :label="$t('setting.redirect_uri')"
@@ -106,10 +112,10 @@
 </template>
 
 <script lang="ts" setup>
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import { ElForm } from 'element-plus';
+import { ElForm, FormItemRule } from 'element-plus';
 import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup, getOneDriveInfo } from '@/api/modules/setting';
@@ -148,9 +154,26 @@ const drawerVisible = ref(false);
 const oneDriveData = ref<DialogProps>({
     title: '',
 });
+
+// 编辑态 client_secret keep 语义：后端不回显明文，留空并默认“沿用原凭据”
+const isEdit = ref(false);
+const keepSecret = ref(true);
+
+const secretPlaceholder = computed(() =>
+    isEdit.value && keepSecret.value ? i18n.global.t('setting.keepCredentialPlaceholder') : '',
+);
+const secretRule = computed<FormItemRule[]>(() => {
+    if (isEdit.value && keepSecret.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 const acceptParams = async (params: DialogProps): Promise<void> => {
     oneDriveData.value = params;
     oneDriveData.value.rowData.varsJson['isCN'] = oneDriveData.value.rowData.varsJson['isCN'] || false;
+    isEdit.value = !!oneDriveData.value.rowData.id;
+    keepSecret.value = true;
     title.value = i18n.global.t('commons.button.' + oneDriveData.value.title);
     drawerVisible.value = true;
     const res = await getOneDriveInfo();
@@ -162,6 +185,9 @@ const acceptParams = async (params: DialogProps): Promise<void> => {
             client_secret: res.data.client_secret,
             redirect_uri: res.data.redirect_uri,
         };
+    } else {
+        // 编辑态：client_secret 不回显明文，留空由后端保留原值
+        oneDriveData.value.rowData.varsJson['client_secret'] = '';
     }
 };
 
@@ -177,7 +203,7 @@ const changeFrom = () => {
         oneDriveData.value.rowData.varsJson = {
             isCN: false,
             client_id: oneDriveInfo.value.client_id,
-            client_secret: oneDriveInfo.value.client_secret,
+            client_secret: '',
             redirect_uri: oneDriveInfo.value.redirect_uri,
         };
     }

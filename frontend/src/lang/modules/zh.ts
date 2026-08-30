@@ -1420,6 +1420,8 @@ const message = {
         proxyDisable: '不启用',
         proxyOptional: '选填',
         proxyUser: '用户名',
+        keepCredential: '沿用原有凭据',
+        keepCredentialPlaceholder: '留空则沿用原有凭据',
         proxyRememberPwd: '记住密码',
         proxyPasswdUnchanged: '留空则保持原密码不变',
         proxyTest: '测试连接',

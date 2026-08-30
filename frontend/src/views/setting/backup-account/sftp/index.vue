@@ -33,17 +33,21 @@
                         >
                             <el-input v-model.trim="sftpData.rowData!.accessKey" />
                         </el-form-item>
-                        <el-form-item
-                            :label="$t('commons.login.password')"
-                            prop="credential"
-                            :rules="[Rules.requiredInput]"
-                        >
+                        <el-form-item :label="$t('commons.login.password')" prop="credential" :rules="credentialRule">
                             <el-input
                                 type="password"
                                 clearable
                                 show-password
                                 v-model.trim="sftpData.rowData!.credential"
+                                :placeholder="credentialPlaceholder"
                             />
+                            <el-checkbox
+                                v-if="isEdit && hasStoredCredential"
+                                v-model="keepCredential"
+                                style="margin-top: 5px"
+                            >
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item :label="$t('setting.backupDir')" prop="bucket" :rules="[Rules.requiredInput]">
                             <el-input v-model.trim="sftpData.rowData!.bucket" />
@@ -66,7 +70,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
 import { ElForm } from 'element-plus';
@@ -74,6 +78,7 @@ import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup } from '@/api/modules/setting';
 import { MsgSuccess } from '@/utils/message';
+import { FormItemRule } from 'element-plus';
 
 const loading = ref(false);
 type FormInstance = InstanceType<typeof ElForm>;
@@ -91,10 +96,39 @@ const drawerVisible = ref(false);
 const sftpData = ref<DialogProps>({
     title: '',
 });
+
+// 编辑态凭据 keep 语义：回显脱敏后，凭据字段留空（默认勾选“沿用原密码”）
+// 表示保留已存凭据；取消勾选后留空则清空凭据。
+const isEdit = ref(false);
+const hasStoredCredential = ref(false);
+const keepCredential = ref(true);
+
+const credentialPlaceholder = computed(() =>
+    isEdit.value && hasStoredCredential.value && keepCredential.value
+        ? i18n.global.t('setting.keepCredentialPlaceholder')
+        : '',
+);
+const credentialRule = computed<FormItemRule[]>(() => {
+    // 新建时必须填写；编辑时保留原凭据（keep）时允许为空
+    if (isEdit.value && hasStoredCredential.value && keepCredential.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 const acceptParams = (params: DialogProps): void => {
     sftpData.value = params;
     if (sftpData.value.title === 'create') {
         sftpData.value.rowData.varsJson['port'] = 22;
+        isEdit.value = false;
+        hasStoredCredential.value = false;
+        keepCredential.value = false;
+    } else {
+        // 编辑态：后端不回显凭据明文，表单留空并默认 keep 原值
+        isEdit.value = true;
+        hasStoredCredential.value = !!sftpData.value.rowData.id;
+        keepCredential.value = true;
+        sftpData.value.rowData.credential = '';
     }
     title.value = i18n.global.t('commons.button.' + sftpData.value.title);
     drawerVisible.value = true;
@@ -110,6 +144,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
     formEl.validate(async (valid) => {
         if (!valid) return;
         if (!sftpData.value.rowData) return;
+        // keep 语义：凭据字段留空时后端自动保留原值，填写则替换
         sftpData.value.rowData.vars = JSON.stringify(sftpData.value.rowData!.varsJson);
         loading.value = true;
         if (sftpData.value.title === 'create') {

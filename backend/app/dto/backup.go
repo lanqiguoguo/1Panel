@@ -17,6 +17,7 @@ type BackupInfo struct {
 	CreatedAt  time.Time `json:"createdAt"`
 	Type       string    `json:"type"`
 	Bucket     string    `json:"bucket"`
+	AccessKey  string    `json:"accessKey"`
 	BackupPath string    `json:"backupPath"`
 	Vars       string    `json:"vars"`
 }

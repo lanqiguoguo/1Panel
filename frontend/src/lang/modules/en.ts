@@ -1495,6 +1495,8 @@ const message = {
         proxyDisable: 'Disabled',
         proxyOptional: 'Optional',
         proxyUser: 'Username',
+        keepCredential: 'Keep existing credential',
+        keepCredentialPlaceholder: 'Leave empty to keep the existing credential',
         proxyRememberPwd: 'Remember Password',
         proxyPasswdUnchanged: 'Leave empty to keep the current password',
         proxyTest: 'Test Connection',

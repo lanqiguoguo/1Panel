@@ -190,11 +190,14 @@ func (u *BackupService) LoadOneDriveInfo() (dto.OneDriveInfo, error) {
 	if err != nil {
 		return data, err
 	}
-	secretItem, err := base64.StdEncoding.DecodeString(clientSecret.Value)
-	if err != nil {
+	if _, err := base64.StdEncoding.DecodeString(clientSecret.Value); err != nil {
 		return data, err
 	}
-	data.ClientSecret = string(secretItem)
+	// Never echo the Azure OAuth client secret back to the frontend (D-1).
+	// The secret is only read internally from the OneDriveSc setting (see
+	// init/hook) or from the account vars when the OAuth flow runs; the edit
+	// form treats an empty value as "keep the stored secret".
+	data.ClientSecret = ""
 
 	return data, err
 }
@@ -427,6 +430,27 @@ func (u *BackupService) Update(req dto.BackupOperate) error {
 	if err != nil {
 		return err
 	}
+
+	// Keep semantics: the frontend echoes masked credentials ("******" for
+	// secret var fields) and sends an empty credential/accessKey when the
+	// user left the secret fields untouched. In both cases the stored value
+	// must survive the update. A masked/empty value only takes effect when
+	// nothing is stored yet (create path enforces required fields, so an
+	// empty credential here always means "keep").
+	if isMaskedCredential(req.Credential) {
+		req.Credential = backup.Credential
+	}
+	if isMaskedCredential(req.AccessKey) {
+		req.AccessKey = backup.AccessKey
+	}
+	if req.Vars == "" || isMaskedCredential(req.Vars) {
+		req.Vars = backup.Vars
+	} else {
+		if req.Vars, err = mergeMaskedVars(backup.Vars, req.Vars); err != nil {
+			return err
+		}
+	}
+
 	upMap := make(map[string]interface{})
 	upMap["bucket"] = req.Bucket
 	upMap["access_key"] = req.AccessKey
@@ -523,6 +547,84 @@ func (u *BackupService) NewClient(backup *model.BackupAccount) (cloud_storage.Cl
 	return backClient, nil
 }
 
+// backupMaskValue is the placeholder returned in place of real credentials on
+// every read path that echoes backup account data back to the frontend. The
+// edit forms treat this exact value (or an empty value) as "keep the stored
+// secret" and the update path skips writing it back.
+const backupMaskValue = "******"
+
+// backupSecretVars holds the var keys whose values are secrets and must be
+// masked whenever account vars are echoed to the frontend. Access keys and
+// usernames are not secrets and are intentionally not listed.
+var backupSecretVars = map[string]struct{}{
+	"password":      {},
+	"secretKey":     {},
+	"secret":        {},
+	"client_secret": {},
+	"refresh_token": {},
+	"credential":    {},
+}
+
+// isMaskedCredential reports whether a credential value received from the
+// frontend is a placeholder (masked echo or empty) that must not overwrite a
+// stored secret.
+func isMaskedCredential(v string) bool {
+	return v == "" || v == backupMaskValue
+}
+
+// maskBackupVars returns a copy of the account vars JSON with every secret
+// value replaced by the mask placeholder. Non-secret fields (accessKey,
+// bucket, endpoint, region, refresh_time/status, ...) are passed through
+// unchanged so the frontend list can still display account state.
+func maskBackupVars(vars string) string {
+	var varMap map[string]interface{}
+	if err := json.Unmarshal([]byte(vars), &varMap); err != nil {
+		return vars
+	}
+	for key := range varMap {
+		if _, ok := backupSecretVars[key]; ok {
+			varMap[key] = backupMaskValue
+		}
+	}
+	itemVars, err := json.Marshal(varMap)
+	if err != nil {
+		return vars
+	}
+	return string(itemVars)
+}
+
+// mergeMaskedVars overlays a vars map submitted from the frontend on top of
+// the stored vars, keeping the stored value for every field the form left at
+// the mask placeholder (or empty). Non-masked fields take the submitted
+// value. This gives the edit forms "keep the stored secret" semantics while
+// still allowing every other field to be changed in one request.
+func mergeMaskedVars(storedVars, reqVars string) (string, error) {
+	storedMap := make(map[string]interface{})
+	if err := json.Unmarshal([]byte(storedVars), &storedMap); err != nil {
+		return "", fmt.Errorf("unmarshal stored vars failed, err: %v", err)
+	}
+	reqMap := make(map[string]interface{})
+	if err := json.Unmarshal([]byte(reqVars), &reqMap); err != nil {
+		return "", fmt.Errorf("unmarshal request vars failed, err: %v", err)
+	}
+	for key, value := range reqMap {
+		if _, ok := backupSecretVars[key]; ok {
+			strValue, isStr := value.(string)
+			if (isStr && isMaskedCredential(strValue)) || (!isStr && value == nil) {
+				// Masked/empty secret: keep whatever is stored (storedMap
+				// still holds the old value), skip the overwrite.
+				continue
+			}
+		}
+		storedMap[key] = value
+	}
+	itemVars, err := json.Marshal(storedMap)
+	if err != nil {
+		return "", fmt.Errorf("json marshal vars failed, err: %v", err)
+	}
+	return string(itemVars), nil
+}
+
 func (u *BackupService) loadByType(accountType string, accounts []model.BackupAccount) dto.BackupInfo {
 	for _, account := range accounts {
 		if account.Type == accountType {
@@ -530,15 +632,7 @@ func (u *BackupService) loadByType(accountType string, accounts []model.BackupAc
 			if err := copier.Copy(&item, &account); err != nil {
 				global.LOG.Errorf("copy backup account to dto backup info failed, err: %v", err)
 			}
-			if account.Type == constant.OneDrive {
-				varMap := make(map[string]interface{})
-				if err := json.Unmarshal([]byte(item.Vars), &varMap); err != nil {
-					return dto.BackupInfo{Type: accountType}
-				}
-				delete(varMap, "refresh_token")
-				itemVars, _ := json.Marshal(varMap)
-				item.Vars = string(itemVars)
-			}
+			item.Vars = maskBackupVars(item.Vars)
 			return item
 		}
 	}

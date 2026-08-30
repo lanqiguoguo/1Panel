@@ -19,8 +19,20 @@
                         <el-form-item label="Access key ID" prop="accessKey" :rules="Rules.requiredInput">
                             <el-input v-model.trim="minioData.rowData!.accessKey" />
                         </el-form-item>
-                        <el-form-item label="Secret key" prop="credential" :rules="Rules.requiredInput">
-                            <el-input show-password clearable v-model.trim="minioData.rowData!.credential" />
+                        <el-form-item label="Secret key" prop="credential" :rules="credentialRule">
+                            <el-input
+                                show-password
+                                clearable
+                                v-model.trim="minioData.rowData!.credential"
+                                :placeholder="credentialPlaceholder"
+                            />
+                            <el-checkbox
+                                v-if="isEdit && hasStoredCredential"
+                                v-model="keepCredential"
+                                style="margin-top: 5px"
+                            >
+                                {{ $t('setting.keepCredential') }}
+                            </el-checkbox>
                         </el-form-item>
                         <el-form-item label="Endpoint" prop="varsJson.endpointItem" :rules="Rules.requiredInput">
                             <el-input v-model="minioData.rowData!.varsJson['endpointItem']">
@@ -69,10 +81,10 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
-import { ElForm } from 'element-plus';
+import { ElForm, FormItemRule } from 'element-plus';
 import { Backup } from '@/api/interface/backup';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { addBackup, editBackup, listBucket } from '@/api/modules/setting';
@@ -87,6 +99,23 @@ const buckets = ref();
 const endpointProto = ref('http');
 const emit = defineEmits(['search']);
 
+// 编辑态凭据 keep 语义：后端不回显明文，留空并默认“沿用原凭据”
+const isEdit = ref(false);
+const hasStoredCredential = ref(false);
+const keepCredential = ref(true);
+
+const credentialPlaceholder = computed(() =>
+    isEdit.value && hasStoredCredential.value && keepCredential.value
+        ? i18n.global.t('setting.keepCredentialPlaceholder')
+        : '',
+);
+const credentialRule = computed<FormItemRule[]>(() => {
+    if (isEdit.value && hasStoredCredential.value && keepCredential.value) {
+        return [];
+    }
+    return [Rules.requiredInput];
+});
+
 interface DialogProps {
     title: string;
     rowData?: Backup.BackupInfo;
@@ -99,6 +128,16 @@ const minioData = ref<DialogProps>({
 const acceptParams = (params: DialogProps): void => {
     buckets.value = [];
     minioData.value = params;
+    if (minioData.value.title === 'create') {
+        isEdit.value = false;
+        hasStoredCredential.value = false;
+        keepCredential.value = false;
+    } else {
+        isEdit.value = true;
+        hasStoredCredential.value = !!minioData.value.rowData.id;
+        keepCredential.value = true;
+        minioData.value.rowData.credential = '';
+    }
     if (minioData.value.title === 'edit') {
         let httpItem = splitHttp(minioData.value.rowData!.varsJson['endpoint']);
         minioData.value.rowData!.varsJson['endpointItem'] = httpItem.url;
@@ -118,6 +157,7 @@ const getBuckets = async () => {
     let item = deepCopy(minioData.value.rowData!.varsJson);
     item['endpoint'] = spliceHttp(endpointProto.value, minioData.value.rowData!.varsJson['endpointItem']);
     item['endpointItem'] = undefined;
+    // keep 语义：凭据字段留空时后端自动取库内原值
     listBucket({
         type: minioData.value.rowData!.type,
         vars: JSON.stringify(item),
@@ -144,6 +184,7 @@ const onSubmit = async (formEl: FormInstance | undefined) => {
             minioData.value.rowData!.varsJson['endpointItem'],
         );
         minioData.value.rowData!.varsJson['endpointItem'] = undefined;
+        // keep 语义：凭据字段留空时后端自动保留原值，填写则替换
         minioData.value.rowData.vars = JSON.stringify(minioData.value.rowData!.varsJson);
         loading.value = true;
         if (minioData.value.title === 'create') {
