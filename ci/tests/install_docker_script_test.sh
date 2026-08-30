@@ -15,8 +15,10 @@ BIN_DIR="$TEST_ROOT/bin"
 mkdir -p "$BIN_DIR"
 
 # Keep the command lookup environment minimal so a host Docker installation
-# cannot cause install_docker to skip its download path.
-for tool in mktemp chmod rm tee date; do
+# cannot cause install_docker to skip its download path.  sh resolves through
+# PATH (install.sh calls `env -u PANEL_PASSWORD sh ...`), so it must be the
+# recording stub below; env is required by that same invocation.
+for tool in mktemp chmod rm tee date env; do
     ln -s "$(command -v "$tool")" "$BIN_DIR/$tool"
 done
 
@@ -46,7 +48,7 @@ printf '%s\n' "$(/usr/bin/stat -c '%a' "$output")" > "$TEST_ROOT/curl-file-mode"
 CURL_STUB
 chmod 755 "$BIN_DIR/curl"
 
-cat > "$BIN_DIR/sh" <<'SH_STUB'
+cat > "$BIN_DIR/sh.stub" <<'SH_STUB'
 #!/bin/bash
 set -euo pipefail
 
@@ -54,9 +56,14 @@ script_path=${1:?missing script path}
 printf '%s\n' "$script_path" > "$TEST_ROOT/sh-argument"
 printf '%s\n' "$(/usr/bin/stat -c '%a' "${script_path%/*}")" > "$TEST_ROOT/sh-dir-mode"
 printf '%s\n' "$(/usr/bin/stat -c '%a' "$script_path")" > "$TEST_ROOT/sh-file-mode"
+# record whether PANEL_PASSWORD reached the spawn, then run the script for real
+printf '%s\n' "$(env | /usr/bin/grep -c '^PANEL_PASSWORD=' || true)" > "$TEST_ROOT/sh-env-password-count"
 exec /bin/sh "$@"
 SH_STUB
-chmod 755 "$BIN_DIR/sh"
+chmod 755 "$BIN_DIR/sh.stub"
+# sh must be the recording stub; a symlink keeps `env -u PANEL_PASSWORD sh`
+# resolving through PATH to it (chmod on the link itself is not needed)
+ln -s sh.stub "$BIN_DIR/sh"
 
 RUNNER="$TEST_ROOT/run-install-docker.sh"
 cat > "$RUNNER" <<'RUNNER_SCRIPT'
@@ -73,6 +80,7 @@ chmod 700 "$RUNNER"
 printf 'y\n' | /usr/bin/env \
     PATH="$BIN_DIR" ROOT_DIR="$ROOT_DIR" TEST_ROOT="$TEST_ROOT" BIN_DIR="$BIN_DIR" \
     LOG_FILE="$TEST_ROOT/install.log" \
+    PANEL_PASSWORD='Test_Bootstrap_1!' \
     /usr/bin/script -qefc "/bin/bash '$RUNNER'" /dev/null \
     > "$TEST_ROOT/runner-output" 2>&1
 
@@ -87,5 +95,8 @@ sh_argument=$(<"$TEST_ROOT/sh-argument")
 [[ "$(<"$TEST_ROOT/sh-file-mode")" == 600 ]]
 [[ -f "$TEST_ROOT/script-ran" ]]
 [[ ! -e "$curl_output" ]]
+# the docker installer script must never inherit the bootstrap password:
+# install_docker spawns it through `env -u PANEL_PASSWORD sh`
+[[ "$(<"$TEST_ROOT/sh-env-password-count")" == 0 ]]
 
 echo "installer docker script isolation checks passed"

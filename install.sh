@@ -408,7 +408,9 @@ function set_password() {
             exit 1
         fi
         local password_prompt
-        password_prompt="$(text TXT_SET_PANEL_PASSWORD "set admin password (default is") $default_password): "
+        # never print the generated default: it would be captured in the
+        # terminal scrollback buffer; an empty input silently uses it
+        password_prompt="$(text TXT_SET_PANEL_PASSWORD "set admin password"): "
         printf '%s' "$password_prompt" >&"$tty_fd"
         if ! IFS= read -r -s PANEL_PASSWORD <&"$tty_fd"; then
             printf '\n' >&"$tty_fd"
@@ -432,6 +434,12 @@ function set_password() {
 # the first service start.  The backend removes it after the initial database
 # migration; until then it is readable only by root.
 function write_initial_password() {
+    # PANEL_PASSWORD may come straight from the environment (set_password is
+    # skipped when it is preset), so re-validate before persisting anything
+    if ! [[ "$PANEL_PASSWORD" =~ ^[a-zA-Z0-9_!@#$%*,.?]{8,30}$ ]]; then
+        log_err "$(text TXT_INPUT_PASSWORD_RULE "invalid password format")"
+        exit 1
+    fi
     local secret_dir="$RUN_BASE_DIR/conf"
     local secret_file="$secret_dir/initial-password"
     mkdir -p "$secret_dir" || {
@@ -507,12 +515,14 @@ function install_docker() {
             fi
             # export standard vars so the script's internal apt/yum/curl calls
             # inherit the same route as everything else in this installer
+            # strip PANEL_PASSWORD at the spawn: the untrusted docker
+            # installer script must never see the bootstrap credential
             if [[ -n "$PROXY_URL" ]]; then
                 http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" \
                     HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL" \
-                    sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
+                    env -u PANEL_PASSWORD sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
             else
-                sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
+                env -u PANEL_PASSWORD sh "$docker_script" 2>&1 | tee -a "$LOG_FILE"
             fi
             rm -rf -- "$DOCKER_SCRIPT_DIR"
             DOCKER_SCRIPT_DIR=""
