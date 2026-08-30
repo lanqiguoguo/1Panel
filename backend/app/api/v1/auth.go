@@ -79,9 +79,17 @@ func (b *BaseApi) MFALogin(c *gin.Context) {
 	}
 
 	ip := common.GetRealClientIP(c)
-	if !mfaLoginAllowed(ip) {
-		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, constant.ErrCaptchaCode)
-		return
+	// When the IP is flagged by the failure tracker (e.g. 5 failed TOTP codes),
+	// the user must solve a captcha to proceed. A correct captcha is itself the
+	// unlock mechanism: it lets the request continue to the TOTP check instead
+	// of locking the IP out for the whole ExpireDuration (30 min). Semantics
+	// mirror the stage-1 Login handler; a failed captcha does not add to the
+	// failure counter.
+	if global.IPTracker.NeedCaptcha(ip) {
+		if err := captcha.VerifyCode(req.CaptchaID, req.Captcha); err != nil {
+			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, constant.ErrCaptchaCode)
+			return
+		}
 	}
 
 	entranceItem := c.Request.Header.Get("EntranceCode")
@@ -181,13 +189,6 @@ func saveLoginLogs(c *gin.Context, err error) {
 	logs.IP = c.ClientIP()
 	logs.Agent = c.GetHeader("User-Agent")
 	_ = logService.CreateLoginLog(logs)
-}
-
-// mfaLoginAllowed reports whether the IP may keep trying MFA codes. Once the
-// IP is flagged by NeedCaptcha (e.g. after failed logins), MFA attempts are
-// refused until the tracker entry expires.
-func mfaLoginAllowed(ip string) bool {
-	return !global.IPTracker.NeedCaptcha(ip)
 }
 
 // shouldClearTracker reports whether a successful stage-1 login finished the

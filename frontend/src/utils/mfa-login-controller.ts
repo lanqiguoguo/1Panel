@@ -7,6 +7,9 @@
  *   残留而"改码才能重试"。
  * - 提交失败（业务 406 / 网络或服务异常）后复位 lastMfaSubmitted 并刷新
  *   验证码，保证相同码可立即重试、captcha 保持新鲜。
+ * - 406 ErrCaptchaCode（IP 被限流、需要验证码解锁）时通过 onCaptchaRequired
+ *   通知组件显示 captcha 输入框；其余 406（ErrAuth，TOTP 错误）保留
+ *   errMfaInfo 提示。
  * - 用户重新输入时复位 errMfaInfo 错误提示。
  * - 成功路径回调 onSuccess（登入、跳转等由组件完成）。
  *
@@ -26,8 +29,10 @@ export interface MfaLoginControllerDeps {
     refreshCaptcha: () => void;
     /** 提交失败且确需兜底提示（纯网络断连，拦截器未提示过）时调用 */
     notifyMfaError: () => void;
-    /** 提交请求，返回业务 code（拦截器已按业务码过滤，此处直接拿 code） */
-    submit: (code: string) => Promise<number>;
+    /** 406 ErrCaptchaCode：IP 被限流，需显示 captcha 输入框并刷新验证码 */
+    onCaptchaRequired: () => void;
+    /** 提交请求，返回业务码与消息（拦截器已按业务码过滤，此处直接拿 envelope） */
+    submit: (code: string) => Promise<MfaSubmitResult>;
     /** 成功路径：登入状态、跳转等 */
     onSuccess: () => void;
 }
@@ -42,6 +47,9 @@ export interface MfaLoginController {
 /** 业务码约定：406 = 认证失败（ErrAuth / ErrCaptchaCode），200 = 成功 */
 const CODE_AUTH = 406;
 const CODE_SUCCESS = 200;
+
+/** 后端 406 的 message：ErrCaptchaCode = IP 被限流需验证码解锁；ErrAuth = TOTP 错误 */
+const MSG_CAPTCHA_REQUIRED = 'ErrCaptchaCode';
 
 /**
  * 是否需要兜底错误 toast。axios 拦截器（api/index.ts）已覆盖：
@@ -58,6 +66,13 @@ export function shouldNotifyMfaError(error: unknown): boolean {
     return e.isAxiosError === true && !e.response && !(e.message || '').includes('timeout');
 }
 
+export interface MfaSubmitResult {
+    /** 业务码（200 成功 / 406 认证失败） */
+    code: number;
+    /** 406 时的业务消息（'ErrCaptchaCode' | 'ErrAuth' 等） */
+    message: string;
+}
+
 export function createMfaLoginController(deps: MfaLoginControllerDeps): MfaLoginController {
     let lastMfaSubmitted = '';
 
@@ -71,14 +86,20 @@ export function createMfaLoginController(deps: MfaLoginControllerDeps): MfaLogin
         lastMfaSubmitted = code;
         deps.setLoggingIn(true);
         try {
-            const code_ = await deps.submit(code);
-            if (code_ === CODE_AUTH) {
-                // 认证信息错误：保留错误提示，但允许相同码重试并刷新验证码
-                deps.setErrMfaInfo(true);
+            const { code: bizCode, message } = await deps.submit(code);
+            if (bizCode === CODE_AUTH) {
+                if (message === MSG_CAPTCHA_REQUIRED) {
+                    // IP 被限流：验证码是解锁机制。清空输入、显示 captcha 输入框
+                    // 并刷新验证码，让用户填码后重新提交（TOTP 与 captcha 一起）。
+                    deps.onCaptchaRequired();
+                } else {
+                    // TOTP 错误：保留错误提示，但允许相同码重试并刷新验证码
+                    deps.setErrMfaInfo(true);
+                }
                 resetAfterFailure();
                 return;
             }
-            if (code_ !== CODE_SUCCESS) {
+            if (bizCode !== CODE_SUCCESS) {
                 // 拦截器对非 200/406 业务码已弹 MsgError，这里只复位状态
                 resetAfterFailure();
                 return;

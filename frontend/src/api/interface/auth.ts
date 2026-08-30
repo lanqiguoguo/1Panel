@@ -10,6 +10,8 @@ export namespace Login {
         name: string;
         password: string;
         code: string;
+        captcha: string;
+        captchaID: string;
         authMethod: string;
     }
     export interface ResLogin {

@@ -21,6 +21,22 @@
                             {{ $t('commons.login.errorMfaInfo') }}
                         </span>
                     </el-form-item>
+                    <el-form-item v-if="!globalStore.ignoreCaptcha" class="login-captcha">
+                        <el-input v-model.trim="mfaLoginForm.captcha" :placeholder="$t('commons.login.captchaHelper')">
+                            <template #prefix>
+                                <svg-icon style="font-size: 7px" iconName="p-yanzhengma1"></svg-icon>
+                            </template>
+                        </el-input>
+                        <img
+                            v-if="captcha.imagePath"
+                            :src="captcha.imagePath"
+                            :alt="$t('commons.login.captchaHelper')"
+                            @click="loginVerify()"
+                        />
+                        <span v-if="errMfaCaptcha" class="input-error" style="line-height: 14px">
+                            {{ $t('commons.login.errorCaptcha') }}
+                        </span>
+                    </el-form-item>
                     <el-form-item>
                         <el-button
                             @focus="mfaButtonFocused = true"
@@ -194,6 +210,7 @@ const tabsStore = TabsStore();
 const errAuthInfo = ref(false);
 const errCaptcha = ref(false);
 const errMfaInfo = ref(false);
+const errMfaCaptcha = ref(false);
 const isDemo = ref(false);
 const isIntl = ref(true);
 const agreeVisible = ref(false);
@@ -251,6 +268,8 @@ const mfaLoginForm = reactive({
     password: '',
     secret: '',
     code: '',
+    captcha: '',
+    captchaID: '',
     authMethod: 'session',
 });
 
@@ -384,6 +403,14 @@ const mfaLogin = createMfaLoginController({
     refreshCaptcha: () => {
         loginVerify();
     },
+    onCaptchaRequired: () => {
+        // IP 被限流（406 ErrCaptchaCode）：captcha 是解锁机制。显示 captcha
+        // 输入框、清空已填的 captcha 并刷新验证码，等待用户填码重试。
+        globalStore.ignoreCaptcha = false;
+        mfaLoginForm.captcha = '';
+        errMfaCaptcha.value = true;
+        loginVerify();
+    },
     notifyMfaError: () => {
         // 仅纯网络断连时由控制器调用（拦截器未提示过），此处兜底提示
         MsgError(i18n.t('commons.msg.requestTimeout'));
@@ -392,8 +419,13 @@ const mfaLogin = createMfaLoginController({
         mfaLoginForm.code = code;
         mfaLoginForm.name = loginForm.name;
         mfaLoginForm.password = encryptPassword(loginForm.password);
+        if (mfaLoginForm.captcha && mfaLoginForm.captcha !== '') {
+            mfaLoginForm.captchaID = captcha.captchaID;
+        } else {
+            mfaLoginForm.captchaID = '';
+        }
         const res = await mfaLoginApi(mfaLoginForm);
-        return res.code;
+        return res;
     },
     onSuccess: () => {
         globalStore.setLogStatus(true);

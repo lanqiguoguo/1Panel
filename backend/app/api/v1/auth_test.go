@@ -22,38 +22,66 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestMFALoginAllowed guards MFA brute-force rate limiting: once an IP
-// accumulates enough failures in the shared IPTracker (the same counter the
-// normal login path uses), further MFA attempts must be refused until the
-// flag is cleared or expires.
-func TestMFALoginAllowed(t *testing.T) {
-	original := global.IPTracker
+// TestMFALoginCaptchaGate guards the MFA unlock path: once an IP accumulates
+// enough failures in the shared IPTracker (the same counter the normal login
+// path uses), further MFA attempts must require a correct captcha. A captcha
+// is the unlock mechanism — with it the request proceeds to the TOTP check
+// instead of being locked out for the whole ExpireDuration; without (or with a
+// wrong) captcha the attempt is refused with ErrCaptchaCode.
+func TestMFALoginCaptchaGate(t *testing.T) {
+	originalTracker := global.IPTracker
+	originalService := authService
 	global.IPTracker = auth.NewIPTracker()
-	defer func() { global.IPTracker = original }()
+	authService = &fakeAuthService{mfaLoginErr: constant.ErrAuth}
+	defer func() {
+		global.IPTracker = originalTracker
+		authService = originalService
+	}()
 
 	const ip = "192.0.2.10"
+	flagIP(ip)
 
-	if !mfaLoginAllowed(ip) {
-		t.Fatal("mfaLoginAllowed() = false for an unknown IP, want true")
+	// Flagged IP without captcha: refused with ErrCaptchaCode.
+	res := postJSON(t, new(BaseApi).MFALogin, ip, `{"name":"admin","password":"secret","code":"123456"}`)
+	if res.Code != constant.CodeAuth || res.Message != "ErrCaptchaCode" {
+		t.Fatalf("flagged IP without captcha: got %+v, want 406 ErrCaptchaCode", res)
 	}
 
-	for i := 0; i < auth.MaxFailCount; i++ {
-		global.IPTracker.RecordFailure(ip)
-	}
-	if mfaLoginAllowed(ip) {
-		t.Fatal("mfaLoginAllowed() = true for a flagged IP, want false")
+	// Flagged IP with a wrong captcha: refused with ErrCaptchaCode.
+	seedCaptcha(t, "mfa-gate-wrong", "abcde")
+	res = postJSON(t, new(BaseApi).MFALogin, ip,
+		`{"name":"admin","password":"secret","code":"123456","captchaID":"mfa-gate-wrong","captcha":"zzzzz"}`)
+	if res.Code != constant.CodeAuth || res.Message != "ErrCaptchaCode" {
+		t.Fatalf("flagged IP with wrong captcha: got %+v, want 406 ErrCaptchaCode", res)
 	}
 
-	// A different, unflagged IP must still be allowed.
+	// Flagged IP with a correct captcha but wrong TOTP: proceeds to the TOTP
+	// check and fails with ErrAuth (the captcha unlocked the gate).
+	seedCaptcha(t, "mfa-gate-good", "abcde")
+	res = postJSON(t, new(BaseApi).MFALogin, ip,
+		`{"name":"admin","password":"secret","code":"123456","captchaID":"mfa-gate-good","captcha":"abcde"}`)
+	if res.Code != constant.CodeAuth || res.Message != "ErrAuth" {
+		t.Fatalf("flagged IP with correct captcha + wrong TOTP: got %+v, want 406 ErrAuth", res)
+	}
+
+	// A different, unflagged IP must still be allowed without captcha.
 	const otherIP = "192.0.2.11"
-	if !mfaLoginAllowed(otherIP) {
-		t.Fatal("mfaLoginAllowed() = false for an unflagged IP, want true")
+	if res := postJSON(t, new(BaseApi).MFALogin, otherIP, `{"name":"admin","password":"secret","code":"123456"}`); res.Code != constant.CodeAuth || res.Message != "ErrAuth" {
+		t.Fatalf("unflagged IP: got %+v, want 406 ErrAuth (reached TOTP check)", res)
 	}
 
-	// Clearing the flag must restore access.
-	global.IPTracker.Clear(ip)
-	if !mfaLoginAllowed(ip) {
-		t.Fatal("mfaLoginAllowed() = false after Clear(), want true")
+	// Flagged IP with a correct captcha and a valid TOTP: succeeds and the
+	// tracker is cleared by the successful login.
+	global.IPTracker.SetNeedCaptcha(ip)
+	authService = &fakeAuthService{mfaLoginRes: &dto.UserLoginInfo{Name: "admin"}}
+	seedCaptcha(t, "mfa-gate-success", "abcde")
+	res = postJSON(t, new(BaseApi).MFALogin, ip,
+		`{"name":"admin","password":"secret","code":"123456","captchaID":"mfa-gate-success","captcha":"abcde"}`)
+	if res.Code != constant.CodeSuccess {
+		t.Fatalf("flagged IP with correct captcha + valid TOTP: got %+v, want success", res)
+	}
+	if global.IPTracker.NeedCaptcha(ip) {
+		t.Fatal("successful MFA login did not clear the IP tracker")
 	}
 }
 
@@ -160,8 +188,8 @@ func TestLoginMFAPendingDoesNotClearTracker(t *testing.T) {
 
 	const ip = "192.0.2.20"
 	flagIP(ip)
-	if mfaLoginAllowed(ip) {
-		t.Fatal("mfaLoginAllowed() = true for a flagged IP, want false")
+	if !global.IPTracker.NeedCaptcha(ip) {
+		t.Fatal("IPTracker did not flag the IP after enough failures")
 	}
 
 	seedCaptcha(t, "mfa-pending-captcha", "abcde")
@@ -170,7 +198,7 @@ func TestLoginMFAPendingDoesNotClearTracker(t *testing.T) {
 	if res.Code != constant.CodeSuccess {
 		t.Fatalf("stage-1 login for MFA-pending account did not succeed: %+v", res)
 	}
-	if mfaLoginAllowed(ip) {
+	if !global.IPTracker.NeedCaptcha(ip) {
 		t.Fatal("stage-1 MFA-pending login cleared the IP tracker; the TOTP failure counter must survive")
 	}
 }
@@ -196,7 +224,7 @@ func TestLoginFullSuccessClearsTracker(t *testing.T) {
 	if res.Code != constant.CodeSuccess {
 		t.Fatalf("full login did not succeed: %+v", res)
 	}
-	if !mfaLoginAllowed(ip) {
+	if global.IPTracker.NeedCaptcha(ip) {
 		t.Fatal("full login success did not clear the IP tracker")
 	}
 }
@@ -226,7 +254,7 @@ func TestMFALoginSuccessClearsTracker(t *testing.T) {
 	// The counter was wiped by the successful login, so one more failure
 	// must not reach the flag threshold.
 	global.IPTracker.RecordFailure(ip)
-	if !mfaLoginAllowed(ip) {
+	if global.IPTracker.NeedCaptcha(ip) {
 		t.Fatal("MFALogin success did not clear the failure counter")
 	}
 }
