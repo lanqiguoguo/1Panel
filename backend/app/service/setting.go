@@ -45,6 +45,7 @@ type ISettingService interface {
 	LoadFromCert() (*dto.SSLInfo, error)
 	HandlePasswordExpired(c *gin.Context, old, new string) error
 	GenerateApiKey() (string, error)
+	GetApiConfig() (*dto.ApiInterfaceConfig, error)
 	UpdateApiConfig(req dto.ApiInterfaceConfig) error
 	UpdateMFA(interval, secret string) error
 	GenerateRSAKey() error
@@ -77,13 +78,30 @@ func (u *SettingService) GetSettingInfo() (*dto.SettingInfo, error) {
 	return &info, err
 }
 
-// sanitizeSettingInfo clears sensitive fields that must not be echoed back to the
-// frontend through the settings query API. ApiKey is intentionally kept: the
-// API interface settings page needs to display it for copy, and the route is
-// only reachable with a valid login session (SessionAuth).
+// sanitizeSettingInfo clears sensitive fields that must not be echoed back to
+// the frontend through the generic settings query API. ApiKey (the interface
+// signing key) is masked to its last four characters: the value leaves the
+// server only through the dedicated /settings/api/config endpoint, which is
+// reachable exclusively with a valid login session (JwtAuth + SessionAuth +
+// PasswordExpired, and the API-key headers are refused there).
 func sanitizeSettingInfo(info *dto.SettingInfo) {
 	info.MFASecret = ""
 	info.ProxyPasswd = ""
+	info.ApiKey = maskApiKey(info.ApiKey)
+}
+
+// maskApiKey masks an API interface key so only the last four characters are
+// visible ("****abcd"), preserving the empty value. A key shorter than or
+// equal to four characters is replaced entirely ("****"), so the raw key is
+// never recoverable from the masked form.
+func maskApiKey(apiKey string) string {
+	if apiKey == "" {
+		return ""
+	}
+	if len(apiKey) <= 4 {
+		return "****"
+	}
+	return "****" + apiKey[len(apiKey)-4:]
 }
 
 // settingUpdateWhitelist contains the setting keys that may be written through
@@ -639,11 +657,42 @@ func (u *SettingService) GenerateApiKey() (string, error) {
 	return apiKey, nil
 }
 
+func (u *SettingService) GetApiConfig() (*dto.ApiInterfaceConfig, error) {
+	values := make(map[string]string)
+	for _, key := range []string{"ApiInterfaceStatus", "ApiKey", "IpWhiteList", "ApiKeyValidityTime"} {
+		setting, err := settingRepo.Get(settingRepo.WithByKey(key))
+		if err != nil {
+			return nil, err
+		}
+		values[key] = setting.Value
+	}
+	return &dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: values["ApiInterfaceStatus"],
+		ApiKey:             values["ApiKey"],
+		IpWhiteList:        values["IpWhiteList"],
+		ApiKeyValidityTime: values["ApiKeyValidityTime"],
+	}, nil
+}
+
 func (u *SettingService) UpdateApiConfig(req dto.ApiInterfaceConfig) error {
 	if err := settingRepo.Update("ApiInterfaceStatus", req.ApiInterfaceStatus); err != nil {
 		return err
 	}
 	global.CONF.System.ApiInterfaceStatus = req.ApiInterfaceStatus
+	// The apiKey field is masked (****xxxx) in /settings/search so the generic
+	// settings query never leaks the signing key; the frontend API config page
+	// loads the plaintext from the dedicated /settings/api/config endpoint and
+	// keeps it in memory. When a submit carries the masked form (e.g. the
+	// enable/disable switch which echoes back the value it loaded), treat it as
+	// "keep the stored key" instead of persisting the mask over the real key.
+	// An exact mask match is rejected too, so a masked value can never be
+	// persisted as the actual key.
+	stored, err := settingRepo.Get(settingRepo.WithByKey("ApiKey"))
+	if err == nil && stored.Value != "" {
+		if req.ApiKey == maskApiKey(stored.Value) || strings.HasPrefix(req.ApiKey, "****") {
+			req.ApiKey = stored.Value
+		}
+	}
 	if err := settingRepo.Update("ApiKey", req.ApiKey); err != nil {
 		return err
 	}

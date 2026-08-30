@@ -69,5 +69,6 @@ func (s *SettingRouter) InitRouter(Router *gin.RouterGroup) {
 		settingRouter.GET("/basedir", baseApi.LoadBaseDir)
 		settingRouter.POST("/api/config/generate/key", baseApi.GenerateApiKey)
 		settingRouter.POST("/api/config/update", baseApi.UpdateApiConfig)
+		settingRouter.GET("/api/config", baseApi.GetApiConfig)
 	}
 }

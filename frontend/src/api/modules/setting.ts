@@ -192,6 +192,9 @@ export const upgrade = (version: string) => {
 };
 
 // api config
+export const loadApiConfig = () => {
+    return http.get<Setting.ApiConfig>(`/settings/api/config`);
+};
 export const generateApiKey = () => {
     return http.post<string>(`/settings/api/config/generate/key`);
 };

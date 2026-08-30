@@ -155,12 +155,10 @@
                             inactive-value="disable"
                         />
                         <span class="input-help">{{ $t('setting.apiInterfaceHelper') }}</span>
-                        <div v-if="form.apiInterfaceStatus === 'enable'">
-                            <div>
-                                <el-button link type="primary" @click="onChangeApiInterfaceStatus">
-                                    {{ $t('commons.button.view') }}
-                                </el-button>
-                            </div>
+                        <div>
+                            <el-button link type="primary" @click="onChangeApiInterfaceStatus">
+                                {{ $t('commons.button.view') }}
+                            </el-button>
                         </div>
                     </el-form-item>
 
@@ -196,7 +194,13 @@
 <script lang="ts" setup>
 import { ref, reactive, onMounted, computed } from 'vue';
 import { ElForm, ElMessageBox } from 'element-plus';
-import { getSettingInfo, updateSetting, getSystemAvailable, updateApiConfig } from '@/api/modules/setting';
+import {
+    getSettingInfo,
+    updateSetting,
+    getSystemAvailable,
+    loadApiConfig,
+    updateApiConfig,
+} from '@/api/modules/setting';
 import { GlobalStore } from '@/store';
 import { useI18n } from 'vue-i18n';
 import { useTheme } from '@/hooks/use-theme';
@@ -358,11 +362,15 @@ const onChangeApiInterfaceStatus = async () => {
         .then(async () => {
             loading.value = true;
             form.apiInterfaceStatus = 'disable';
+            // the plaintext key is only served by the dedicated api config
+            // endpoint (the value from /settings/search is masked), so reload
+            // it here before submitting the disable update
+            const res = await loadApiConfig();
             let param = {
-                apiKey: form.apiKey,
-                ipWhiteList: form.ipWhiteList,
+                apiKey: res.data.apiKey,
+                ipWhiteList: res.data.ipWhiteList,
                 apiInterfaceStatus: form.apiInterfaceStatus,
-                apiKeyValidityTime: form.apiKeyValidityTime,
+                apiKeyValidityTime: res.data.apiKeyValidityTime,
             };
             await updateApiConfig(param)
                 .then(() => {

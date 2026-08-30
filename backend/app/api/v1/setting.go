@@ -377,6 +377,27 @@ func (b *BaseApi) MFABind(c *gin.Context) {
 }
 
 // @Tags System Setting
+// @Summary Load api interface config
+// @Accept json
+// @Success 200 {object} dto.ApiInterfaceConfig
+// @Security ApiKeyAuth
+// @Security Timestamp
+// @Router /settings/api/config [get]
+func (b *BaseApi) GetApiConfig(c *gin.Context) {
+	panelToken := c.GetHeader("1Panel-Token")
+	if panelToken != "" {
+		helper.ErrorWithDetail(c, constant.CodeErrUnauthorized, constant.ErrApiConfigDisable, nil)
+		return
+	}
+	cfg, err := settingService.GetApiConfig()
+	if err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+		return
+	}
+	helper.SuccessWithData(c, cfg)
+}
+
+// @Tags System Setting
 // @Summary Generate api key
 // @Accept json
 // @Success 200 {string} apiKey

@@ -91,7 +91,7 @@
     </div>
 </template>
 <script lang="ts" setup>
-import { generateApiKey, updateApiConfig } from '@/api/modules/setting';
+import { generateApiKey, loadApiConfig, updateApiConfig } from '@/api/modules/setting';
 import { reactive, ref } from 'vue';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
@@ -159,15 +159,17 @@ const emit = defineEmits<{ (e: 'search'): void }>();
 
 const acceptParams = async (params: DialogProps): Promise<void> => {
     form.apiInterfaceStatus = params.apiInterfaceStatus;
-    form.apiKey = params.apiKey;
-    if (params.apiKey == '') {
-        await generateApiKey().then((res) => {
-            form.apiKey = res.data;
-        });
-    }
     form.ipWhiteList = params.ipWhiteList;
     form.apiKeyValidityTime = params.apiKeyValidityTime;
+    // The apiKey field in /settings/search is masked (****xxxx); the plaintext
+    // key is only served by the dedicated /settings/api/config endpoint.
     drawerVisible.value = true;
+    await loadApiConfig().then((res) => {
+        form.apiKey = res.data.apiKey;
+        if (params.apiKey == '') {
+            form.apiKey = params.apiKey;
+        }
+    });
 };
 
 const resetApiKey = async () => {

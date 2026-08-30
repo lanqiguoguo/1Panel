@@ -56,6 +56,10 @@ func TestSanitizeSettingInfo(t *testing.T) {
 	if info.ProxyPasswd != "" {
 		t.Errorf("sanitizeSettingInfo: ProxyPasswd = %q, want empty", info.ProxyPasswd)
 	}
+	const rawKey = "abcdefghijklmnopqrstuvwxyz123456"
+	if info.ApiKey != "****3456" {
+		t.Errorf("sanitizeSettingInfo: ApiKey = %q, want masked %q", info.ApiKey, "****3456")
+	}
 
 	// fields the frontend actually needs must be preserved
 	preserved := []struct {
@@ -68,7 +72,6 @@ func TestSanitizeSettingInfo(t *testing.T) {
 		{"MFAStatus", info.MFAStatus},
 		{"MFAInterval", info.MFAInterval},
 		{"ApiInterfaceStatus", info.ApiInterfaceStatus},
-		{"ApiKey", info.ApiKey},
 		{"IpWhiteList", info.IpWhiteList},
 		{"ApiKeyValidityTime", info.ApiKeyValidityTime},
 		{"ProxyPasswdKeep", info.ProxyPasswdKeep},
@@ -86,12 +89,13 @@ func TestSanitizeSettingInfo(t *testing.T) {
 		}
 	}
 
-	// the serialized payload must not carry the secrets
+	// the serialized payload must not carry the secrets (including the raw
+	// ApiKey, whose masked form must not contain any fragment of the key)
 	raw, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
-	for _, secret := range []string{"JBSWY3DPEHPK3PXP", "proxy-plaintext"} {
+	for _, secret := range []string{"JBSWY3DPEHPK3PXP", "proxy-plaintext", rawKey} {
 		if strings.Contains(string(raw), secret) {
 			t.Errorf("sanitizeSettingInfo: serialized payload still contains secret %q", secret)
 		}
@@ -113,6 +117,94 @@ func TestSanitizeSettingInfoIdempotent(t *testing.T) {
 	sanitizeSettingInfo(info)
 	if info.MFASecret != "" || info.ProxyPasswd != "" {
 		t.Fatalf("sanitizeSettingInfo not idempotent: %+v", info)
+	}
+}
+
+func TestMaskApiKey(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty stays empty", "", ""},
+		{"full key keeps last four", "abcdefghijklmnopqrstuvwxyz123456", "****3456"},
+		{"short key fully masked", "abcd", "****"},
+		{"single char fully masked", "x", "****"},
+		{"exactly five chars", "abcde", "****bcde"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := maskApiKey(tt.input); got != tt.want {
+				t.Errorf("maskApiKey(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateApiConfigMaskedApiKeyPreservesStoredKey guards the frontend
+// write-back path: once /settings/search returns the masked key (****xxxx),
+// a submit carrying the masked form must keep the stored key instead of
+// persisting the mask over it, and a masked value can never be stored verbatim.
+func TestUpdateApiConfigMaskedApiKeyPreservesStoredKey(t *testing.T) {
+	setupSettingUpdateTest(t)
+	u := &SettingService{}
+
+	const rawKey = "abcdefghijklmnopqrstuvwxyz123456"
+	if err := settingRepo.UpdateOrCreate("ApiKey", rawKey); err != nil {
+		t.Fatalf("seed ApiKey failed: %v", err)
+	}
+
+	masked := maskApiKey(rawKey)
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             masked,
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig with masked key failed: %v", err)
+	}
+	got, err := settingRepo.Get(settingRepo.WithByKey("ApiKey"))
+	if err != nil {
+		t.Fatalf("read ApiKey failed: %v", err)
+	}
+	if got.Value != rawKey {
+		t.Errorf("stored ApiKey = %q after masked submit, want preserved %q", got.Value, rawKey)
+	}
+
+	// a masked value must never be persisted as the actual key, even when the
+	// stored key does not match the mask
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             "****zzzz",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig with foreign masked key failed: %v", err)
+	}
+	got, err = settingRepo.Get(settingRepo.WithByKey("ApiKey"))
+	if err != nil {
+		t.Fatalf("read ApiKey failed: %v", err)
+	}
+	if got.Value != rawKey {
+		t.Errorf("stored ApiKey = %q after foreign masked submit, want unchanged %q", got.Value, rawKey)
+	}
+
+	// a real (unmasked) new key still replaces the stored one
+	const newKey = "new-key-abcdefghijklmnopqrstuvwxyz"
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "enable",
+		ApiKey:             newKey,
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "120",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig with new key failed: %v", err)
+	}
+	got, err = settingRepo.Get(settingRepo.WithByKey("ApiKey"))
+	if err != nil {
+		t.Fatalf("read ApiKey failed: %v", err)
+	}
+	if got.Value != newKey {
+		t.Errorf("stored ApiKey = %q after real submit, want %q", got.Value, newKey)
 	}
 }
 

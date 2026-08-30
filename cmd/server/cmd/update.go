@@ -140,7 +140,9 @@ func password() {
 	}
 	complexSetting := getSettingByKey(db, "ComplexityVerification")
 	if complexSetting == "enable" {
-		if isValidPassword("newPassword") {
+		// isValidPassword reports whether the password satisfies the complexity
+		// rule (returns true = valid); reject the user input when it does not.
+		if !isValidPassword(newPassword) {
 			fmt.Println("\n" + i18n.GetMsgByKeyForCmd("UpdatePasswordFormat"))
 			return
 		}
@@ -250,7 +252,10 @@ func isValidPassword(password string) bool {
 		}
 	}
 
-	if len(password) < 8 && len(password) > 30 {
+	// at least two of the three character classes (letter / digit / special)
+	// and a total length of 8-30 characters, mirroring the panel's complexity
+	// rule (see frontend complexityPassword in global/form-rules.ts)
+	if len(password) < 8 || len(password) > 30 {
 		return false
 	}
 	if (numCount == 0 && alphaCount == 0) || (alphaCount == 0 && specialCount == 0) || (numCount == 0 && specialCount == 0) {
