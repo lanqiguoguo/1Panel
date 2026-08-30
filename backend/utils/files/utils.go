@@ -158,6 +158,43 @@ func IsInvalidChar(name string) bool {
 	return strings.Contains(name, "&")
 }
 
+// ValidNameComponent reports whether name is safe to embed into a
+// filesystem path (and, for image names, into a docker build tag) without
+// escaping the intended root directory.
+//
+// The check is a whitelist: every slash-separated component must be
+// non-empty and must not be "." or "..", the name may not start with "/"
+// or a leading dot (which would make it hidden or absolute), and every
+// character must be in the printable set used by image names
+// (repo/namespace slashes, tag colons) and path components
+// ([a-zA-Z0-9_.-]).
+//
+// The character set intentionally keeps both cases and is looser than the
+// docker reference spec (lowercase-only repository names) so that names
+// previously accepted by the API keep working; docker itself reports the
+// invalid tag error at build time. The goal here is preventing path
+// traversal, not re-implementing the docker reference grammar.
+func ValidNameComponent(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "/") {
+		return false
+	}
+	for _, comp := range strings.Split(name, "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			return false
+		}
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '_' && r != '-' && r != '.' && r != '/' && r != ':' {
+			return false
+		}
+	}
+	return true
+}
+
 func IsEmptyDir(dir string) bool {
 	f, err := os.Open(dir)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
+	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/docker/docker/api/types/filters"
 	"golang.org/x/net/context"
 )
@@ -206,6 +207,17 @@ func (u *ContainerService) TestCompose(req dto.ComposeCreate) (bool, error) {
 
 func (u *ContainerService) CreateCompose(req dto.ComposeCreate) (string, error) {
 	if cmd.CheckIllegal(req.Name, req.Path) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	// The name is embedded into the compose directory
+	// (DataDir/docker/compose/<name>), the compose log path and the
+	// docker-compose project name, so it must not escape the compose root
+	// (path traversal). CheckIllegal above blocks shell metacharacters but
+	// not ".."; the whitelist closes the traversal gap and matches the
+	// frontend composeName rule ([a-z0-9][a-z0-9_-]{0,256}): lowercase
+	// alphanumeric plus "-" and "_" only, and never a "/" (compose names
+	// have no namespacing).
+	if !files.ValidNameComponent(req.Name) || strings.Contains(req.Name, "/") || strings.Contains(req.Name, ":") {
 		return "", buserr.New(constant.ErrCmdIllegal)
 	}
 	if err := u.loadPath(&req); err != nil {

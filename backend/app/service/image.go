@@ -22,6 +22,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
+	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/registry"
 	"github.com/docker/docker/pkg/archive"
@@ -154,6 +155,14 @@ func (u *ImageService) List() ([]dto.Options, error) {
 }
 
 func (u *ImageService) ImageBuild(req dto.ImageBuild) (string, error) {
+	// The name is embedded into the build directory
+	// (DataDir/docker/build/<name>) and the build log path, so it must not
+	// be able to escape either root (path traversal). Validate before
+	// touching the docker client: a rejected name must not create any
+	// directory or file, nor open a connection.
+	if !files.ValidNameComponent(req.Name) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
 	client, err := docker.NewDockerClient()
 	if err != nil {
 		return "", err
