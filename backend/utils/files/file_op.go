@@ -705,15 +705,32 @@ const (
 var errUnsafeArchive = errors.New("unsafe archive")
 
 // checkArchivePath verifies that an entry name extracted from an archive stays
-// inside dst. Absolute paths, paths containing ".." components and symbolic
-// link entries are rejected to prevent path traversal and symlink escapes.
+// inside dst. Absolute paths, paths containing ".." components, entries that
+// resolve to the destination itself ("." or any name folding to it) and
+// symbolic link entries are rejected to prevent path traversal, takeover of
+// dst itself and symlink escapes.
 func checkArchivePath(fileName string, info fs.FileInfo) error {
 	if info != nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%w: archive entry is a symlink: %s", errUnsafeArchive, fileName)
 	}
-	cleanName := filepath.Clean(filepath.FromSlash(fileName))
-	if cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanName) {
+	slashName := filepath.FromSlash(fileName)
+	cleanName := filepath.Clean(slashName)
+	if cleanName == "." || cleanName == ".." ||
+		strings.HasPrefix(cleanName, "."+string(filepath.Separator)) ||
+		strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) ||
+		// filepath.Clean strips a leading "./" ("./evil" cleans to "evil"),
+		// so the raw slash-normalized name must be checked as well.
+		strings.HasPrefix(slashName, "."+string(filepath.Separator)) ||
+		filepath.IsAbs(cleanName) {
 		return fmt.Errorf("%w: invalid archive entry path: %s", errUnsafeArchive, fileName)
+	}
+	// A ".." component anywhere in the raw name would be folded away by
+	// filepath.Clean/Join, letting an entry silently resolve to a different
+	// path inside dst (e.g. "a/../b" -> dst/b); reject it outright.
+	for _, comp := range strings.Split(slashName, string(filepath.Separator)) {
+		if comp == ".." {
+			return fmt.Errorf("%w: invalid archive entry path: %s", errUnsafeArchive, fileName)
+		}
 	}
 	return nil
 }
@@ -726,8 +743,17 @@ func archiveEntryPath(dst, fileName string, info fs.FileInfo, linkTarget string)
 		return "", fmt.Errorf("%w: archive entry is a link: %s", errUnsafeArchive, fileName)
 	}
 	filePath := filepath.Join(dst, filepath.Clean(filepath.FromSlash(fileName)))
-	// Double check the joined path still lies inside dst.
-	if !strings.HasPrefix(filePath, filepath.Clean(dst)+string(filepath.Separator)) && filePath != filepath.Clean(dst) {
+	// Double check the joined path still lies strictly inside dst. The ".."
+	// component checks above guarantee filepath.Join cannot fold the entry
+	// onto dst itself or outside of it, so a plain prefix check suffices.
+	cleanDst := filepath.Clean(dst)
+	if !strings.HasPrefix(filePath, cleanDst+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: archive entry escapes destination: %s", errUnsafeArchive, fileName)
+	}
+	// Belt and braces: the resolved path must stay strictly inside cleanDst
+	// with no remaining ".." components relative to it.
+	if rel, err := filepath.Rel(cleanDst, filePath); err != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("%w: archive entry escapes destination: %s", errUnsafeArchive, fileName)
 	}
 	return filePath, nil

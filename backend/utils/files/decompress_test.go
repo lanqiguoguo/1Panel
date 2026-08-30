@@ -74,6 +74,11 @@ func TestDecompressWithSDKPathTraversal(t *testing.T) {
 		{"deep parent traversal", "../../evil.txt"},
 		{"nested parent traversal", "sub/../../evil.txt"},
 		{"absolute path", "/etc/evil.txt"},
+		{"current dir entry", "."},
+		{"current dir prefix entry", "./evil.txt"},
+		{"trailing dotdot entry", "x/.."},
+		{"folded dotdot entry", "a/../b"},
+		{"nested dotdot entry", "x/../y"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,6 +88,10 @@ func TestDecompressWithSDKPathTraversal(t *testing.T) {
 				}
 			})
 			dst := t.TempDir()
+			marker := filepath.Join(dst, "marker.txt")
+			if err := os.WriteFile(marker, []byte("keep me"), 0644); err != nil {
+				t.Fatalf("write marker: %v", err)
+			}
 			err := op.decompressWithSDK(archivePath, dst, SdkTarGz)
 			if err == nil {
 				t.Fatalf("Decompress with entry %q: expected error, got nil", tc.fileName)
@@ -92,6 +101,22 @@ func TestDecompressWithSDKPathTraversal(t *testing.T) {
 			}
 			if _, statErr := os.Stat("/etc/evil.txt"); statErr == nil {
 				t.Fatalf("Decompress with entry %q: evil.txt was written to /etc", tc.fileName)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "b")); statErr == nil {
+				t.Fatalf("Decompress with entry %q: folded path was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "y")); statErr == nil {
+				t.Fatalf("Decompress with entry %q: folded path was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "evil.txt")); statErr == nil {
+				t.Fatalf("Decompress with entry %q: evil.txt was written to dst", tc.fileName)
+			}
+			// the destination itself must not have been replaced or truncated
+			if _, statErr := os.Stat(dst); statErr != nil {
+				t.Fatalf("Decompress with entry %q: dst directory is gone: %v", tc.fileName, statErr)
+			}
+			if content, readErr := os.ReadFile(marker); readErr != nil || string(content) != "keep me" {
+				t.Fatalf("Decompress with entry %q: dst contents were tampered with (marker read err %v, content %q)", tc.fileName, readErr, string(content))
 			}
 		})
 	}
@@ -216,6 +241,99 @@ func TestDecompressEncryptedUnsafeTarGzWithoutShellFallback(t *testing.T) {
 	}
 }
 
+// TestDecompressRejectsDotAndDotdotEntries feeds archives whose members resolve
+// to the destination itself or to a silently re-folded path inside it (".",
+// "./evil", "x/..", "a/../b", "x/../y") through the full Decompress entry
+// point, plain and openssl-encrypted. All of them must be rejected as unsafe
+// and must not touch the destination.
+func TestDecompressRejectsDotAndDotdotEntries(t *testing.T) {
+	op := NewFileOp()
+	cases := []struct {
+		name     string
+		fileName string
+	}{
+		{"current dir entry", "."},
+		{"current dir prefix entry", "./evil.txt"},
+		{"trailing dotdot entry", "x/.."},
+		{"folded dotdot entry", "a/../b"},
+		{"nested dotdot entry", "x/../y"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" plain", func(t *testing.T) {
+			root := t.TempDir()
+			dst := filepath.Join(root, "destination")
+			if err := os.Mkdir(dst, 0755); err != nil {
+				t.Fatalf("create destination: %v", err)
+			}
+			marker := filepath.Join(dst, "marker.txt")
+			if err := os.WriteFile(marker, []byte("keep me"), 0644); err != nil {
+				t.Fatalf("write marker: %v", err)
+			}
+			archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+				if err := addTarEntry(tw, tc.fileName, "evil"); err != nil {
+					t.Fatalf("write entry: %v", err)
+				}
+			})
+			err := op.Decompress(archivePath, dst, TarGz, "")
+			if err == nil {
+				t.Fatalf("Decompress %q: expected unsafe archive error, got nil", tc.fileName)
+			}
+			if !errors.Is(err, errUnsafeArchive) {
+				t.Fatalf("Decompress %q: expected unsafe archive error, got %v", tc.fileName, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "evil.txt")); statErr == nil {
+				t.Fatalf("Decompress %q: evil.txt was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "b")); statErr == nil {
+				t.Fatalf("Decompress %q: folded path b was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "y")); statErr == nil {
+				t.Fatalf("Decompress %q: folded path y was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(dst); statErr != nil {
+				t.Fatalf("Decompress %q: dst directory is gone: %v", tc.fileName, statErr)
+			}
+			if content, readErr := os.ReadFile(marker); readErr != nil || string(content) != "keep me" {
+				t.Fatalf("Decompress %q: dst contents were tampered with (marker read err %v, content %q)", tc.fileName, readErr, string(content))
+			}
+		})
+		t.Run(tc.name+" encrypted", func(t *testing.T) {
+			root := t.TempDir()
+			dst := filepath.Join(root, "destination")
+			if err := os.Mkdir(dst, 0755); err != nil {
+				t.Fatalf("create destination: %v", err)
+			}
+			marker := filepath.Join(dst, "marker.txt")
+			if err := os.WriteFile(marker, []byte("keep me"), 0644); err != nil {
+				t.Fatalf("write marker: %v", err)
+			}
+			plainPath := writeTarGzToFile(t, func(tw *tar.Writer) {
+				if err := addTarEntry(tw, tc.fileName, "evil"); err != nil {
+					t.Fatalf("write entry: %v", err)
+				}
+			})
+			const secret = "attacker supplied secret"
+			encryptedPath := encryptTarGzForTest(t, plainPath, secret)
+			err := op.Decompress(encryptedPath, dst, TarGz, secret)
+			if err == nil {
+				t.Fatalf("Decompress encrypted %q: expected unsafe archive error, got nil", tc.fileName)
+			}
+			if !errors.Is(err, errUnsafeArchive) {
+				t.Fatalf("Decompress encrypted %q: expected unsafe archive error, got %v", tc.fileName, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dst, "evil.txt")); statErr == nil {
+				t.Fatalf("Decompress encrypted %q: evil.txt was written to dst", tc.fileName)
+			}
+			if _, statErr := os.Stat(dst); statErr != nil {
+				t.Fatalf("Decompress encrypted %q: dst directory is gone: %v", tc.fileName, statErr)
+			}
+			if content, readErr := os.ReadFile(marker); readErr != nil || string(content) != "keep me" {
+				t.Fatalf("Decompress encrypted %q: dst contents were tampered with (marker read err %v, content %q)", tc.fileName, readErr, string(content))
+			}
+		})
+	}
+}
+
 func TestDecompressWithSDKNormal(t *testing.T) {
 	op := NewFileOp()
 	archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
@@ -233,6 +351,39 @@ func TestDecompressWithSDKNormal(t *testing.T) {
 	}
 	if string(content) != "hello world" {
 		t.Fatalf("extracted content = %q, want %q", string(content), "hello world")
+	}
+}
+
+// TestDecompressNormalEntriesStillSucceed is the regression guard for the
+// dot/dotdot hardening: ordinary flat and nested entries must keep extracting
+// through the full Decompress entry point.
+func TestDecompressNormalEntriesStillSucceed(t *testing.T) {
+	op := NewFileOp()
+	archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
+		if err := addTarEntry(tw, "file.txt", "flat"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+		if err := addTarEntry(tw, "dir/file.txt", "nested"); err != nil {
+			t.Fatalf("write entry: %v", err)
+		}
+	})
+	dst := t.TempDir()
+	if err := op.Decompress(archivePath, dst, TarGz, ""); err != nil {
+		t.Fatalf("Decompress normal archive: unexpected error: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dst, "file.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(content) != "flat" {
+		t.Fatalf("extracted content = %q, want %q", string(content), "flat")
+	}
+	content, err = os.ReadFile(filepath.Join(dst, "dir", "file.txt"))
+	if err != nil {
+		t.Fatalf("read extracted nested file: %v", err)
+	}
+	if string(content) != "nested" {
+		t.Fatalf("extracted content = %q, want %q", string(content), "nested")
 	}
 }
 
