@@ -663,3 +663,27 @@ export function escapeHtml(value: string): string {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 }
+
+/**
+ * sanitizeTerminalPath 校验来自不可信来源（如 URL query ?path=）的路径，仅当其
+ * 可以安全地拼进 shell 命令（如 `cd "${path}"`）时原样返回，否则返回 null。
+ * 规则（白名单优先，未列出的字符一律拒绝）：
+ * 1. 必须是以 / 开头的绝对路径；
+ * 2. 仅允许 A-Za-z0-9 . _ - / ~ 以及空格（空格用于兼容含空格的合法目录，
+ *    双引号、单引号、反引号、$、;、|、&、括号、重定向、反斜杠、换行、Tab 等
+ *    shell 元字符均在白名单之外，天然被拒绝）；
+ * 3. 拒绝包含 .. 路径分量。
+ */
+export function sanitizeTerminalPath(path: string): string | null {
+    if (typeof path !== 'string' || path.length === 0 || !path.startsWith('/')) {
+        return null;
+    }
+    const safeChars = /^[A-Za-z0-9 ._\-/~]+$/;
+    if (!safeChars.test(path)) {
+        return null;
+    }
+    if (path.split('/').includes('..')) {
+        return null;
+    }
+    return path;
+}

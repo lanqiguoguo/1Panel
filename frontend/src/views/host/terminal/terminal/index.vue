@@ -153,6 +153,7 @@ import screenfull from 'screenfull';
 import i18n from '@/lang';
 import { Host } from '@/api/interface/host';
 import { getCommandTree, getHostTree, testByID } from '@/api/modules/host';
+import { sanitizeTerminalPath } from '@/utils/util';
 import { GlobalStore } from '@/store';
 import router from '@/routers';
 
@@ -409,8 +410,8 @@ defineExpose({
 
 onMounted(() => {
     if (router.currentRoute.value.query.path) {
-        const path = String(router.currentRoute.value.query.path);
-        initCmd.value = `cd "${path}" \n`;
+        const path = sanitizeTerminalPath(String(router.currentRoute.value.query.path));
+        initCmd.value = path === null ? '' : `cd "${path}" \n`;
     }
 });
 </script>
