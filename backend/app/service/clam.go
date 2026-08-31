@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,86 @@ const (
 	freshClamServiceKey = "freshclam"
 	resultDir           = "clamav"
 )
+
+// clamNameRegexp matches the charset the frontend offers for ClamAV rule
+// names (Rules.simpleName): alphanumerics, underscore and dash, capped at the
+// 64 characters of the model.Clam name column. Clam names
+// are both a directory under DataDir/clamav/ and an unquoted interpolation
+// of `clamdscan ... -l <logFile>` (bash -c, see cmd.Execf), so a strict
+// whitelist is the safest gate: it cannot smuggle path separators, "..",
+// spaces, backslashes or shell metacharacters into either data flow.
+var clamNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+// clamRecordNameRegexp matches a scan-record log file name. Records are
+// created by HandleOnce as DataDir/clamav/<name>/<DateTimeSlimLayout>, i.e.
+// a plain 14-digit timestamp ("20060102150405"), so the whitelist accepts
+// exactly that shape and rejects anything that could traverse (RecordName is
+// joined into the tail'd path of LoadRecordLog).
+var clamRecordNameRegexp = regexp.MustCompile(`^[0-9]{14}$`)
+
+// validClamName reports whether name is a safe ClamAV rule name (see
+// clamNameRegexp).
+func validClamName(name string) bool {
+	return clamNameRegexp.MatchString(name)
+}
+
+// validClamRecordName reports whether name is a safe scan-record log file
+// name (see clamRecordNameRegexp).
+func validClamRecordName(name string) bool {
+	return clamRecordNameRegexp.MatchString(name)
+}
+
+// validClamShellArg reports whether s can be safely interpolated unquoted
+// into the `bash -c "clamdscan ..."` command (see cmd.Execf). cmd.CheckIllegal
+// rejects the shell metacharacters but deliberately keeps spaces and
+// backslashes legal file-name characters; here they must be refused as well,
+// because bash word-splits on spaces and treats backslash as an escape in the
+// unquoted interpolation.
+func validClamShellArg(s string) bool {
+	if s == "" || cmd.CheckIllegal(s) {
+		return false
+	}
+	return !strings.ContainsAny(s, " \\")
+}
+
+// validClamScanDir reports whether an infected directory is safe for both of
+// its data flows: it is interpolated unquoted into `--move=<dir>` /
+// `--copy=<dir>` (validClamShellArg) and it is joined with path/filepath to
+// locate files, so it must be an absolute path. Any ".." path segment is
+// refused outright: filepath.Clean would fold it into a valid absolute
+// target, but a value like "/tmp/../../etc" retargets the quarantine dir to
+// a location the admin never typed, and normal quarantine paths have no
+// reason to carry dot-dot segments.
+func validClamScanDir(dir string) bool {
+	if !validClamShellArg(dir) {
+		return false
+	}
+	if !filepath.IsAbs(filepath.Clean(dir)) {
+		return false
+	}
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// validClamTail reports whether tail is a plain number, as sent by the
+// frontend tail select ("0", "10", ... ). LoadRecordLog passes it as a
+// separate tail argv, but a value like "-1 /etc/x" or "+1;id" must still be
+// refused; digits-only keeps the whitelist minimal.
+func validClamTail(tail string) bool {
+	if tail == "" || len(tail) > 9 {
+		return false
+	}
+	for _, r := range tail {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 type ClamService struct {
 	serviceName      string
@@ -153,6 +234,11 @@ func (c *ClamService) SearchWithPage(req dto.SearchClamWithPage) (int64, interfa
 	}
 	nyc, _ := time.LoadLocation(common.LoadTimeZoneByCmd())
 	for i := 0; i < len(datas); i++ {
+		// Defensive re-validation: a tampered name would make
+		// loadFileByName walk arbitrary directories; skip such rows.
+		if !validClamName(datas[i].Name) {
+			continue
+		}
 		logPaths := loadFileByName(datas[i].Name)
 		sort.Slice(logPaths, func(i, j int) bool {
 			return logPaths[i] > logPaths[j]
@@ -169,6 +255,13 @@ func (c *ClamService) SearchWithPage(req dto.SearchClamWithPage) (int64, interfa
 }
 
 func (c *ClamService) Create(req dto.ClamCreate) error {
+	// Name becomes the log directory under DataDir/clamav/ and part of the
+	// unquoted clamdscan command, Path and InfectedDir are unquoted
+	// command interpolations, so all three are validated here at the
+	// service boundary (see validClamName / validClamScanDir).
+	if err := validateClamParams(req.Name, req.Path, req.InfectedStrategy, req.InfectedDir); err != nil {
+		return err
+	}
 	clam, _ := clamRepo.Get(commonRepo.WithByName(req.Name))
 	if clam.ID != 0 {
 		return constant.ErrRecordExist
@@ -187,6 +280,9 @@ func (c *ClamService) Create(req dto.ClamCreate) error {
 }
 
 func (c *ClamService) Update(req dto.ClamUpdate) error {
+	if err := validateClamParams(req.Name, req.Path, req.InfectedStrategy, req.InfectedDir); err != nil {
+		return err
+	}
 	clam, _ := clamRepo.Get(commonRepo.WithByName(req.Name))
 	if clam.ID == 0 {
 		return constant.ErrRecordNotFound
@@ -208,11 +304,59 @@ func (c *ClamService) Update(req dto.ClamUpdate) error {
 
 }
 
+// validateClamParams is the shared service-boundary gate for Create/Update.
+// strategy none/remove leaves InfectedDir unused (Create/Update blank it
+// afterwards, matching the pre-existing behavior), so it is only required
+// for move/copy. Path is interpolated unquoted into the clamdscan command,
+// so it goes through the same shell-arg gate as InfectedDir.
+func validateClamParams(name, scanPath, strategy, infectedDir string) error {
+	if !validClamName(name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !validClamShellArg(scanPath) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	switch strategy {
+	case "none", "remove":
+	case "move", "copy":
+		if !validClamScanDir(infectedDir) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	case "": // legacy rows without an explicit strategy behave like "none"
+	default:
+		return buserr.New(constant.ErrTypeInvalidParams)
+	}
+	return nil
+}
+
 func (c *ClamService) Delete(req dto.ClamDelete) error {
 	for _, id := range req.Ids {
 		clam, _ := clamRepo.Get(commonRepo.WithByID(id))
 		if clam.ID == 0 {
 			continue
+		}
+		// Defensive re-validation of the DB-stored values: both are joined
+		// into os.RemoveAll targets below, so a tampered row must not turn
+		// into an arbitrary directory deletion.
+		if !validClamName(clam.Name) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+		if req.RemoveInfected {
+			// none/remove rows legitimately store an empty InfectedDir (and
+			// pre-fix rows may keep other legacy values); only a non-empty
+			// value is joined into the os.RemoveAll target below, so only
+			// that case must pass the full dir gate.
+			switch clam.InfectedStrategy {
+			case "", "none", "remove":
+			case "move", "copy":
+				// validClamScanDir implies non-empty, no shell
+				// metacharacters and an absolute cleaned path.
+				if !validClamScanDir(clam.InfectedDir) {
+					return buserr.New(constant.ErrCmdIllegal)
+				}
+			default:
+				return buserr.New(constant.ErrTypeInvalidParams)
+			}
 		}
 		if req.RemoveRecord {
 			_ = os.RemoveAll(path.Join(global.CONF.System.DataDir, resultDir, clam.Name))
@@ -237,6 +381,22 @@ func (c *ClamService) HandleOnce(req dto.OperateByID) error {
 	}
 	if cmd.CheckIllegal(clam.Path) {
 		return buserr.New(constant.ErrCmdIllegal)
+	}
+	// Defensive re-validation of the DB-stored values: Name becomes the log
+	// directory and part of the unquoted clamdscan command, InfectedDir is
+	// interpolated unquoted into `--move=`/`--copy=` when the strategy
+	// needs it.
+	if !validClamName(clam.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	switch clam.InfectedStrategy {
+	case "none", "remove", "":
+	case "move", "copy":
+		if !validClamScanDir(clam.InfectedDir) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	default:
+		return buserr.New(constant.ErrTypeInvalidParams)
 	}
 	timeNow := time.Now().Format(constant.DateTimeSlimLayout)
 	logFile := path.Join(global.CONF.System.DataDir, resultDir, clam.Name, timeNow)
@@ -274,6 +434,11 @@ func (c *ClamService) LoadRecords(req dto.ClamLogSearch) (int64, interface{}, er
 	clam, _ := clamRepo.Get(commonRepo.WithByID(req.ClamID))
 	if clam.ID == 0 {
 		return 0, nil, constant.ErrRecordNotFound
+	}
+	// Defensive re-validation: the DB-stored name is joined into the walked
+	// and read log paths below.
+	if !validClamName(clam.Name) {
+		return 0, nil, buserr.New(constant.ErrCmdIllegal)
 	}
 	logPaths := loadFileByName(clam.Name)
 	if len(logPaths) == 0 {
@@ -318,6 +483,12 @@ func (c *ClamService) LoadRecords(req dto.ClamLogSearch) (int64, interface{}, er
 	return int64(total), datas, nil
 }
 func (c *ClamService) LoadRecordLog(req dto.ClamLogReq) (string, error) {
+	// ClamName/RecordName are joined into the tail'd path below, so a
+	// traversal pair like "../.." + "../../../etc/shadow" must be refused;
+	// Tail is passed to the tail command, so it stays digits-only.
+	if !validClamName(req.ClamName) || !validClamRecordName(req.RecordName) || !validClamTail(req.Tail) {
+		return "", buserr.New(constant.ErrTypeInvalidParams)
+	}
 	logPath := path.Join(global.CONF.System.DataDir, resultDir, req.ClamName, req.RecordName)
 	var tail string
 	if req.Tail != "0" {
@@ -337,6 +508,11 @@ func (c *ClamService) CleanRecord(req dto.OperateByID) error {
 	clam, _ := clamRepo.Get(commonRepo.WithByID(req.ID))
 	if clam.ID == 0 {
 		return constant.ErrRecordNotFound
+	}
+	// Defensive re-validation: the DB-stored name is joined into the
+	// os.RemoveAll target below.
+	if !validClamName(clam.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
 	}
 	pathItem := path.Join(global.CONF.System.DataDir, resultDir, clam.Name)
 	_ = os.RemoveAll(pathItem)
