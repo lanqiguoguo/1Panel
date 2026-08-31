@@ -24,7 +24,7 @@ func SessionAuth() gin.HandlerFunc {
 		panelTimestamp := c.GetHeader("1Panel-Timestamp")
 		if panelToken != "" || panelTimestamp != "" {
 			if global.CONF.System.ApiInterfaceStatus == "enable" {
-				clientIP := c.ClientIP()
+				clientIP := common.GetRealClientIP(c)
 				if !isValid1PanelTimestamp(panelTimestamp) {
 					helper.ErrorWithDetail(c, constant.CodeErrUnauthorized, constant.ErrApiConfigKeyTimeInvalid, nil)
 					return

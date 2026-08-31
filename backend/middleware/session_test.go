@@ -11,9 +11,11 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/init/cache/badger_db"
 	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
+	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -122,5 +124,91 @@ func TestSessionAuthUnknownSID(t *testing.T) {
 	}
 	if handled {
 		t.Fatal("handler ran for an unknown session id")
+	}
+}
+
+func setupAPIKeyAuthTest(t *testing.T, ipWhiteList string) string {
+	t.Helper()
+	setupSessionAuthTest(t)
+
+	origLog := global.LOG
+	log := logrus.New()
+	global.LOG = log
+	t.Cleanup(func() { global.LOG = origLog })
+
+	const apiKey = "test-api-key"
+	origSystem := global.CONF.System
+	global.CONF.System.ApiInterfaceStatus = "enable"
+	global.CONF.System.ApiKey = apiKey
+	global.CONF.System.ApiKeyValidityTime = "0"
+	global.CONF.System.IpWhiteList = ipWhiteList
+	t.Cleanup(func() { global.CONF.System = origSystem })
+	return apiKey
+}
+
+func doAPIKeyAuthRequest(t *testing.T, apiKey, timestamp, remoteAddr, forwardedFor string) (bool, []byte) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	handled := false
+	r := gin.New()
+	r.Use(SessionAuth())
+	r.GET("/protected", func(c *gin.Context) {
+		handled = true
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("1Panel-Token", GenerateMD5("1panel"+apiKey+timestamp))
+	req.Header.Set("1Panel-Timestamp", timestamp)
+	if forwardedFor != "" {
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+	}
+	r.ServeHTTP(w, req)
+	return handled, w.Body.Bytes()
+}
+
+func TestGetRealClientIPIgnoresForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "9.9.9.9:1234"
+	req.Header.Set("X-Forwarded-For", "192.168.1.1")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+
+	if got := common.GetRealClientIP(c); got != "9.9.9.9" {
+		t.Fatalf("GetRealClientIP = %q, want 9.9.9.9 (X-Forwarded-For must be ignored)", got)
+	}
+}
+
+func TestSessionAuthAPIKeyWhitelistUsesRealIP(t *testing.T) {
+	apiKey := setupAPIKeyAuthTest(t, "9.9.9.9")
+	handled, body := doAPIKeyAuthRequest(t, apiKey, "1700000000", "9.9.9.9:1234", "192.168.1.1")
+	if !handled {
+		var resp struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("response is not valid json: %v, body: %s", err, body)
+		}
+		t.Fatalf("handler did not run for whitelisted peer 9.9.9.9 (code %d); whitelist check likely matched the spoofed X-Forwarded-For", resp.Code)
+	}
+}
+
+func TestSessionAuthAPIKeyWhitelistRejectsUnknownIP(t *testing.T) {
+	apiKey := setupAPIKeyAuthTest(t, "9.9.9.9")
+	handled, body := doAPIKeyAuthRequest(t, apiKey, "1700000000", "203.0.113.5:443", "")
+	if handled {
+		t.Fatal("handler ran for a peer outside the API-key whitelist")
+	}
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("response is not valid json: %v, body: %s", err, body)
+	}
+	if resp.Code != constant.CodeErrUnauthorized {
+		t.Fatalf("code = %d, want %d", resp.Code, constant.CodeErrUnauthorized)
 	}
 }
