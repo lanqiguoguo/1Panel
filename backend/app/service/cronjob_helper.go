@@ -20,6 +20,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cloud_storage"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
+	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/ntp"
 )
@@ -340,6 +341,12 @@ func (u *CronjobService) handleCutWebsiteLog(cronjob *model.Cronjob, startTime t
 	baseDir := path.Join(nginx.GetPath(), "www", "sites")
 	fileOp := files.NewFileOp()
 	for _, website := range websites {
+		if !common.IsValidDomain(website.PrimaryDomain) {
+			websiteErr := buserr.WithNameAndErr("ErrCutWebsiteLog", website.PrimaryDomain, fmt.Errorf("invalid primary domain"))
+			global.LOG.Error(websiteErr.Error())
+			msgs = append(msgs, websiteErr.Error())
+			continue
+		}
 		websiteLogDir := path.Join(baseDir, website.Alias, "log")
 		srcAccessLogPath := path.Join(websiteLogDir, "access.log")
 		srcErrorLogPath := path.Join(websiteLogDir, "error.log")
@@ -370,7 +377,10 @@ func (u *CronjobService) handleCutWebsiteLog(cronjob *model.Cronjob, startTime t
 }
 
 func backupLogFile(dstFilePath, websiteLogDir string, fileOp files.FileOp) error {
-	if err := cmd.ExecCmd(fmt.Sprintf("tar -czf %s -C %s %s", dstFilePath, websiteLogDir, strings.Join([]string{"access.log", "error.log"}, " "))); err != nil {
+	if !files.ValidShellArgs(dstFilePath, websiteLogDir) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if err := cmd.ExecCmd(fmt.Sprintf("tar -czf '%s' -C '%s' %s", dstFilePath, websiteLogDir, strings.Join([]string{"access.log", "error.log"}, " "))); err != nil {
 		dstDir := path.Dir(dstFilePath)
 		if err = fileOp.Copy(path.Join(websiteLogDir, "access.log"), dstDir); err != nil {
 			return err
@@ -378,7 +388,7 @@ func backupLogFile(dstFilePath, websiteLogDir string, fileOp files.FileOp) error
 		if err = fileOp.Copy(path.Join(websiteLogDir, "error.log"), dstDir); err != nil {
 			return err
 		}
-		if err = cmd.ExecCmd(fmt.Sprintf("tar -czf %s -C %s %s", dstFilePath, dstDir, strings.Join([]string{"access.log", "error.log"}, " "))); err != nil {
+		if err = cmd.ExecCmd(fmt.Sprintf("tar -czf '%s' -C '%s' %s", dstFilePath, dstDir, strings.Join([]string{"access.log", "error.log"}, " "))); err != nil {
 			return err
 		}
 		_ = fileOp.DeleteFile(path.Join(dstDir, "access.log"))

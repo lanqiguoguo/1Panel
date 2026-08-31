@@ -438,6 +438,9 @@ func (w WebsiteService) GetWebsiteOptions() ([]response.WebsiteOption, error) {
 }
 
 func (w WebsiteService) UpdateWebsite(req request.WebsiteUpdate) error {
+	if !common.IsValidDomain(req.PrimaryDomain) {
+		return buserr.WithName("ErrDomainFormat", req.PrimaryDomain)
+	}
 	website, err := websiteRepo.GetFirst(commonRepo.WithByID(req.ID))
 	if err != nil {
 		return err
