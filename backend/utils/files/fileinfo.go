@@ -94,8 +94,12 @@ func NewFileInfo(op FileOption) (*FileInfo, error) {
 		Uid:       strconv.FormatUint(uint64(info.Sys().(*syscall.Stat_t).Uid), 10),
 		Gid:       strconv.FormatUint(uint64(info.Sys().(*syscall.Stat_t).Gid), 10),
 		Group:     GetGroup(info.Sys().(*syscall.Stat_t).Gid),
-		MimeType:  GetMimeType(op.Path),
-		IsDetail:  op.IsDetail,
+		// Skip MIME sniffing for non-regular files: GetMimeType opens the
+		// path and reads from it, which blocks forever on a writer-less FIFO
+		// (or reads unboundedly on devices) long before getContent's mode
+		// check can reject them.
+		MimeType: mimeTypeFor(info.Mode(), op.Path),
+		IsDetail: op.IsDetail,
 	}
 	favoriteRepo := repo.NewIFavoriteRepo()
 	favorite, _ := favoriteRepo.GetFirst(favoriteRepo.WithByPath(op.Path))
@@ -351,7 +355,7 @@ func (f *FileInfo) processFiles(files []FileSearchInfo, option FileOption) ([]*F
 			}
 			file.Extension = filepath.Ext(file.LinkPath)
 		}
-		if df.Size() > 0 {
+		if df.Size() > 0 && df.Mode().IsRegular() {
 			file.MimeType = GetMimeType(fPath)
 		}
 		if isInvalidLink {
@@ -428,6 +432,13 @@ func (f *FileInfo) getContent() error {
 	}
 	f.Content = string(cByte)
 	return nil
+}
+
+func mimeTypeFor(mode os.FileMode, path string) string {
+	if !mode.IsRegular() {
+		return ""
+	}
+	return GetMimeType(path)
 }
 
 func DetectBinary(buf []byte) bool {
