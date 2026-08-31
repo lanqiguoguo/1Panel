@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
+
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/response"
@@ -24,6 +26,62 @@ func NewIWebsiteDnsAccountService() IWebsiteDnsAccountService {
 	return &WebsiteDnsAccountService{}
 }
 
+// dnsSecretVars holds the DNS account authorization keys whose values are
+// cloud-provider secrets and must be masked whenever an account is echoed
+// back to the frontend. Identifier/config fields (accessKey, apiUser, region,
+// email, id, authID, subAuthID, username, clientID) are not secrets and stay
+// readable so the list and edit forms keep working.
+var dnsSecretVars = map[string]struct{}{
+	"apiSecret":     {},
+	"authPassword":  {},
+	"client_secret": {},
+	"credential":    {},
+	"password":      {},
+	"refresh_token": {},
+	"secret":        {},
+	"secretID":      {},
+	"secretKey":     {},
+	"token":         {},
+	"apiKey":        {},
+}
+
+// maskDnsAuthVars returns a copy of the authorization map with every secret
+// value replaced by the same mask placeholder used for backup accounts
+// (backupMaskValue). Key names are preserved so the edit form can still bind
+// each field.
+func maskDnsAuthVars(auth map[string]string) map[string]string {
+	masked := make(map[string]string, len(auth))
+	for key, value := range auth {
+		if _, ok := dnsSecretVars[key]; ok {
+			masked[key] = backupMaskValue
+			continue
+		}
+		masked[key] = value
+	}
+	return masked
+}
+
+// mergeMaskedDnsAuthVars overlays the authorization map submitted from the
+// edit form on top of the stored JSON, keeping the stored value for every
+// secret field the form left at the mask placeholder (or empty). Non-secret
+// fields and newly typed secrets take the submitted value. This gives the DNS
+// account edit form the same "keep the stored secret" semantics as the backup
+// account forms.
+func mergeMaskedDnsAuthVars(storedVars string, reqVars map[string]string) (map[string]string, error) {
+	storedMap := make(map[string]string)
+	if err := json.Unmarshal([]byte(storedVars), &storedMap); err != nil {
+		return nil, fmt.Errorf("unmarshal stored dns authorization failed, err: %v", err)
+	}
+	for key, value := range reqVars {
+		if _, ok := dnsSecretVars[key]; ok && isMaskedCredential(value) {
+			// Masked/empty secret: keep whatever is stored, skip the overwrite.
+			continue
+		}
+		storedMap[key] = value
+	}
+	return storedMap, nil
+}
+
 func (w WebsiteDnsAccountService) Page(search dto.PageInfo) (int64, []response.WebsiteDnsAccountDTO, error) {
 	total, accounts, err := websiteDnsRepo.Page(search.Page, search.PageSize, commonRepo.WithOrderBy("created_at desc"))
 	var accountDTOs []response.WebsiteDnsAccountDTO
@@ -32,7 +90,7 @@ func (w WebsiteDnsAccountService) Page(search dto.PageInfo) (int64, []response.W
 		_ = json.Unmarshal([]byte(account.Authorization), &auth)
 		accountDTOs = append(accountDTOs, response.WebsiteDnsAccountDTO{
 			WebsiteDnsAccount: account,
-			Authorization:     auth,
+			Authorization:     maskDnsAuthVars(auth),
 		})
 	}
 	return total, accountDTOs, err
@@ -61,7 +119,15 @@ func (w WebsiteDnsAccountService) Create(create request.WebsiteDnsAccountCreate)
 }
 
 func (w WebsiteDnsAccountService) Update(update request.WebsiteDnsAccountUpdate) (request.WebsiteDnsAccountUpdate, error) {
-	authorization, err := json.Marshal(update.Authorization)
+	old, err := websiteDnsRepo.GetFirst(commonRepo.WithByID(update.ID))
+	if err != nil {
+		return request.WebsiteDnsAccountUpdate{}, err
+	}
+	auth, err := mergeMaskedDnsAuthVars(old.Authorization, update.Authorization)
+	if err != nil {
+		return request.WebsiteDnsAccountUpdate{}, err
+	}
+	authorization, err := json.Marshal(auth)
 	if err != nil {
 		return request.WebsiteDnsAccountUpdate{}, err
 	}

@@ -7,7 +7,10 @@ type WebsiteAcmeAccount struct {
 	PrivateKey string `gorm:"not null" json:"-"`
 	Type       string `gorm:"not null;default:letsencrypt" json:"type"`
 	EabKid     string `gorm:"default:null;" json:"eabKid"`
-	EabHmacKey string `gorm:"default:null" json:"eabHmacKey"`
+	// EabHmacKey is a secret; it is only set at account creation and is never
+	// echoed back (the ACME account page has no edit form and the renew flow
+	// reads the account from the DB, not from JSON).
+	EabHmacKey string `gorm:"default:null" json:"-"`
 	KeyType    string `gorm:"not null;default:2048" json:"keyType"`
 }
 

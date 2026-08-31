@@ -532,6 +532,28 @@ func deleteListenAndServerName(website model.Website, binds []string, domains []
 	return nginxCheckAndReload(nginxConfig.OldContent, nginxConfig.FilePath, nginxFull.Install.ContainerName)
 }
 
+// privateKeyFileMode is the file permission applied to every private key
+// written to disk (site privkey.pem, pushed privkey.pem, ca.key, download
+// tmp files). The panel and the openresty container both read keys as root,
+// so 0600 keeps nginx working while blocking other local users.
+const privateKeyFileMode = 0600
+
+// writePrivateKeyFile writes a private key and enforces privateKeyFileMode
+// even when the file already existed: OpenFile only applies the perm on
+// create, so a plain SaveFile would silently keep a previously wider mode.
+func writePrivateKeyFile(dst string, content string) error {
+	fileOp := files.NewFileOp()
+	if !fileOp.Stat(path.Dir(dst)) {
+		if err := fileOp.CreateDir(path.Dir(dst), 0700); err != nil {
+			return err
+		}
+	}
+	if err := fileOp.SaveFile(dst, content, privateKeyFileMode); err != nil {
+		return err
+	}
+	return os.Chmod(dst, privateKeyFileMode)
+}
+
 func createPemFile(website model.Website, websiteSSL model.WebsiteSSL) error {
 	nginxApp, err := appRepo.GetFirst(appRepo.WithKey(constant.AppOpenresty))
 	if err != nil {
@@ -568,7 +590,7 @@ func createPemFile(website model.Website, websiteSSL model.WebsiteSSL) error {
 	if err := fileOp.WriteFile(fullChainFile, strings.NewReader(websiteSSL.Pem), 0644); err != nil {
 		return err
 	}
-	if err := fileOp.WriteFile(privatePemFile, strings.NewReader(websiteSSL.PrivateKey), 0644); err != nil {
+	if err := writePrivateKeyFile(privatePemFile, websiteSSL.PrivateKey); err != nil {
 		return err
 	}
 	return nil
@@ -998,7 +1020,7 @@ func saveCertificateFile(websiteSSL *model.WebsiteSSL, logger *log.Logger) {
 			pushErr error
 			MsgMap  = map[string]interface{}{"path": websiteSSL.Dir, "status": i18n.GetMsgByKey("Success")}
 		)
-		if pushErr = fileOp.SaveFile(path.Join(websiteSSL.Dir, "privkey.pem"), websiteSSL.PrivateKey, 0666); pushErr != nil {
+		if pushErr = writePrivateKeyFile(path.Join(websiteSSL.Dir, "privkey.pem"), websiteSSL.PrivateKey); pushErr != nil {
 			MsgMap["status"] = i18n.GetMsgByKey("Failed")
 			logger.Println(i18n.GetMsgWithMap("PushDirLog", MsgMap))
 			logger.Println("Push dir failed:" + pushErr.Error())

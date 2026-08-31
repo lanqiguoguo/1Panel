@@ -763,13 +763,13 @@ func (w WebsiteSSLService) DownloadFile(id uint) (*os.File, error) {
 			return nil, err
 		}
 	}
-	if err = fileOp.CreateDir(dir, 0666); err != nil {
+	if err = fileOp.CreateDir(dir, 0700); err != nil {
 		return nil, err
 	}
 	if err = fileOp.WriteFile(path.Join(dir, "fullchain.pem"), strings.NewReader(websiteSSL.Pem), 0644); err != nil {
 		return nil, err
 	}
-	if err = fileOp.WriteFile(path.Join(dir, "privkey.pem"), strings.NewReader(websiteSSL.PrivateKey), 0644); err != nil {
+	if err = writePrivateKeyFile(path.Join(dir, "privkey.pem"), websiteSSL.PrivateKey); err != nil {
 		return nil, err
 	}
 	fileName := websiteSSL.PrimaryDomain + ".zip"

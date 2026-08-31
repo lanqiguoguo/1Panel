@@ -129,6 +129,9 @@ func (w WebsiteCAService) GetCA(id uint) (*response.WebsiteCADTO, error) {
 		return nil, err
 	}
 	res.WebsiteCA = ca
+	// The model field is json:"-" so the key only leaves the process through
+	// this explicit detail-path echo.
+	res.PrivateKey = ca.PrivateKey
 	certBlock, _ := pem.Decode([]byte(ca.CSR))
 	if certBlock == nil {
 		return nil, buserr.New("ErrSSLCertificateFormat")
@@ -430,13 +433,13 @@ func (w WebsiteCAService) DownloadFile(id uint) (*os.File, error) {
 			return nil, err
 		}
 	}
-	if err = fileOp.CreateDir(dir, 0666); err != nil {
+	if err = fileOp.CreateDir(dir, 0700); err != nil {
 		return nil, err
 	}
 	if err = fileOp.WriteFile(path.Join(dir, "ca.crt"), strings.NewReader(ca.CSR), 0644); err != nil {
 		return nil, err
 	}
-	if err = fileOp.WriteFile(path.Join(dir, "ca.key"), strings.NewReader(ca.PrivateKey), 0644); err != nil {
+	if err = writePrivateKeyFile(path.Join(dir, "ca.key"), ca.PrivateKey); err != nil {
 		return nil, err
 	}
 	fileName := ca.Name + ".zip"

@@ -31,4 +31,8 @@ type WebsiteCADTO struct {
 	OrganizationUint string `json:"organizationUint"`
 	Province         string `json:"province" `
 	City             string `json:"city"`
+	// PrivateKey is only populated on the single-account GetCA detail path
+	// (the CA detail drawer has a key view/copy tab). List responses leave it
+	// empty so CA private keys are never echoed in bulk.
+	PrivateKey string `json:"privateKey,omitempty"`
 }
