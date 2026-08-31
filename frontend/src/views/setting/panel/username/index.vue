@@ -47,7 +47,7 @@ import { Rules } from '@/global/form-rules';
 import { logOutApi } from '@/api/modules/auth';
 import router, { clearSessionCache } from '@/routers';
 import DrawerHeader from '@/components/drawer-header/index.vue';
-import { GlobalStore } from '@/store';
+import { GlobalStore, TabsStore } from '@/store';
 const globalStore = GlobalStore();
 
 interface DialogProps {
@@ -82,6 +82,7 @@ const onSaveUserName = async (formEl: FormInstance | undefined) => {
                 .then(async () => {
                     await logOutApi();
                     clearSessionCache();
+                    TabsStore().removeAllTabs();
                     loading.value = false;
                     MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
                     router.push({ name: 'entrance', params: { code: globalStore.entrance } });

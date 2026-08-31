@@ -31,6 +31,7 @@ import i18n from '@/lang';
 import { Promotion } from '@element-plus/icons-vue';
 import { GlobalStore } from '@/store';
 import { CheckAppInstalled } from '@/api/modules/app';
+import { openExternalLink } from '@/utils/util';
 const globalStore = GlobalStore();
 
 const props = defineProps({
@@ -83,7 +84,7 @@ const openUrl = (domain: Website.Domain) => {
             url = 'http://' + domain.domain + ':' + domain.port;
         }
     }
-    window.open(url);
+    openExternalLink(url);
 };
 
 const deleteDomain = async (row: Website.Domain) => {

@@ -48,7 +48,7 @@ import i18n from '@/lang';
 import { reactive, ref } from 'vue';
 import Create from './create/index.vue';
 import Detail from './detail/index.vue';
-import { getKeyName, dateFormat } from '@/utils/util';
+import { dateFormat, downloadWithBlob, getKeyName } from '@/utils/util';
 import Obtain from './obtain/index.vue';
 
 const open = ref(false);
@@ -139,13 +139,7 @@ const onDownload = (row: Website.CA) => {
     loading.value = true;
     DownloadCAFile({ id: row.id })
         .then((res) => {
-            const downloadUrl = window.URL.createObjectURL(new Blob([res]));
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = downloadUrl;
-            a.download = row.name + '.zip';
-            const event = new MouseEvent('click');
-            a.dispatchEvent(event);
+            downloadWithBlob(new Blob([res]), row.name + '.zip');
         })
         .finally(() => {
             loading.value = false;

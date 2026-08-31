@@ -117,7 +117,7 @@ import ConfirmDialog from '@/components/confirm-dialog/index.vue';
 import { GetAppConnInfo } from '@/api/modules/app';
 import { MsgSuccess } from '@/utils/message';
 import DrawerHeader from '@/components/drawer-header/index.vue';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 import { getSettingInfo } from '@/api/modules/setting';
 import { Rules } from '@/global/form-rules';
 
@@ -163,7 +163,7 @@ const handleClose = () => {
 };
 
 const random = async () => {
-    form.password = getRandomStr(16);
+    form.password = getSecureRandomStr(16);
 };
 
 const loadPassword = async () => {

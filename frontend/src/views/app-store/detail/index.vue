@@ -81,6 +81,7 @@
 import MarkDownEditor from '@/components/mkdown-editor/index.vue';
 
 import { GetApp, GetAppDetail } from '@/api/modules/app';
+import { openExternalLink } from '@/utils/util';
 import { ref } from 'vue';
 import Install from './install/index.vue';
 import router from '@/routers';
@@ -130,7 +131,7 @@ const getDetail = async (id: number, version: string) => {
 };
 
 const toLink = (link: string) => {
-    window.open(link, '_blank');
+    openExternalLink(link);
 };
 
 const openInstall = () => {

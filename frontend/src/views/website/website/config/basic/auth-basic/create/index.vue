@@ -58,7 +58,7 @@ import { FormInstance } from 'element-plus';
 import { ref } from 'vue';
 import { MsgSuccess } from '@/utils/message';
 import { Website } from '@/api/interface/website';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 
 const proxyForm = ref<FormInstance>();
 const rules = ref({
@@ -85,7 +85,7 @@ const handleClose = () => {
 };
 
 const random = async () => {
-    authBasic.value.password = getRandomStr(16);
+    authBasic.value.password = getSecureRandomStr(16);
 };
 
 const acceptParams = (proxyParam: Website.NginxAuthConfig) => {

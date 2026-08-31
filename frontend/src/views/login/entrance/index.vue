@@ -53,12 +53,14 @@
 import LoginForm from '../components/login-form.vue';
 import ErrCode from '@/components/error-message/error_code.vue';
 import ErrFound from '@/components/error-message/404.vue';
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { GlobalStore } from '@/store';
 import { useTheme } from '@/hooks/use-theme';
 import i18n from '@/lang';
 const { switchTheme } = useTheme();
 const globalStore = GlobalStore();
+const route = useRoute();
 
 const screenWidth = ref(null);
 const errStatus = ref('x');
@@ -106,11 +108,25 @@ const getStatus = async () => {
     if (info?.startsWith('err-') || info?.startsWith('code-')) {
         errStatus.value = info;
         init.value = true;
+        // 一次性消费：清空全局错误标记，避免刷新/再次进入时永久停留在错误页
+        globalStore.errStatus = '';
         return;
     }
     errStatus.value = '';
     init.value = true;
 };
+
+// /:code 变化时组件实例被路由复用（onMounted 不会重新执行），需重新 getStatus；
+// watch 为 pre flush，可能先于 props 更新触发，故直接取 route.params.code 同步入口码
+watch(
+    () => route.params.code,
+    (newCode) => {
+        if (typeof newCode === 'string' && newCode !== '') {
+            globalStore.entrance = newCode;
+        }
+        getStatus();
+    },
+);
 
 onMounted(() => {
     globalStore.isOnRestart = false;

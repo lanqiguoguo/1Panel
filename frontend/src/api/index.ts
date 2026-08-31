@@ -3,7 +3,7 @@ import { ResultData } from '@/api/interface';
 import { ResultEnum } from '@/enums/http-enum';
 import { checkStatus } from './helper/check-status';
 import router, { clearSessionCache } from '@/routers';
-import { GlobalStore } from '@/store';
+import { GlobalStore, TabsStore } from '@/store';
 import { MsgError } from '@/utils/message';
 import { Base64 } from 'js-base64';
 import i18n from '@/lang';
@@ -50,6 +50,8 @@ class RequestHttp {
                     // 继续误导导航决策。
                     clearSessionCache();
                     globalStore.setLogStatus(false);
+                    // 登录态失效时同步清空 TabsStore 的持久化状态，避免浏览足迹残留在 localStorage
+                    TabsStore().removeAllTabs();
                     router.push({
                         name: 'entrance',
                         params: { code: globalStore.entrance },

@@ -68,7 +68,7 @@
 <script lang="ts" setup>
 import { cleanContainerLog, DownloadFile } from '@/api/modules/container';
 import i18n from '@/lang';
-import { dateFormatForName } from '@/utils/util';
+import { dateFormatForName, downloadWithBlob } from '@/utils/util';
 import { computed, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue';
 import { Codemirror } from 'vue-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
@@ -181,13 +181,7 @@ const onDownload = async () => {
         let addItem = {};
         addItem['name'] = logSearch.container + '-' + dateFormatForName(new Date()) + '.log';
         DownloadFile(params).then((res) => {
-            const downloadUrl = window.URL.createObjectURL(new Blob([res]));
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = downloadUrl;
-            a.download = addItem['name'];
-            const event = new MouseEvent('click');
-            a.dispatchEvent(event);
+            downloadWithBlob(new Blob([res]), addItem['name']);
         });
     });
 };

@@ -129,7 +129,7 @@ import { getDatabase, loadRemoteAccess, updateMysqlAccess, updateMysqlPassword }
 import { GetAppConnInfo } from '@/api/modules/app';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { MsgSuccess } from '@/utils/message';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 import { getSettingInfo } from '@/api/modules/setting';
 
 const loading = ref(false);
@@ -184,7 +184,7 @@ function loadMysqlInfo(isContainer: boolean) {
 }
 
 const random = async () => {
-    form.password = getRandomStr(16);
+    form.password = getSecureRandomStr(16);
 };
 
 const handleClose = () => {

@@ -66,7 +66,7 @@ import { generateSecret, loadSecret } from '@/api/modules/host';
 import { Rules } from '@/global/form-rules';
 import i18n from '@/lang';
 import { MsgSuccess } from '@/utils/message';
-import { copyText, dateFormatForName, getRandomStr } from '@/utils/util';
+import { copyText, dateFormatForName, downloadWithBlob, getSecureRandomStr } from '@/utils/util';
 import { FormInstance } from 'element-plus';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { reactive, ref } from 'vue';
@@ -104,7 +104,7 @@ const acceptParams = async (): Promise<void> => {
 };
 
 const random = async () => {
-    form.password = getRandomStr(10);
+    form.password = getSecureRandomStr(10);
 };
 
 const onLoadSecret = async () => {
@@ -132,15 +132,10 @@ const onGenerate = async (formEl: FormInstance | undefined) => {
     });
 };
 const onDownload = async () => {
-    const downloadUrl = window.URL.createObjectURL(new Blob([form.primaryKey]));
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = downloadUrl;
     const href = window.location.href;
     const host = href.split('//')[1].split(':')[0];
-    a.download = host + '_' + dateFormatForName(new Date()) + '_id_' + form.encryptionMode;
-    const event = new MouseEvent('click');
-    a.dispatchEvent(event);
+    const fileName = host + '_' + dateFormatForName(new Date()) + '_id_' + form.encryptionMode;
+    downloadWithBlob(new Blob([form.primaryKey]), fileName);
 };
 
 const handleClose = () => {

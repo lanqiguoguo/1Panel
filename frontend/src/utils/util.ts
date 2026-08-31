@@ -122,6 +122,31 @@ export function getRandomStr(e: number): string {
     return n;
 }
 
+/**
+ * getSecureRandomStr 基于 crypto.getRandomValues 生成密码学安全随机字符串，
+ * 用于安全入口码、SSH 私钥口令、各类凭据密码等安全敏感场景；
+ * 非安全用途（如随机文件名）请继续使用 getRandomStr。
+ */
+export function getSecureRandomStr(n: number): string {
+    const chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';
+    // 拒绝采样消除模偏差（256 % chars.length != 0）
+    const max = Math.floor(256 / chars.length) * chars.length;
+    let result = '';
+    while (result.length < n) {
+        const bytes = new Uint8Array(n - result.length);
+        crypto.getRandomValues(bytes);
+        for (const b of bytes) {
+            if (b < max) {
+                result += chars.charAt(b % chars.length);
+                if (result.length === n) {
+                    break;
+                }
+            }
+        }
+    }
+    return result;
+}
+
 export function getDBName(e: number): string {
     const t = 'abcdefhijkmnprstwxyz2345678';
     const a = t.length;
@@ -486,14 +511,37 @@ export function downloadFile(filePath: string) {
     window.open(url + 'path=' + path, '_blank');
 }
 
-export function downloadWithContent(content: string, fileName: string) {
-    const downloadUrl = window.URL.createObjectURL(new Blob([content]));
+/**
+ * downloadWithBlob 创建隐藏 <a> 触发 blob 下载，并在点击后（setTimeout 0 延迟，
+ * 确保 Safari 等浏览器下载已启动）revokeObjectURL 释放内存。
+ */
+export function downloadWithBlob(blob: Blob, fileName: string) {
+    const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.style.display = 'none';
     a.href = downloadUrl;
     a.download = fileName;
     const event = new MouseEvent('click');
     a.dispatchEvent(event);
+    setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl);
+    }, 0);
+}
+
+export function downloadWithContent(content: string, fileName: string) {
+    downloadWithBlob(new Blob([content]), fileName);
+}
+
+/**
+ * openExternalLink 在新窗口打开外部链接：仅放行 http/https 协议（其余协议
+ * 静默忽略点击，不报错），并通过 noopener,noreferrer 隔离 opener，
+ * 防止新页面对本页的反向标签劫持。
+ */
+export function openExternalLink(url: string) {
+    if (!/^https?:\/\//i.test(url)) {
+        return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
 }
 export function getDateStr() {
     let now: Date = new Date();

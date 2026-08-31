@@ -108,6 +108,7 @@ import { ElMessageBox, FormInstance } from 'element-plus';
 import { reactive, ref, onBeforeUnmount } from 'vue';
 import Header from '@/components/drawer-header/index.vue';
 import { MsgSuccess } from '@/utils/message';
+import { openExternalLink } from '@/utils/util';
 import { Rules } from '@/global/form-rules';
 import Diff from './diff/index.vue';
 import bus from '../../bus';
@@ -148,7 +149,7 @@ const useNewCompose = ref(false);
 const appInstallID = ref(0);
 
 const toLink = (link: string) => {
-    window.open(link, '_blank');
+    openExternalLink(link);
 };
 
 const openDiff = async () => {

@@ -53,7 +53,7 @@ import i18n from '@/lang';
 import { MsgSuccess } from '@/utils/message';
 import { updateSetting } from '@/api/modules/setting';
 import { GlobalStore } from '@/store';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 import { FormInstance } from 'element-plus';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 const globalStore = GlobalStore();
@@ -93,7 +93,7 @@ const acceptParams = (params: DialogProps): void => {
 };
 
 const random = async () => {
-    form.securityEntrance = getRandomStr(10);
+    form.securityEntrance = getSecureRandomStr(10);
 };
 
 const submitEntrance = async (formEl: FormInstance | undefined) => {

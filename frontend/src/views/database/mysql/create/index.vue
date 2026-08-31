@@ -89,7 +89,7 @@ import { ElForm } from 'element-plus';
 import { addMysqlDB } from '@/api/modules/database';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 import { MsgSuccess } from '@/utils/message';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 
 const loading = ref();
 const createVisible = ref(false);
@@ -139,7 +139,7 @@ const handleClose = () => {
 };
 
 const random = async () => {
-    form.password = getRandomStr(16);
+    form.password = getSecureRandomStr(16);
 };
 
 const emit = defineEmits<{ (e: 'search'): void }>();

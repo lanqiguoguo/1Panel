@@ -65,7 +65,7 @@ import DrawerHeader from '@/components/drawer-header/index.vue';
 import { MsgSuccess } from '@/utils/message';
 import { Toolbox } from '@/api/interface/toolbox';
 import { createFtp, updateFtp } from '@/api/modules/toolbox';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 
 interface DialogProps {
     title: string;
@@ -87,7 +87,7 @@ const acceptParams = (params: DialogProps): void => {
 const emit = defineEmits<{ (e: 'search'): void }>();
 
 const random = async () => {
-    dialogData.value.rowData.password = getRandomStr(16);
+    dialogData.value.rowData.password = getSecureRandomStr(16);
 };
 
 const handleClose = () => {

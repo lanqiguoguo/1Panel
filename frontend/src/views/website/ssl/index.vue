@@ -167,7 +167,7 @@ import AcmeAccount from './acme-account/index.vue';
 import CA from './ca/index.vue';
 import Create from './create/index.vue';
 import Detail from './detail/index.vue';
-import { dateFormat, getProvider } from '@/utils/util';
+import { dateFormat, downloadWithBlob, getProvider } from '@/utils/util';
 import i18n from '@/lang';
 import { Website } from '@/api/interface/website';
 import { MsgSuccess } from '@/utils/message';
@@ -268,13 +268,7 @@ const onDownload = (ssl: Website.SSLDTO) => {
     loading.value = true;
     DownloadFile({ id: ssl.id })
         .then((res) => {
-            const downloadUrl = window.URL.createObjectURL(new Blob([res]));
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = downloadUrl;
-            a.download = ssl.primaryDomain + '.zip';
-            const event = new MouseEvent('click');
-            a.dispatchEvent(event);
+            downloadWithBlob(new Blob([res]), ssl.primaryDomain + '.zip');
         })
         .finally(() => {
             loading.value = false;

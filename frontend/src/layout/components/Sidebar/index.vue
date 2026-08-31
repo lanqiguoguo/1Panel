@@ -47,8 +47,8 @@ import { clearSessionCache } from '@/routers';
 import { checkIsIntl, logOutApi } from '@/api/modules/auth';
 import i18n from '@/lang';
 import { ElMessageBox } from 'element-plus';
-import { GlobalStore, MenuStore } from '@/store';
-import { MsgSuccess } from '@/utils/message';
+import { GlobalStore, MenuStore, TabsStore } from '@/store';
+import { MsgError, MsgSuccess } from '@/utils/message';
 import { isString } from '@vueuse/core';
 import { getSettingInfo } from '@/api/modules/setting';
 import PrimaryMenu from '@/assets/images/menu-bg.svg?component';
@@ -97,8 +97,12 @@ const logout = () => {
         cancelButtonText: i18n.global.t('commons.button.cancel'),
         type: 'warning',
     })
-        .then(() => {
-            systemLogOut();
+        .then(async () => {
+            // 等待服务端会话销毁成功后再跳转和清理；失败时提示并停留在当前页，
+            // 避免“前端已登出、服务端会话仍在”的假登出。
+            if (!(await systemLogOut())) {
+                return;
+            }
             router.push({ name: 'entrance', params: { code: globalStore.entrance } });
             globalStore.setLogStatus(false);
             MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
@@ -106,9 +110,17 @@ const logout = () => {
         .catch(() => {});
 };
 
-const systemLogOut = async () => {
-    await logOutApi();
+const systemLogOut = async (): Promise<boolean> => {
+    try {
+        await logOutApi();
+    } catch {
+        MsgError(i18n.global.t('commons.res.commonError'));
+        return false;
+    }
     clearSessionCache();
+    // 同步清空 TabsStore 的持久化状态，避免浏览足迹残留在 localStorage
+    TabsStore().removeAllTabs();
+    return true;
 };
 
 function extractLabels(node: Node, result: string[]): void {

@@ -43,6 +43,7 @@ import { computed, reactive, ref } from 'vue';
 import { DownloadFile } from '@/api/modules/files';
 import { File } from '@/api/interface/file';
 import { Rules } from '@/global/form-rules';
+import { downloadWithBlob } from '@/utils/util';
 import DrawerHeader from '@/components/drawer-header/index.vue';
 
 interface DownloadProps {
@@ -92,13 +93,7 @@ const submit = async (formEl: FormInstance | undefined) => {
         loading.value = true;
         DownloadFile(addItem as File.FileDownload)
             .then((res) => {
-                const downloadUrl = window.URL.createObjectURL(new Blob([res]));
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = downloadUrl;
-                a.download = addItem['name'];
-                const event = new MouseEvent('click');
-                a.dispatchEvent(event);
+                downloadWithBlob(new Blob([res]), addItem['name']);
                 handleClose();
             })
             .finally(() => {

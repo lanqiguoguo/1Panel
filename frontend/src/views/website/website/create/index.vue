@@ -385,7 +385,7 @@ import { GetGroupList } from '@/api/modules/group';
 import { Group } from '@/api/interface/group';
 import { SearchRuntimes } from '@/api/modules/runtime';
 import { Runtime } from '@/api/interface/runtime';
-import { getRandomStr } from '@/utils/util';
+import { getSecureRandomStr } from '@/utils/util';
 
 const websiteForm = ref<FormInstance>();
 const website = ref({
@@ -481,7 +481,7 @@ const handleClose = () => {
 };
 
 const random = async () => {
-    website.value.ftpPassword = getRandomStr(16);
+    website.value.ftpPassword = getSecureRandomStr(16);
 };
 
 const changeType = (type: string) => {

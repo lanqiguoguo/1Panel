@@ -61,7 +61,7 @@ import i18n from '@/lang';
 import router, { clearSessionCache } from '@/routers';
 import { MsgError, MsgSuccess } from '@/utils/message';
 import { FormInstance } from 'element-plus';
-import { GlobalStore } from '@/store';
+import { GlobalStore, TabsStore } from '@/store';
 import { reactive, ref } from 'vue';
 import { updatePassword } from '@/api/modules/setting';
 import DrawerHeader from '@/components/drawer-header/index.vue';
@@ -133,6 +133,7 @@ const submitChangePassword = async (formEl: FormInstance | undefined) => {
                 MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
                 await logOutApi();
                 clearSessionCache();
+                TabsStore().removeAllTabs();
                 router.push({ name: 'entrance', params: { code: globalStore.entrance } });
                 globalStore.setLogStatus(false);
             })
