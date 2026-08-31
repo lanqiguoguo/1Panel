@@ -7,6 +7,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
+	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/pkg/errors"
 )
 
 func TestBuildSSHKeygenArgs(t *testing.T) {
@@ -131,5 +136,82 @@ func TestSSHKeygenNoShellInjection(t *testing.T) {
 	}
 	if _, err := os.Stat(secretFile); err != nil {
 		t.Fatalf("key not generated at intended path: %v", err)
+	}
+}
+
+// assertErrCmdIllegal 断言 err 为 buserr.New(constant.ErrCmdIllegal)。
+func assertErrCmdIllegal(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected ErrCmdIllegal, got nil")
+	}
+	var busErr buserr.BusinessError
+	if !errors.As(err, &busErr) {
+		t.Fatalf("expected buserr.BusinessError, got %T: %v", err, err)
+	}
+	if busErr.Msg != constant.ErrCmdIllegal {
+		t.Fatalf("expected %s, got %s", constant.ErrCmdIllegal, busErr.Msg)
+	}
+}
+
+// TestCheckSSHLogSearchInfo 直接测试校验函数：不依赖 /var/log 等机器状态，
+// 良性关键字（含空串）必须放行，含 shell 元字符的恶意关键字必须拒绝。
+func TestCheckSSHLogSearchInfo(t *testing.T) {
+	t.Run("benign info is allowed", func(t *testing.T) {
+		for _, info := range []string{"", "192.168.1.10", "root", "Failed password"} {
+			if err := checkSSHLogSearchInfo(info); err != nil {
+				t.Fatalf("info %q should be allowed, got err: %v", info, err)
+			}
+		}
+	})
+
+	t.Run("malicious info is rejected", func(t *testing.T) {
+		payloads := []string{
+			"' ; id ; '",             // 闭合单引号 + 分号
+			"192.168.1.10' ; id ; '", // 良性前缀 + 注入
+			"a | b",                  // 管道
+			"$(id)",                  // 命令替换
+			"`id`",                   // 反引号
+			"line1\nline2",           // 换行
+			"line1\rline2",           // 回车
+			">/tmp/pwned",            // 重定向
+			"</tmp/pwned",            // 重定向
+			"a & b",                  // 后台执行
+			`he"llo`,                 // 双引号
+		}
+		for _, p := range payloads {
+			assertErrCmdIllegal(t, checkSSHLogSearchInfo(p))
+		}
+	})
+}
+
+// TestLoadLogRejectsMaliciousInfo 端到端验证：恶意 Info 在进入任何文件遍历/命令
+// 构造之前即被拒绝，且不会在磁盘上产生任何注入副作用（pwned 文件不被创建）。
+// 校验位于 LoadLog 入口，因此在 filepath.Walk 之前返回，测试结果是确定性的。
+func TestLoadLogRejectsMaliciousInfo(t *testing.T) {
+	u := &SSHService{}
+	baseDir := t.TempDir()
+	pwned := filepath.Join(baseDir, "pwned")
+
+	payloads := []string{
+		"'; touch " + pwned + "; '",
+		"$(touch " + pwned + ")",
+		"`touch " + pwned + "`",
+		"' > " + pwned + " ; '",
+	}
+	for _, p := range payloads {
+		req := dto.SearchSSHLog{
+			PageInfo: dto.PageInfo{Page: 1, PageSize: 10},
+			Info:     p,
+			Status:   "All",
+		}
+		data, err := u.LoadLog(nil, req)
+		assertErrCmdIllegal(t, err)
+		if data != nil {
+			t.Fatalf("expected nil data on rejection, got %+v", data)
+		}
+		if _, statErr := os.Stat(pwned); statErr == nil {
+			t.Fatalf("malicious info caused a file side effect, %s was created: %q", pwned, p)
+		}
 	}
 }

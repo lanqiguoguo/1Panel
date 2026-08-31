@@ -309,6 +309,9 @@ type sshFileItem struct {
 }
 
 func (u *SSHService) LoadLog(c *gin.Context, req dto.SearchSSHLog) (*dto.SSHLog, error) {
+	if err := checkSSHLogSearchInfo(req.Info); err != nil {
+		return nil, err
+	}
 	var fileList []sshFileItem
 	var data dto.SSHLog
 	baseDir := "/var/log"
@@ -383,6 +386,16 @@ func (u *SSHService) LoadLog(c *gin.Context, req dto.SearchSSHLog) (*dto.SSHLog,
 
 	data.SuccessfulCount = data.TotalCount - data.FailedCount
 	return &data, nil
+}
+
+// checkSSHLogSearchInfo 校验 SSH 日志搜索关键字。关键字会被拼入 grep 命令并经
+// bash -c 执行，含 shell 元字符时直接拒绝（同 GenerateSSH 的处理方式）。
+// 空关键字合法：此时 LoadLog 不拼接 grep，保持原有语义。
+func checkSSHLogSearchInfo(info string) error {
+	if cmd.CheckIllegal(info) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return nil
 }
 
 func (u *SSHService) LoadSSHConf() (string, error) {
