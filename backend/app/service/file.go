@@ -220,6 +220,14 @@ func (f *FileService) Create(op request.FileCreate) error {
 	if files.IsInvalidChar(op.Path) {
 		return buserr.New("ErrInvalidChar")
 	}
+	// 创建/链接都会在目标路径落盘新条目，与 Delete/MvFile 同风格，
+	// 目标路径以及链接源路径都必须位于非保护目录内
+	if isProtectedPath(op.Path) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
+	if op.IsLink && op.LinkPath != "" && isProtectedPath(op.LinkPath) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	fo := files.NewFileOp()
 	if fo.Stat(op.Path) {
 		return buserr.New(constant.ErrFileIsExist)
@@ -242,7 +250,8 @@ func (f *FileService) Create(op request.FileCreate) error {
 		}
 		return fo.LinkFile(op.LinkPath, op.Path, op.IsSymlink)
 	}
-	return fo.CreateFileWithMode(op.Path, fs.FileMode(mode))
+	// 与 ChangeMode 一致：服务端强制剥离 setuid/setgid/sticky 等高位权限位
+	return fo.CreateFileWithMode(op.Path, fs.FileMode(mode)&0o777)
 }
 
 func (f *FileService) Delete(op request.FileDelete) error {

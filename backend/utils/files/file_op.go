@@ -76,6 +76,9 @@ func (f FileOp) CreateFile(dst string) error {
 }
 
 func (f FileOp) CreateFileWithMode(dst string, mode fs.FileMode) error {
+	// 纵深防御：强制剥离 setuid/setgid/sticky 等高位权限位，
+	// 防止调用方透传未掩码的 mode 创建出 SUID 文件
+	mode = mode.Perm()
 	file, err := f.Fs.OpenFile(dst, os.O_CREATE, mode)
 	if err != nil {
 		return err
