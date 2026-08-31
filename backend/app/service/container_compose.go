@@ -338,6 +338,15 @@ func (u *ContainerService) ComposeUpdate(req dto.ComposeUpdate) error {
 }
 
 func (u *ContainerService) loadPath(req *dto.ComposeCreate) error {
+	// req.Name is embedded into the compose directory
+	// (DataDir/docker/compose/<name>) below, so it is validated here once
+	// for every caller (TestCompose, CreateCompose and any future caller) as
+	// defense in depth: the whitelist rejects path traversal, and "/" and ":"
+	// are additionally banned because compose names have no namespacing or
+	// tag. The error matches CreateCompose's entry check.
+	if !files.ValidNameComponent(req.Name) || strings.Contains(req.Name, "/") || strings.Contains(req.Name, ":") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if req.From == "template" || req.From == "edit" {
 		dir := fmt.Sprintf("%s/docker/compose/%s", constant.DataDir, req.Name)
 		if _, err := os.Stat(dir); err != nil && os.IsNotExist(err) {
