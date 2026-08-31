@@ -91,7 +91,7 @@ func TestGetProcessNameBounded(t *testing.T) {
 	if got := getProcessName("app", "1"); len(got) != 1 || got[0] != "app:app_00" {
 		t.Errorf("getProcessName(app, 1) = %v, want [app:app_00]", got)
 	}
-	if got := getProcessName("app", "3"); len(got) != 3 || got[0] != "app:app_00" || got[2] != "app:app_2" {
+	if got := getProcessName("app", "3"); len(got) != 3 || got[0] != "app:app_00" || got[2] != "app:app_02" {
 		t.Errorf("getProcessName(app, 3) = %v, want 3 entries", got)
 	}
 	if got := getProcessName("app", "999"); len(got) != 999 || got[998] != "app:app_998" {
