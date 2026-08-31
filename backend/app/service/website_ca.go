@@ -61,6 +61,12 @@ func (w WebsiteCAService) Page(search request.WebsiteCASearch) (int64, []respons
 }
 
 func (w WebsiteCAService) Create(create request.WebsiteCACreate) (*request.WebsiteCACreate, error) {
+	// The CA name becomes a directory under 1panel/tmp/ssl (see DownloadFile),
+	// so reject path traversal and shell metacharacters before it reaches any
+	// path, with the same gate used for website aliases.
+	if !validSiteName(create.Name) {
+		return nil, buserr.New(constant.ErrCmdIllegal)
+	}
 	if exist, _ := websiteCARepo.GetFirst(commonRepo.WithByName(create.Name)); exist.ID > 0 {
 		return nil, buserr.New(constant.ErrNameIsExist)
 	}

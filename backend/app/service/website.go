@@ -1044,7 +1044,20 @@ func (w WebsiteService) UpdateNginxConfigFile(req request.WebsiteNginxUpdate) er
 	return nginxCheckAndReload(nginxFull.SiteConfig.OldContent, filePath, nginxFull.Install.ContainerName)
 }
 
+// validWebsiteLogType reports whether logType is one of the two nginx log
+// files the frontend offers for a website. It is joined into nginx log file
+// paths by OpWebsiteLog (read, truncate and enable), so nothing else may pass.
+func validWebsiteLogType(logType string) bool {
+	return logType == constant.AccessLog || logType == constant.ErrorLog
+}
+
 func (w WebsiteService) OpWebsiteLog(req request.WebsiteLogReq) (*response.WebsiteLog, error) {
+	// req.LogType is joined into the nginx log file paths below (read,
+	// truncate and enable), so pin it to the two log files the frontend
+	// offers; anything else is rejected as an invalid parameter.
+	if !validWebsiteLogType(req.LogType) {
+		return nil, buserr.New(constant.ErrTypeInvalidParams)
+	}
 	website, err := websiteRepo.GetFirst(commonRepo.WithByID(req.ID))
 	if err != nil {
 		return nil, err

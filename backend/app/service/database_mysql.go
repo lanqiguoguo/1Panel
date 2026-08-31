@@ -440,6 +440,14 @@ func (u *MysqlService) UpdateVariables(req dto.MysqlVariablesUpdate) error {
 
 	group := "[mysqld]"
 	for _, info := range req.Variables {
+		// param and value are written verbatim into my.cnf (see updateMyCnf),
+		// so reject line breaks (would inject extra directives) and '#' / ';'
+		// (comment or directive terminators) before the config file is
+		// rewritten. The frontend only ever submits numeric values, so this
+		// never blocks a legitimate edit.
+		if !validMyCnfToken(info.Param) || !validMyCnfToken(fmt.Sprintf("%v", info.Value)) {
+			return fmt.Errorf("invalid mysql variable: [%s=%v]", info.Param, info.Value)
+		}
 		if !strings.HasPrefix(app.Version, "5.7") && !strings.HasPrefix(app.Version, "5.6") {
 			if info.Param == "query_cache_size" {
 				continue
@@ -606,6 +614,14 @@ func executeSqlForRows(containerName, dbType, password, command string) ([]strin
 		return nil, errors.New(stdStr)
 	}
 	return strings.Split(stdStr, "\n"), nil
+}
+
+// validMyCnfToken reports whether s can be embedded verbatim into my.cnf as
+// part of a "param=value" line. A carriage return or newline would inject an
+// additional directive, '#' would comment out the remainder of the line and
+// ';' would terminate it early, so all four are rejected outright.
+func validMyCnfToken(s string) bool {
+	return !strings.ContainsAny(s, "\r\n#;")
 }
 
 func updateMyCnf(oldFiles []string, group string, param string, value interface{}) []string {

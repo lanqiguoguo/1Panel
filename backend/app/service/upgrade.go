@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,11 @@ import (
 )
 
 type UpgradeService struct{}
+
+// validUpgradeVersionRegexp pins req.Version to the version charset before it
+// is interpolated into the upgrade package file name, the download URL and
+// paths under the upgrade tmp dir ("1panel-<version>-linux-<arch>.tar.gz").
+var validUpgradeVersionRegexp = regexp.MustCompile(`^[0-9A-Za-z.\-]+$`)
 
 type IUpgradeService interface {
 	Upgrade(req dto.Upgrade) error
@@ -158,6 +164,9 @@ func (u *UpgradeService) LoadNotes(req dto.Upgrade) (string, error) {
 }
 
 func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
+	if !validUpgradeVersionRegexp.MatchString(req.Version) {
+		return fmt.Errorf("invalid upgrade version: %s", req.Version)
+	}
 	global.LOG.Info("start to upgrade now...")
 	fileOp := files.NewFileOp()
 	timeStr := time.Now().Format(constant.DateTimeSlimLayout)

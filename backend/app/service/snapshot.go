@@ -91,6 +91,13 @@ func (u *SnapshotService) SnapshotImport(req dto.SnapshotImport) error {
 		}
 	}
 	for _, snap := range req.Names {
+		// The name is persisted in the snapshot table and later reused to
+		// locate and restore packages, so pin it to a safe charset on top of
+		// the structural checks below (defense in depth; the shell-facing
+		// arguments are validated downstream as well).
+		if !validSnapshotImportName(snap) {
+			return fmt.Errorf("incorrect snapshot name format of %s", snap)
+		}
 		shortName := strings.TrimPrefix(snap, "snapshot_")
 		nameItems := strings.Split(shortName, "_")
 		if !strings.HasPrefix(shortName, "1panel_v") || !strings.HasSuffix(shortName, ".tar.gz") || len(nameItems) < 3 {
@@ -159,6 +166,33 @@ type SnapshotJson struct {
 	BackupDataDir      string `json:"backupDataDir"`
 	PanelDataDir       string `json:"panelDataDir"`
 	LiveRestoreEnabled bool   `json:"liveRestoreEnabled"`
+}
+
+// validSnapshotImportName reports whether the raw snapshot import name stays
+// within the safe charset [A-Za-z0-9._-] (covering the "snapshot_" prefix and
+// the ".tar.gz" suffix handled by the caller). Metacharacters such as ';',
+// spaces or quotes must never reach the snapshot table even though the
+// shell-facing arguments are validated downstream (defense in depth).
+func validSnapshotImportName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// PathInsideDir is the exported form of pathInsideDir for callers outside
+// the service package that must enforce the same containment rule, e.g. the
+// upload-recover target check in api/v1.
+func PathInsideDir(pathItem, dir string, allowEqual bool) bool {
+	return pathInsideDir(pathItem, dir, allowEqual)
 }
 
 // pathInsideDir reports whether pathItem, after cleaning, is an absolute path

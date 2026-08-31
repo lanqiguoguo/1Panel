@@ -139,6 +139,60 @@ func TestCreateWebsiteAliasRejected(t *testing.T) {
 	assertBusinessError(t, svc.CreateWebsite(request.WebsiteCreate{Alias: "default", PrimaryDomain: "a.com", Type: "deployment", WebsiteGroupID: 1}), "ErrDefaultAlias")
 }
 
+// TestWebsiteCACreateNameRejected proves the CA-name gate in
+// WebsiteCAService.Create fires before any DB access (it is the first
+// statement, so these calls return ErrCmdIllegal without touching the nil
+// test database). The name becomes the directory under 1panel/tmp/ssl in
+// DownloadFile, so traversal names and shell metacharacters must be refused,
+// while ordinary CA names keep passing the same validSiteName predicate the
+// entry point uses.
+func TestWebsiteCACreateNameRejected(t *testing.T) {
+	hostile := []string{
+		"../../x",
+		"../x",
+		"..",
+		"a/b",
+		"a\\b",
+		"a;b",
+		"a'b",
+		"a$(x)b",
+		"a\nb",
+	}
+
+	svc := WebsiteCAService{}
+	for _, name := range hostile {
+		_, err := svc.Create(request.WebsiteCACreate{Name: name, CommonName: "panel-ca", Country: "CN", Organization: "1Panel", KeyType: "2048"})
+		assertBusinessError(t, err, constant.ErrCmdIllegal)
+	}
+
+	for _, name := range []string{"1Panel", "my-ca", "ca.2024"} {
+		if !validSiteName(name) {
+			t.Errorf("validSiteName(%q) = false, want true for ordinary CA name", name)
+		}
+	}
+}
+
+// TestOpWebsiteLogLogTypeWhitelist pins the logType gate of OpWebsiteLog:
+// only the two nginx log files the frontend offers (access.log / error.log)
+// are accepted, and hostile values are rejected with ErrInvalidParams before
+// any DB or nginx access.
+func TestOpWebsiteLogLogTypeWhitelist(t *testing.T) {
+	if !validWebsiteLogType(constant.AccessLog) || !validWebsiteLogType(constant.ErrorLog) {
+		t.Fatal("validWebsiteLogType rejects the whitelisted log files")
+	}
+	for _, logType := range []string{"", "access.log.bak", "error.log ", "uvicorn.log", "../x", "a/b", "a;b", "a\nb"} {
+		if validWebsiteLogType(logType) {
+			t.Errorf("validWebsiteLogType(%q) = true, want false", logType)
+		}
+	}
+
+	svc := WebsiteService{}
+	for _, logType := range []string{"../../etc/passwd", "x;y", "access.log\x00"} {
+		_, err := svc.OpWebsiteLog(request.WebsiteLogReq{ID: 1, Operate: constant.GetLog, LogType: logType})
+		assertBusinessError(t, err, constant.ErrTypeInvalidParams)
+	}
+}
+
 // TestLegacyDefaultContainerNamesStillValid spot-checks that the docker
 // charset of ValidContainerName accepts the panel-generated default names
 // ("1Panel-<key>-<rand4>") so pre-existing openresty rows keep passing the

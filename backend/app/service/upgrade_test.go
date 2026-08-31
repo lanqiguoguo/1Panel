@@ -10,9 +10,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 )
+
+// TestUpgradeVersionWhitelist pins the version charset gate of Upgrade:
+// req.Version is interpolated into the package file name, the download URL
+// and the tmp paths, so only [0-9A-Za-z.-] may pass, and the gate fires as
+// the first statement of Upgrade (before any filesystem or network side
+// effect, so the rejected calls below are safe to run against a nil env).
+func TestUpgradeVersionWhitelist(t *testing.T) {
+	for _, version := range []string{"v1.10.40-lts", "1.10.40", "v2.0.0-beta.1"} {
+		if !validUpgradeVersionRegexp.MatchString(version) {
+			t.Errorf("validUpgradeVersionRegexp(%q) = false, want true", version)
+		}
+	}
+	for _, version := range []string{"", "../x", "v1;x", "v1 v2", "v1&x", "v1/10"} {
+		if validUpgradeVersionRegexp.MatchString(version) {
+			t.Errorf("validUpgradeVersionRegexp(%q) = true, want false", version)
+		}
+	}
+
+	u := &UpgradeService{}
+	for _, version := range []string{"../x", "v1;x"} {
+		err := u.Upgrade(dto.Upgrade{Version: version})
+		if err == nil || !strings.Contains(err.Error(), "invalid upgrade version") {
+			t.Errorf("Upgrade(version=%q) error = %v, want invalid upgrade version rejection", version, err)
+		}
+	}
+}
 
 func TestMigrate1pctlParams(t *testing.T) {
 	dir := t.TempDir()

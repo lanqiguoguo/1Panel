@@ -4,10 +4,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path"
-	"path/filepath"
 
 	"github.com/1Panel-dev/1Panel/backend/app/api/v1/helper"
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/app/service"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/gin-gonic/gin"
@@ -470,8 +470,12 @@ func (b *BaseApi) RecoverByUpload(c *gin.Context) {
 	// file must live inside the panel's data dir. The frontend only offers
 	// files under <DataDir>/uploads, and this check keeps an attacker from
 	// submitting an arbitrary path (e.g. /var/www or /opt) and having the
-	// panel decompress attacker-controlled content into it.
-	if !filepath.HasPrefix(filepath.Clean(req.File), filepath.Clean(global.CONF.System.DataDir)+string(filepath.Separator)) {
+	// panel decompress attacker-controlled content into it. The Rel-based
+	// containment check (service.PathInsideDir, strictly inside because a
+	// path equal to DataDir itself is not a recovery archive) also rejects
+	// sibling-prefix names like "<DataDir>Evil" that a lexical prefix match
+	// could confuse.
+	if !service.PathInsideDir(req.File, global.CONF.System.DataDir, false) {
 		helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, fmt.Errorf("recover file must be inside panel data dir: %s", req.File))
 		return
 	}
