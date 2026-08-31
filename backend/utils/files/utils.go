@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -193,6 +194,49 @@ func ValidNameComponent(name string) bool {
 		}
 	}
 	return true
+}
+
+// imageRefRegexp whitelists docker image references of the form
+// [registry-host:port/][path-component/]...path-component[:tag][@sha256:hex64].
+//
+// Grammar pieces (loosened from the distribution/reference spec only by
+// accepting both cases, matching ValidNameComponent's approach):
+//   - path component: alphanumerics, separators . _ - in runs that must be
+//     followed by more alphanumerics (no leading/trailing separator)
+//   - registry host: an explicit host[:port]/ prefix, e.g. reg.example.com:5000/
+//   - tag: [a-zA-Z0-9_] then [a-zA-Z0-9._-], at most 128 chars (docker limit)
+//   - digest: sha256 followed by exactly 64 lowercase hex chars
+//
+// The first component of a reference without an explicit port (e.g. the
+// ghcr.io of ghcr.io/owner/img) parses as a plain path component, which is
+// fine for a safety whitelist: every accepted string is drawn from the same
+// safe charset regardless of which piece is the registry.
+//
+// The goal is preventing shell/option injection: references coming from
+// remote docker-compose.yml content must never carry shell metacharacters
+// ($ ` ( ) & | ; quotes spaces newlines), leading "-" (option injection
+// against the docker CLI), or anything outside the grammar above.
+var imageRefRegexp = regexp.MustCompile(`^` +
+	// optional registry host with port, e.g. reg.example.com:5000/
+	`(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?:[0-9]+/)?` +
+	// zero or more repository path components, then the final one
+	`(?:[a-zA-Z0-9]+(?:[._-]+[a-zA-Z0-9]+)*/)*[a-zA-Z0-9]+(?:[._-]+[a-zA-Z0-9]+)*` +
+	// optional tag
+	`(?::[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127})?` +
+	// optional digest
+	`(?:@sha256:[a-f0-9]{64})?` +
+	`$`)
+
+// ValidImageRef reports whether ref is a syntactically safe docker image
+// reference ([registry/]name[:tag][@sha256:digest]). It is a pure whitelist
+// check, aligned in style with ValidNameComponent: anything outside the
+// docker reference grammar - shell metacharacters, leading "-" options,
+// empty strings, whitespace - is rejected.
+func ValidImageRef(ref string) bool {
+	if ref == "" || len(ref) > 512 {
+		return false
+	}
+	return imageRefRegexp.MatchString(ref)
 }
 
 func IsEmptyDir(dir string) bool {

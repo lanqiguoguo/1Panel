@@ -716,9 +716,17 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 				preErr = err
 				return
 			}
+			// The image names come from remote docker-compose.yml content and
+			// are handed to the docker CLI; only plain references may pass
+			// (see validateImageRefs), and the pull runs as exec argv - never
+			// through a bash -c string.
+			if err := validateImageRefs(images); err != nil {
+				preErr = err
+				return
+			}
 			for _, image := range images {
 				global.LOG.Infof(i18n.GetMsgWithName("PullImageStart", image, nil))
-				if out, err := cmd.ExecWithTimeOut("docker pull "+image, 20*time.Minute); err != nil {
+				if out, err := cmd.ExecWithTimeOutArgv("docker", 20*time.Minute, "pull", image); err != nil {
 					if out != "" {
 						err = errors.New(out)
 					}
@@ -1047,6 +1055,22 @@ func checkContainerNameIsExist(containerName, appDir string) (bool, error) {
 	return false, nil
 }
 
+// validateImageRefs rejects any image reference parsed out of (possibly
+// remote) docker-compose.yml content that is not a plain docker reference
+// ([registry/]name[:tag][@sha256:digest]). These names end up in arguments
+// of the docker CLI (docker pull, docker save), so anything outside the
+// reference grammar - shell metacharacters, leading "-", option injection -
+// must never reach exec. Every docker pull runs via cmd.ExecWithTimeOutArgv
+// (exec argv, no shell); this check is the defense in depth on top of that.
+func validateImageRefs(images []string) error {
+	for _, image := range images {
+		if !files.ValidImageRef(image) {
+			return fmt.Errorf("illegal image reference: %q", image)
+		}
+	}
+	return nil
+}
+
 func upApp(appInstall *model.AppInstall, pullImages bool) {
 	upProject := func(appInstall *model.AppInstall) (err error) {
 		var (
@@ -1065,8 +1089,16 @@ func upApp(appInstall *model.AppInstall, pullImages bool) {
 				appInstall.Message = err.Error()
 				return err
 			}
+			// The image names come from remote docker-compose.yml content and
+			// are handed to the docker CLI; only plain references may pass
+			// (see validateImageRefs), and the pull runs as exec argv - never
+			// through a bash -c string.
+			if err := validateImageRefs(images); err != nil {
+				appInstall.Message = err.Error()
+				return err
+			}
 			for _, image := range images {
-				if out, err = cmd.ExecWithTimeOut("docker pull "+image, 60*time.Minute); err != nil {
+				if out, err = cmd.ExecWithTimeOutArgv("docker", 60*time.Minute, "pull", image); err != nil {
 					if out != "" {
 						if strings.Contains(out, "no such host") {
 							errMsg = i18n.GetMsgByKey("ErrNoSuchHost") + ":"

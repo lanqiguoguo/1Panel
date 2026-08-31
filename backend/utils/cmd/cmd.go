@@ -76,6 +76,39 @@ func ExecWithTimeOut(cmdStr string, timeout time.Duration) (string, error) {
 	return stdout.String(), nil
 }
 
+// ExecWithTimeOutArgv is the argv (non-shell) sibling of ExecWithTimeOut:
+// name and args are handed to exec.Command directly, so no bash -c parsing
+// happens and the arguments can never inject shell commands. Use it whenever
+// an argument originates from untrusted content (e.g. image names parsed out
+// of remote docker-compose.yml files). Timeout and process-group cleanup
+// behave exactly like ExecWithTimeOut.
+func ExecWithTimeOutArgv(name string, timeout time.Duration, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	setSysProcAttr(cmd)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	after := time.After(timeout)
+	select {
+	case <-after:
+		killProcessGroup(cmd)
+		return "", buserr.New(constant.ErrCmdTimeout)
+	case err := <-done:
+		if err != nil {
+			return handleErr(stdout, stderr, err)
+		}
+	}
+
+	return stdout.String(), nil
+}
+
 func ExecContainerScript(containerName, cmdStr string, timeout time.Duration) error {
 	// containerName is interpolated unquoted into the docker exec command,
 	// so reject shell metacharacters even for rows persisted before the

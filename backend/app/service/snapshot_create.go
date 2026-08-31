@@ -157,6 +157,16 @@ func snapAppData(snap snapHelper, targetDir string) {
 	}
 
 	if len(imageSaveList) != 0 {
+		// The names come from docker-compose.yml content and are joined into a
+		// bash -c command line below (docker save | gzip); only plain image
+		// references may pass (see validateImageRefs for the rationale).
+		if err := validateImageRefs(imageSaveList); err != nil {
+			global.LOG.Errorf("skip docker save, %v", err)
+			if err := snapshotRepo.UpdateStatus(snap.Status.ID, map[string]interface{}{"app_data": err.Error()}); err != nil {
+				global.LOG.Errorf("update snapshot app_data status failed, err: %v", err)
+			}
+			return
+		}
 		global.LOG.Debugf("docker save %s | gzip -c > %s", strings.Join(imageSaveList, " "), path.Join(targetDir, "docker_image.tar"))
 		std, err := cmd.Execf("docker save %s | gzip -c > %s", strings.Join(imageSaveList, " "), path.Join(targetDir, "docker_image.tar"))
 		if err != nil {
