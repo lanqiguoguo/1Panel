@@ -11,7 +11,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
-	"github.com/1Panel-dev/1Panel/backend/i18n"
 	"github.com/1Panel-dev/1Panel/backend/init/cache/badger_db"
 	"github.com/1Panel-dev/1Panel/backend/init/session/psession"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
@@ -224,10 +223,10 @@ func TestSessionAuthAPIKeyWhitelistRejectsUnknownIP(t *testing.T) {
 	}
 }
 
-// TestIsValid1PanelTimestamp pins the ApiKeyValidityTime handling: only a
-// positive numeric validity time lets a fresh timestamp through, and the
-// window itself is enforced. ApiKeyValidityTime=0 used to skip timestamp
-// validation entirely, letting a captured signature be replayed forever.
+// TestIsValid1PanelTimestamp pins the ApiKeyValidityTime handling, including
+// the documented product semantics: the API settings UI states that a value
+// of 0 disables timestamp validation, so 0 must skip the window. Positive
+// values enforce the window; negative and non-numeric values are rejected.
 func TestIsValid1PanelTimestamp(t *testing.T) {
 	origLog := global.LOG
 	log := logrus.New()
@@ -247,7 +246,8 @@ func TestIsValid1PanelTimestamp(t *testing.T) {
 		{"positive validity with fresh timestamp", "15", now, true},
 		{"positive validity with stale timestamp", "15", "1700000000", false},
 		{"future timestamp beyond tolerance", "15", strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10), false},
-		{"zero validity rejects fresh timestamp", "0", now, false},
+		{"zero validity skips timestamp validation (documented)", "0", now, true},
+		{"zero validity skips stale timestamp too (documented)", "0", "1700000000", true},
 		{"negative validity", "-1", now, false},
 		{"non-numeric validity", "abc", now, false},
 		{"empty validity", "", now, false},
@@ -262,29 +262,16 @@ func TestIsValid1PanelTimestamp(t *testing.T) {
 	}
 }
 
-// TestSessionAuthAPIKeyZeroValidityRejected drives the middleware end to end:
-// with ApiKeyValidityTime=0 the request must be refused with the timestamp
-// error, not waved through without a timestamp check.
-func TestSessionAuthAPIKeyZeroValidityRejected(t *testing.T) {
+// TestSessionAuthAPIKeyZeroValiditySkipsWindow drives the middleware end to
+// end with the documented ApiKeyValidityTime=0 semantics: a request carrying
+// a stale timestamp passes because timestamp validation is skipped entirely
+// (the replay trade-off is a documented product choice, surfaced in the UI).
+func TestSessionAuthAPIKeyZeroValiditySkipsWindow(t *testing.T) {
 	apiKey := setupAPIKeyAuthTest(t, "9.9.9.9")
 	global.CONF.System.ApiKeyValidityTime = "0"
 
-	handled, body := doAPIKeyAuthRequest(t, apiKey, nowTimestamp(), "9.9.9.9:1234", "")
-	if handled {
-		t.Fatal("handler ran with ApiKeyValidityTime=0, want timestamp rejection")
-	}
-	var resp struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("response is not valid json: %v, body: %s", err, body)
-	}
-	if resp.Code != constant.CodeErrUnauthorized {
-		t.Fatalf("code = %d, want %d", resp.Code, constant.CodeErrUnauthorized)
-	}
-	// the message is the i18n rendering of the timestamp error key
-	if want := i18n.GetMsgWithMap(constant.ErrApiConfigKeyTimeInvalid, nil); resp.Message != want {
-		t.Fatalf("message = %q, want %q", resp.Message, want)
+	handled, _ := doAPIKeyAuthRequest(t, apiKey, "1700000000", "9.9.9.9:1234", "")
+	if !handled {
+		t.Fatal("handler did not run with ApiKeyValidityTime=0 and stale timestamp; documented skip semantics broken")
 	}
 }

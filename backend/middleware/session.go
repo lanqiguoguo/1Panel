@@ -71,11 +71,14 @@ func SessionAuth() gin.HandlerFunc {
 func isValid1PanelTimestamp(panelTimestamp string) bool {
 	apiKeyValidityTime := global.CONF.System.ApiKeyValidityTime
 	apiTime, err := strconv.Atoi(apiKeyValidityTime)
-	// apiTime == 0 is rejected as well: it used to skip timestamp validation
-	// entirely, which let a captured signature be replayed forever.
-	if err != nil || apiTime <= 0 {
+	if err != nil || apiTime < 0 {
 		global.LOG.Errorf("apiTime %d, err: %v", apiTime, err)
 		return false
+	}
+	// apiTime == 0 is a documented setting ("0 means no timestamp check",
+	// shown in the API settings UI): skip the timestamp window entirely.
+	if apiTime == 0 {
+		return true
 	}
 	panelTime, err := strconv.ParseInt(panelTimestamp, 10, 64)
 	if err != nil {

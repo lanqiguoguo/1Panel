@@ -675,15 +675,6 @@ func (u *SettingService) GetApiConfig() (*dto.ApiInterfaceConfig, error) {
 }
 
 func (u *SettingService) UpdateApiConfig(req dto.ApiInterfaceConfig) error {
-	// ApiKeyValidityTime drives isValid1PanelTimestamp, which rejects 0,
-	// negative and non-numeric values, so persisting one would silently lock
-	// every API request out (at the latest after the next restart reloads the
-	// setting into the global config). Reject it here to fix the source
-	// before any state is written.
-	validityTime, err := strconv.Atoi(req.ApiKeyValidityTime)
-	if err != nil || validityTime <= 0 {
-		return buserr.New(constant.ErrApiConfigKeyTimeInvalid)
-	}
 	// Enabling the API interface without a usable ApiKey leaves the signing
 	// key empty, so isValid1PanelToken would only ever compare against
 	// MD5("1panel"+timestamp) — a value that is fully predictable to anyone
