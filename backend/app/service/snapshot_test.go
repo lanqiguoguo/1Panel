@@ -673,19 +673,16 @@ func (h *snapLogCaptureHook) Fire(entry *logrus.Entry) error {
 
 func (h *snapLogCaptureHook) Levels() []logrus.Level { return logrus.AllLevels }
 
-// TestHandleSnapTarDebugLogMasksSecret is the regression test for the broken
-// log masking: the debug line of the encrypted branch used to replace the
-// pattern " <secret> ", which never matches the -k '<secret>' form actually
-// present in the command, leaking the encryption key into the log. The debug
-// output must now contain neither the quoted nor the bare secret.
-func TestHandleSnapTarDebugLogMasksSecret(t *testing.T) {
-	origLog := global.LOG
+// TestHandleSnapTarCommandOmitsSecret is the regression test for the argv
+// leak: handleSnapTar used to interpolate the encryption key into the bash -c
+// command as `-k '<secret>'`, exposing it in /proc/<pid>/cmdline and forcing
+// brittle log masking. The secret must now travel on inherited fd 3
+// (`-pass fd:3`): the logged command — which is exactly what reaches the bash
+// argv — contains neither the quoted nor the bare secret, and the archive is
+// still produced.
+func TestHandleSnapTarCommandOmitsSecret(t *testing.T) {
 	hook := &snapLogCaptureHook{}
-	logger := logrus.New()
-	logger.SetLevel(logrus.DebugLevel)
-	logger.AddHook(hook)
-	global.LOG = logger
-	t.Cleanup(func() { global.LOG = origLog })
+	swapSnapDebugLog(t, hook)
 
 	base := t.TempDir()
 	srcDir := filepath.Join(base, "src")
@@ -697,26 +694,80 @@ func TestHandleSnapTarDebugLogMasksSecret(t *testing.T) {
 	}
 
 	const secret = "S3cretKey2026"
-	// The command is logged before it is executed, so the masking assertions
-	// below hold even when tar/openssl are unavailable in the environment.
-	_ = handleSnapTar(srcDir, filepath.Join(base, "out"), "1panel_data.tar.gz", "", secret)
+	if err := handleSnapTar(srcDir, filepath.Join(base, "out"), "1panel_data.tar.gz", "", secret); err != nil {
+		t.Fatalf("handleSnapTar() error = %v", err)
+	}
 
 	hook.mu.Lock()
 	entries := append([]string(nil), hook.entries...)
 	hook.mu.Unlock()
 
-	maskedCommandSeen := false
+	opensslCommandSeen := false
 	for _, msg := range entries {
 		if strings.Contains(msg, secret) {
-			t.Fatalf("debug log leaked the secret: %s", msg)
+			t.Fatalf("command leaks the secret: %s", msg)
 		}
-		// the quoted form "'<secret>'" is replaced wholesale, leaving -k ******
-		if strings.Contains(msg, "-k ******") {
-			maskedCommandSeen = true
+		if !strings.Contains(msg, "openssl enc") {
+			continue
+		}
+		opensslCommandSeen = true
+		if strings.Contains(msg, "-k") {
+			t.Fatalf("openssl command still uses -k: %s", msg)
+		}
+		if !strings.Contains(msg, "-pass fd:3") {
+			t.Fatalf("openssl command does not use -pass fd:3: %s", msg)
 		}
 	}
-	if !maskedCommandSeen {
-		t.Fatalf("no debug entry with the masked openssl -k option was captured, entries: %v", entries)
+	if !opensslCommandSeen {
+		t.Fatalf("no debug entry with the openssl command was captured, entries: %v", entries)
+	}
+
+	info, statErr := os.Stat(filepath.Join(base, "out", "1panel_data.tar.gz"))
+	if statErr != nil {
+		t.Fatalf("encrypted archive was not created: %v", statErr)
+	}
+	if info.Size() == 0 {
+		t.Fatal("encrypted archive is empty")
+	}
+}
+
+// TestHandleSnapTarEncryptedRoundTrip proves the fd-based encryption end to
+// end: handleSnapTar encrypts through `openssl -pass fd:3` (the secret is
+// inherited over fd 3, never in argv) and the panel's own untar path decrypts
+// the result again.
+func TestHandleSnapTarEncryptedRoundTrip(t *testing.T) {
+	ensureValidateLogger(t)
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "data.txt"), []byte("snapshot payload"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	const secret = "S3cretKey2026"
+	if err := handleSnapTar(srcDir, targetDir, "1panel_data.tar.gz", "", secret); err != nil {
+		t.Fatalf("handleSnapTar() error = %v", err)
+	}
+	archive := filepath.Join(targetDir, "1panel_data.tar.gz")
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("encrypted archive not created: %v", err)
+	}
+
+	restoreDir := filepath.Join(base, "restore")
+	if err := (&SnapshotService{}).handleUnTar(archive, restoreDir, secret); err != nil {
+		t.Fatalf("handleUnTar() error = %v", err)
+	}
+	// handleSnapTar archives the source directory itself (-C '<base>' 'src'),
+	// so the member path carries the "src" prefix.
+	content, err := os.ReadFile(filepath.Join(restoreDir, "src", "sub", "data.txt"))
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if string(content) != "snapshot payload" {
+		t.Fatalf("restored content = %q, want %q", content, "snapshot payload")
 	}
 }
 

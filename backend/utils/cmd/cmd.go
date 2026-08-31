@@ -76,6 +76,41 @@ func ExecWithTimeOut(cmdStr string, timeout time.Duration) (string, error) {
 	return stdout.String(), nil
 }
 
+// ExecWithTimeOutExtraFiles is the ExtraFiles-aware sibling of
+// ExecWithTimeOut: cmdStr is parsed and executed by bash -c exactly like
+// ExecWithTimeOut, and extraFiles are handed to the bash process starting at
+// fd 3. bash does not close inherited descriptors, so pipeline children (e.g.
+// `openssl ... -pass fd:3`) can read them. Timeout and process-group cleanup
+// behave exactly like ExecWithTimeOut. File descriptors in extraFiles must be
+// closed by the caller after this function returns.
+func ExecWithTimeOutExtraFiles(cmdStr string, timeout time.Duration, extraFiles []*os.File) (string, error) {
+	cmd := exec.Command("bash", "-c", cmdStr)
+	setSysProcAttr(cmd)
+	cmd.ExtraFiles = extraFiles
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	after := time.After(timeout)
+	select {
+	case <-after:
+		killProcessGroup(cmd)
+		return "", buserr.New(constant.ErrCmdTimeout)
+	case err := <-done:
+		if err != nil {
+			return handleErr(stdout, stderr, err)
+		}
+	}
+
+	return stdout.String(), nil
+}
+
 // ExecWithTimeOutArgv is the argv (non-shell) sibling of ExecWithTimeOut:
 // name and args are handed to exec.Command directly, so no bash -c parsing
 // happens and the arguments can never inject shell commands. Use it whenever
@@ -255,6 +290,49 @@ func ExecScript(scriptPath, workDir string) (string, error) {
 
 func ExecCmd(cmdStr string) error {
 	cmd := exec.Command("bash", "-c", cmdStr)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error : %v, output: %s", err, output)
+	}
+	return nil
+}
+
+// SecretPassReader returns the read end of an OS pipe whose sole content is
+// secret. Hand the returned file to one of the *ExtraFiles exec helpers (or
+// cmd.ExtraFiles directly): the child receives it as fd 3, which openssl
+// consumes with `-pass fd:3`. The password therefore never appears in a
+// command line (/proc/<pid>/cmdline is world-readable). The write end is
+// closed before returning, so the child reads the secret and then EOF. The
+// pipe content is consumable exactly once and the caller owns the read end:
+// it must be closed once the command has finished.
+func SecretPassReader(secret string) (*os.File, error) {
+	passReader, passWriter, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := passWriter.WriteString(secret); err != nil {
+		passWriter.Close()
+		passReader.Close()
+		return nil, err
+	}
+	if err := passWriter.Close(); err != nil {
+		passReader.Close()
+		return nil, err
+	}
+	return passReader, nil
+}
+
+// ExecCmdWithExtraFiles is the ExtraFiles-aware sibling of ExecCmd: cmdStr is
+// parsed and executed by bash -c exactly like ExecCmd, and extraFiles are
+// handed to the bash process starting at fd 3. bash does not close inherited
+// descriptors, so pipeline children (e.g. `openssl ... -pass fd:3`) can read
+// them. Note that the bash process itself keeps fd 3 open until the whole
+// command finishes; file descriptors in extraFiles must therefore be closed
+// by the caller after this function returns.
+func ExecCmdWithExtraFiles(cmdStr string, extraFiles []*os.File) error {
+	cmd := exec.Command("bash", "-c", cmdStr)
+	setSysProcAttr(cmd)
+	cmd.ExtraFiles = extraFiles
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("error : %v, output: %s", err, output)

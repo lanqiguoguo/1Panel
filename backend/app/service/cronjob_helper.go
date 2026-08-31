@@ -254,13 +254,28 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 
 	commands := ""
 
+	var (
+		stdout string
+		err    error
+	)
+
 	if len(secret) != 0 {
-		extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
+		// The secret travels on inherited fd 3 instead of the command line:
+		// openssl is started by bash as a pipeline member and keeps the
+		// descriptor the ExtraFiles-aware exec helper handed to bash, so
+		// `-pass fd:3` reads the password without it ever appearing in the
+		// bash -c argv (or any /proc/<pid>/cmdline). Debug logging needs no
+		// masking anymore because the command simply does not contain the
+		// secret.
+		extraCmd := "| openssl enc -aes-256-cbc -salt -pass fd:3 -out"
 		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+excludeRules, path, extraCmd, targetDir+"/"+name)
-		// The secret appears quoted in the command (-k '<secret>'); the old
-		// ' %s ' pattern never matched that form, leaking the key into the
-		// debug log. Mask both the quoted and the bare form.
-		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
+		global.LOG.Debug(commands)
+		secretReader, passErr := cmd.SecretPassReader(secret)
+		if passErr != nil {
+			return passErr
+		}
+		defer secretReader.Close()
+		stdout, err = cmd.ExecWithTimeOutExtraFiles(commands, 24*time.Hour, []*os.File{secretReader})
 	} else {
 		itemPrefix := pathUtils.Base(sourceDir)
 		if itemPrefix == "/" {
@@ -268,8 +283,8 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 		}
 		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -printf '%s' | sed 's|^|%s/|') -zcf %s %s %s", sourceDir, "%P\n", itemPrefix, targetDir+"/"+name, excludeRules, path)
 		global.LOG.Debug(commands)
+		stdout, err = cmd.ExecWithTimeOut(commands, 24*time.Hour)
 	}
-	stdout, err := cmd.ExecWithTimeOut(commands, 24*time.Hour)
 	if err != nil {
 		if len(stdout) != 0 {
 			global.LOG.Errorf("do handle tar failed, stdout: %s, err: %v", stdout, err)

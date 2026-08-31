@@ -707,3 +707,46 @@ func TestHandleTarSourceDirWithSpaces(t *testing.T) {
 		t.Fatalf("data.txt missing from archive (space-in-name dir not archived):\n%s", members)
 	}
 }
+
+// TestHandleTarEncryptedRoundTrip proves the fd-based encryption end to end:
+// handleTar encrypts through `openssl -pass fd:3` (the secret is inherited
+// over fd 3 from the ExtraFiles-aware exec helper and never appears in the
+// bash -c argv), and the panel's own untar path decrypts the result again.
+// Together with TestHandleUnTarExtractsPlainAndEncryptedArchives (which feeds
+// a legacy `-k`-generated archive into the same decrypt path) this pins both
+// directions of the format compatibility.
+func TestHandleTarEncryptedRoundTrip(t *testing.T) {
+	ensureValidateLogger(t)
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "data.txt"), []byte("cronjob payload"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	const secret = "roundtrip S3cret.42"
+	if err := handleTar(srcDir, targetDir, "backup.tar.gz", "", secret); err != nil {
+		t.Fatalf("handleTar() error = %v", err)
+	}
+	archive := filepath.Join(targetDir, "backup.tar.gz")
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("encrypted archive not created: %v", err)
+	}
+
+	restoreDir := filepath.Join(base, "restore")
+	if err := handleUnTar(archive, restoreDir, secret); err != nil {
+		t.Fatalf("handleUnTar() error = %v", err)
+	}
+	// handleTar archives the source directory itself (-C '<base>' 'src'), so
+	// the member path carries the "src" prefix.
+	content, err := os.ReadFile(filepath.Join(restoreDir, "src", "sub", "data.txt"))
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if string(content) != "cronjob payload" {
+		t.Fatalf("restored content = %q, want %q", content, "cronjob payload")
+	}
+}

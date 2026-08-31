@@ -2,6 +2,7 @@ package files
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -22,17 +23,23 @@ func (t TarGzArchiver) Extract(filePath, dstDir string, secret string) error {
 	if !ValidShellArgs(filePath, dstDir) || (len(secret) != 0 && !ValidShellArgs(secret)) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
-	var err error
-	commands := ""
+	srcFile := filePath
 	if len(secret) != 0 {
-		extraCmd := fmt.Sprintf("openssl enc -d -aes-256-cbc -k '%s' -in '%s' | ", secret, filePath)
-		commands = fmt.Sprintf("%s tar -zxvf - -C '%s' > /dev/null 2>&1", extraCmd, dstDir)
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
-	} else {
-		commands = fmt.Sprintf("tar -zxvf '%s' -C '%s' > /dev/null 2>&1", filePath, dstDir)
-		global.LOG.Debug(commands)
+		// The secret must never reach a command line: decrypt with
+		// `-pass fd:3` (buildDecryptCmd) into a temp file first, then extract
+		// it through the plain path below. This is the same openssl
+		// invocation the Decompress compatibility path uses, so its error
+		// semantics and the fallback order there are untouched.
+		decryptedPath, err := decryptTarGz(filePath, secret)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(decryptedPath)
+		srcFile = decryptedPath
 	}
-	if err = cmd.ExecCmd(commands); err != nil {
+	commands := fmt.Sprintf("tar -zxvf '%s' -C '%s' > /dev/null 2>&1", srcFile, dstDir)
+	global.LOG.Debug(commands)
+	if err := cmd.ExecCmd(commands); err != nil {
 		return err
 	}
 	return nil
@@ -59,15 +66,24 @@ func (t TarGzArchiver) Compress(sourcePaths []string, dstFile string, secret str
 	if len(aheadDir) == 0 {
 		aheadDir = "/"
 	}
-	commands := ""
 	if len(secret) != 0 {
-		extraCmd := fmt.Sprintf("| openssl enc -aes-256-cbc -salt -k '%s' -out '%s'", secret, dstFile)
-		commands = fmt.Sprintf("tar -zcf - -C \"%s\" %s %s", aheadDir, itemDir, extraCmd)
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
-	} else {
-		commands = fmt.Sprintf("tar -zcf \"%s\" -C \"%s\" %s", dstFile, aheadDir, itemDir)
+		// The secret travels on inherited fd 3 instead of the command line:
+		// openssl is started by bash as a pipeline member and keeps the
+		// descriptor the ExtraFiles-aware exec helper handed to bash, so
+		// `-pass fd:3` reads the password without it ever appearing in argv
+		// (/proc/<pid>/cmdline is world-readable).
+		extraCmd := "| openssl enc -aes-256-cbc -salt -pass fd:3 -out '" + dstFile + "'"
+		commands := fmt.Sprintf("tar -zcf - -C \"%s\" %s %s", aheadDir, itemDir, extraCmd)
 		global.LOG.Debug(commands)
+		secretReader, err := cmd.SecretPassReader(secret)
+		if err != nil {
+			return err
+		}
+		defer secretReader.Close()
+		return cmd.ExecCmdWithExtraFiles(commands, []*os.File{secretReader})
 	}
+	commands := fmt.Sprintf("tar -zcf \"%s\" -C \"%s\" %s", dstFile, aheadDir, itemDir)
+	global.LOG.Debug(commands)
 	if err := cmd.ExecCmd(commands); err != nil {
 		return err
 	}
