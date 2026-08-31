@@ -409,7 +409,10 @@ func (f *FileInfo) checkSymlink(df FileSearchInfo) (bool, bool) {
 }
 
 func (f *FileInfo) getContent() error {
-	if IsBlockDevice(f.FileMode) {
+	// Reject block devices, character devices (e.g. /dev/zero) and FIFOs:
+	// reading from them either never returns or grows without bound, so
+	// only regular files may be loaded into memory here.
+	if f.FileMode&(os.ModeDevice|os.ModeCharDevice|os.ModeNamedPipe) != 0 {
 		return buserr.New(constant.ErrFileCanNotRead)
 	}
 	if f.Size > 10*1024*1024 {

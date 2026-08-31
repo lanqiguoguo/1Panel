@@ -140,6 +140,15 @@ func (r RecycleBinService) Reduce(reduce request.RecycleBinReduce) error {
 	if reduce.RName == "." || reduce.RName == ".." || strings.ContainsAny(reduce.RName, `/\`) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
+	// From 必须是真实存在的回收站目录：它会被 path.Join 直接拼进操作
+	// 路径，任意目录会让还原操作读写攻击者指定的位置。
+	partitions, err := disk.Partitions(false)
+	if err != nil {
+		return err
+	}
+	if !isValidRecycleFrom(reduce.From, partitions) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	filePath := path.Join(reduce.From, reduce.RName)
 	op := files.NewFileOp()
 	if !op.Stat(filePath) {
@@ -199,6 +208,36 @@ func (r RecycleBinService) Clear() error {
 	return nil
 }
 
+// isValidRecycleFrom 判断 From 是否为回收站目录之一：各挂载点下的
+// .1panel_clash 或根回收站目录 constant.RecycleBinDir。partitions 由
+// 调用方传入以便测试。
+func isValidRecycleFrom(from string, partitions []disk.PartitionStat) bool {
+	cleaned := filepath.Clean(from)
+	if cleaned == constant.RecycleBinDir {
+		return true
+	}
+	for _, p := range partitions {
+		if cleaned == path.Join(p.Mountpoint, ".1panel_clash") {
+			return true
+		}
+	}
+	return false
+}
+
+// pathUnderMount 判断 realPath 是否为挂载点本身或位于挂载点之下。
+// 简单前缀比较会把兄弟目录（如挂载点 /data 对应的 /data-evil）误判为
+// 位于挂载点内，因此必须带上分隔符比较；挂载点为根 "/" 时天然覆盖所有
+// 绝对路径。
+func pathUnderMount(realPath, mountpoint string) bool {
+	if realPath == mountpoint {
+		return true
+	}
+	if mountpoint == "/" {
+		return strings.HasPrefix(realPath, string(filepath.Separator))
+	}
+	return strings.HasPrefix(realPath, mountpoint+string(filepath.Separator))
+}
+
 func getClashDir(realPath string) (string, error) {
 	partitions, err := disk.Partitions(false)
 	if err != nil {
@@ -208,7 +247,7 @@ func getClashDir(realPath string) (string, error) {
 		if p.Mountpoint == "/" {
 			continue
 		}
-		if strings.HasPrefix(realPath, p.Mountpoint) {
+		if pathUnderMount(realPath, p.Mountpoint) {
 			clashDir := path.Join(p.Mountpoint, ".1panel_clash")
 			if err = createClashDir(path.Join(p.Mountpoint, ".1panel_clash")); err != nil {
 				return "", err

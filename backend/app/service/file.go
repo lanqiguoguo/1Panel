@@ -171,6 +171,11 @@ func isProtectedPath(pathName string) bool {
 	return false
 }
 
+// IsProtectedPath 供 API 层（如上传入口）校验路径是否位于受保护目录内
+func IsProtectedPath(pathName string) bool {
+	return isProtectedPath(pathName)
+}
+
 // 递归构建文件树(只取当前目录以及当前目录下的第一层子节点)
 func (f *FileService) buildFileTree(node *response.FileTree, items []*files.FileInfo, op request.FileOption, level int) error {
 	for _, v := range items {
@@ -292,20 +297,35 @@ func (f *FileService) BatchDelete(op request.FileBatchDelete) error {
 }
 
 func (f *FileService) ChangeMode(op request.FileCreate) error {
+	if isProtectedPath(op.Path) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
+	// 面板 UI 只产生 0-0777 权限，服务端强制清掉 setuid/setgid/sticky
+	// 等高位权限位，负值直接拒绝。
+	if op.Mode < 0 {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	fo := files.NewFileOp()
-	return fo.ChmodR(op.Path, op.Mode, op.Sub)
+	return fo.ChmodR(op.Path, op.Mode&0o777, op.Sub)
 }
 
 func (f *FileService) BatchChangeModeAndOwner(op request.FileRoleReq) error {
+	if op.Mode < 0 {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	mode := op.Mode & 0o777
 	fo := files.NewFileOp()
 	for _, path := range op.Paths {
+		if isProtectedPath(path) {
+			return buserr.New(constant.ErrPathNotDelete)
+		}
 		if !fo.Stat(path) {
 			return buserr.New(constant.ErrPathNotFound)
 		}
 		if err := fo.ChownR(path, op.User, op.Group, op.Sub); err != nil {
 			return err
 		}
-		if err := fo.ChmodR(path, op.Mode, op.Sub); err != nil {
+		if err := fo.ChmodR(path, mode, op.Sub); err != nil {
 			return err
 		}
 	}
@@ -314,6 +334,9 @@ func (f *FileService) BatchChangeModeAndOwner(op request.FileRoleReq) error {
 }
 
 func (f *FileService) ChangeOwner(req request.FileRoleUpdate) error {
+	if isProtectedPath(req.Path) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	fo := files.NewFileOp()
 	return fo.ChownR(req.Path, req.User, req.Group, req.Sub)
 }
@@ -364,6 +387,9 @@ func (f *FileService) GetContent(op request.FileContentReq) (response.FileInfo, 
 }
 
 func (f *FileService) SaveContent(edit request.FileEdit) error {
+	if isProtectedPath(edit.Path) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	info, err := files.NewFileInfo(files.FileOption{
 		Path:   edit.Path,
 		Expand: false,
@@ -380,6 +406,10 @@ func (f *FileService) ChangeName(req request.FileRename) error {
 	if files.IsInvalidChar(req.NewName) {
 		return buserr.New("ErrInvalidChar")
 	}
+	// 重命名会移除旧路径条目并创建新路径，两端都必须位于非保护目录内
+	if isProtectedPath(req.OldName) || isProtectedPath(req.NewName) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	fo := files.NewFileOp()
 	return fo.Rename(req.OldName, req.NewName)
 }
@@ -391,11 +421,19 @@ func (f *FileService) Wget(w request.FileWget) (string, error) {
 }
 
 func (f *FileService) MvFile(m request.FileMove) error {
+	// cut/copy 都会向 NewPath（或 NewPath/Name）写入并移除源路径，
+	// 源与目标都必须位于非保护目录内
+	if isProtectedPath(m.NewPath) || (m.Name != "" && isProtectedPath(path.Join(m.NewPath, m.Name))) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	fo := files.NewFileOp()
 	if !fo.Stat(m.NewPath) {
 		return buserr.New(constant.ErrPathNotFound)
 	}
 	for _, oldPath := range m.OldPaths {
+		if isProtectedPath(oldPath) {
+			return buserr.New(constant.ErrPathNotDelete)
+		}
 		if !fo.Stat(oldPath) {
 			return buserr.WithName(constant.ErrFileNotFound, oldPath)
 		}

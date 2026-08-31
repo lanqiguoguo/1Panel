@@ -122,9 +122,15 @@ func (u *LogService) PageOperationLog(req dto.SearchOpLogWithPage) (int64, inter
 }
 
 func (u *LogService) LoadSystemLog(name string) (string, error) {
+	// name is concatenated into the log file name below, so only a plain
+	// date in the 2006-01-02 layout may pass: traversal sequences or path
+	// separators would let the read escape the log directory.
 	if name == time.Now().Format("2006-01-02") {
 		name = "1Panel.log"
 	} else {
+		if _, err := time.Parse("2006-01-02", name); err != nil {
+			return "", buserr.New(constant.ErrCmdIllegal)
+		}
 		name = "1Panel-" + name + ".log"
 	}
 	filePath := path.Join(global.CONF.System.DataDir, "log", name)

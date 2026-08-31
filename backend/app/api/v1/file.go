@@ -17,6 +17,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/response"
+	"github.com/1Panel-dev/1Panel/backend/app/service"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -336,6 +337,11 @@ func (b *BaseApi) UploadFiles(c *gin.Context) {
 			return
 		}
 	}
+	// 上传目标必须位于非保护目录内（与删除防护一致）
+	if service.IsProtectedPath(paths[0]) {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.New(constant.ErrPathNotDelete))
+		return
+	}
 	dir := path.Dir(paths[0])
 
 	_, err = os.Stat(dir)
@@ -543,16 +549,16 @@ func (b *BaseApi) MoveFile(c *gin.Context) {
 // @Router /files/download [get]
 func (b *BaseApi) Download(c *gin.Context) {
 	filePath := c.Query("path")
-	info, err := os.Lstat(filePath)
+	lstatInfo, err := os.Lstat(filePath)
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if lstatInfo.Mode()&os.ModeSymlink != 0 {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
 		return
 	}
-	if info.IsDir() {
+	if lstatInfo.IsDir() {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
 		return
 	}
@@ -562,12 +568,18 @@ func (b *BaseApi) Download(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	info, err = file.Stat()
+	info, err := file.Stat()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
 	if info.IsDir() {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
+		return
+	}
+	// The path may have been replaced between Lstat and Open: re-check that
+	// the opened file is the same one that passed the symlink/dir checks.
+	if !os.SameFile(lstatInfo, info) {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
 		return
 	}
@@ -596,16 +608,16 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		return
 	}
 	filePath := req.Path
-	info, err := os.Lstat(filePath)
+	lstatInfo, err := os.Lstat(filePath)
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrPathNotFound, nil)
 		return
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if lstatInfo.Mode()&os.ModeSymlink != 0 {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
 		return
 	}
-	if info.IsDir() {
+	if lstatInfo.IsDir() {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, err)
 		return
 	}
@@ -615,13 +627,19 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		return
 	}
 	defer fstFile.Close()
-	info, err = fstFile.Stat()
+	info, err := fstFile.Stat()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 		return
 	}
 	if info.IsDir() {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, err)
+		return
+	}
+	// 与 Download 一致：Lstat 与 Open 之间路径可能被替换，用 SameFile 复核
+	// 打开的文件就是通过 symlink/目录检查的那个文件。
+	if !os.SameFile(lstatInfo, info) {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrFileDownloadDir, nil)
 		return
 	}
 
@@ -644,18 +662,18 @@ func (b *BaseApi) DownloadChunkFiles(c *gin.Context) {
 		c.Writer.WriteHeader(http.StatusPartialContent)
 
 		buffer := make([]byte, 1024*1024)
-		file, err := os.Open(filePath)
-		if err != nil {
+		// 复用已通过 SameFile 复核的句柄，避免二次 Open 重新引入
+		// Lstat/Open 之间的替换竞态
+		osFstFile, ok := fstFile.(*os.File)
+		if !ok {
+			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, errors.New("unsupported file handle"))
+			return
+		}
+		if _, err = osFstFile.Seek(startPos, 0); err != nil {
 			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
 			return
 		}
-		defer file.Close()
-
-		if _, err = file.Seek(startPos, 0); err != nil {
-			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
-			return
-		}
-		reader := io.LimitReader(file, endPos-startPos+1)
+		reader := io.LimitReader(osFstFile, endPos-startPos+1)
 		_, err = io.CopyBuffer(c.Writer, reader, buffer)
 		if err != nil {
 			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
@@ -777,11 +795,14 @@ func mergeChunks(fileName string, fileDir string, dstDir string, chunkCount int,
 	defer targetFile.Close()
 	for i := 0; i < chunkCount; i++ {
 		chunkPath := filepath.Join(fileDir, fmt.Sprintf("%s.%d", fileName, i))
-		chunkData, err := os.ReadFile(chunkPath)
+		// 流式合并：单片可达 512MB，不能整片读进内存。io.Copy 在
+		// *os.File 之间会走 copy_file_range/sendfile 零拷贝路径。
+		chunkFile, err := os.Open(chunkPath)
 		if err != nil {
 			return err
 		}
-		_, err = targetFile.Write(chunkData)
+		_, err = io.Copy(targetFile, chunkFile)
+		_ = chunkFile.Close()
 		if err != nil {
 			return err
 		}
@@ -858,10 +879,7 @@ func (b *BaseApi) UploadChunkFiles(c *gin.Context) {
 			_ = os.Remove(fileDir)
 		}
 	}()
-	var (
-		emptyFile *os.File
-		chunkData []byte
-	)
+	var emptyFile *os.File
 
 	emptyFile, err = os.Create(filePath)
 	if err != nil {
@@ -870,14 +888,15 @@ func (b *BaseApi) UploadChunkFiles(c *gin.Context) {
 	}
 	defer emptyFile.Close()
 
-	chunkData, err = io.ReadAll(uploadFile)
+	// 流式落盘：单片最大可达 MaxUploadSize (512MB)，不能整片读进内存
+	chunkPath := filepath.Join(fileDir, fmt.Sprintf("%s.%d", filename, chunkIndex))
+	chunkFile, err := os.OpenFile(chunkPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.WithMap(constant.ErrFileUpload, map[string]interface{}{"name": filename, "detail": err.Error()}, err))
 		return
 	}
-
-	chunkPath := filepath.Join(fileDir, fmt.Sprintf("%s.%d", filename, chunkIndex))
-	err = os.WriteFile(chunkPath, chunkData, 0644)
+	_, err = io.Copy(chunkFile, uploadFile)
+	_ = chunkFile.Close()
 	if err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.WithMap(constant.ErrFileUpload, map[string]interface{}{"name": filename, "detail": err.Error()}, err))
 		return
