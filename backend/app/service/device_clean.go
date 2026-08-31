@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
 	"github.com/1Panel-dev/1Panel/backend/utils/systemctl"
@@ -142,60 +144,107 @@ func (u *DeviceService) Scan() dto.CleanData {
 	return SystemClean
 }
 
-func (u *DeviceService) Clean(req []dto.Clean) {
+func (u *DeviceService) Clean(req []dto.Clean) error {
 	size := uint64(0)
 	restart := false
+	// 统一校验所有清理项的 Name，任一非法则整体拒绝，防止路径穿越删除任意目录
+	for _, item := range req {
+		if err := checkCleanName(item.Name); err != nil {
+			global.LOG.Errorf("clean item treeType %s has invalid name %q", item.TreeType, item.Name)
+			return err
+		}
+	}
 	for _, item := range req {
 		size += item.Size
 		switch item.TreeType {
 		case "1panel_original":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, "1panel_original", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, "1panel_original", item.Name)); err != nil {
+				return err
+			}
 
 		case "upgrade":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, upgradePath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, upgradePath, item.Name)); err != nil {
+				return err
+			}
 
 		case "snapshot":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, snapshotTmpPath, item.Name))
-			dropFileOrDir(path.Join(global.CONF.System.Backup, "system", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, snapshotTmpPath, item.Name)); err != nil {
+				return err
+			}
+			if err := dropFileOrDir(path.Join(global.CONF.System.Backup, "system", item.Name)); err != nil {
+				return err
+			}
 		case "snapshot_tmp":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, snapshotTmpPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, snapshotTmpPath, item.Name)); err != nil {
+				return err
+			}
 		case "snapshot_local":
-			dropFileOrDir(path.Join(global.CONF.System.Backup, "system", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.Backup, "system", item.Name)); err != nil {
+				return err
+			}
 
 		case "rollback":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "app"))
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "database"))
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "website"))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "app")); err != nil {
+				return err
+			}
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "database")); err != nil {
+				return err
+			}
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "website")); err != nil {
+				return err
+			}
 		case "rollback_app":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "app", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "app", item.Name)); err != nil {
+				return err
+			}
 		case "rollback_database":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "database", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "database", item.Name)); err != nil {
+				return err
+			}
 		case "rollback_website":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "website", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, rollbackPath, "website", item.Name)); err != nil {
+				return err
+			}
 
 		case "cache":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, cachePath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, cachePath, item.Name)); err != nil {
+				return err
+			}
 			restart = true
 
 		case "unused":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldOriginalPath))
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldAppBackupPath))
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldDownloadPath))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldOriginalPath)); err != nil {
+				return err
+			}
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldAppBackupPath)); err != nil {
+				return err
+			}
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldDownloadPath)); err != nil {
+				return err
+			}
 			files, _ := os.ReadDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath))
 			if len(files) == 0 {
 				continue
 			}
 			for _, file := range files {
 				if strings.HasPrefix(file.Name(), "upgrade_") {
-					dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, file.Name()))
+					if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, file.Name())); err != nil {
+						return err
+					}
 				}
 			}
 		case "old_original":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldOriginalPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldOriginalPath, item.Name)); err != nil {
+				return err
+			}
 		case "old_apps_bak":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldAppBackupPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldAppBackupPath, item.Name)); err != nil {
+				return err
+			}
 		case "old_download":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldDownloadPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldDownloadPath, item.Name)); err != nil {
+				return err
+			}
 		case "old_upgrade":
 			if len(item.Name) == 0 {
 				files, _ := os.ReadDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath))
@@ -204,38 +253,66 @@ func (u *DeviceService) Clean(req []dto.Clean) {
 				}
 				for _, file := range files {
 					if strings.HasPrefix(file.Name(), "upgrade_") {
-						dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, file.Name()))
+						if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, file.Name())); err != nil {
+							return err
+						}
 					}
 				}
 			} else {
-				dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, item.Name))
+				if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, oldUpgradePath, item.Name)); err != nil {
+					return err
+				}
 			}
 
 		case "upload":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, item.Name)); err != nil {
+				return err
+			}
 			if len(item.Name) == 0 {
-				dropFileOrDir(path.Join(global.CONF.System.BaseDir, tmpUploadPath))
+				if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, tmpUploadPath)); err != nil {
+					return err
+				}
 			}
 		case "upload_tmp":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, tmpUploadPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, tmpUploadPath, item.Name)); err != nil {
+				return err
+			}
 		case "upload_app":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "app", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "app", item.Name)); err != nil {
+				return err
+			}
 		case "upload_database":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "database", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "database", item.Name)); err != nil {
+				return err
+			}
 		case "upload_website":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "website", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "website", item.Name)); err != nil {
+				return err
+			}
 		case "upload_directory":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "directory", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, uploadPath, "directory", item.Name)); err != nil {
+				return err
+			}
 		case "download":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, item.Name)); err != nil {
+				return err
+			}
 		case "download_app":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "app", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "app", item.Name)); err != nil {
+				return err
+			}
 		case "download_database":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "database", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "database", item.Name)); err != nil {
+				return err
+			}
 		case "download_website":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "website", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "website", item.Name)); err != nil {
+				return err
+			}
 		case "download_directory":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "directory", item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, downloadPath, "directory", item.Name)); err != nil {
+				return err
+			}
 
 		case "system_log":
 			if len(item.Name) == 0 {
@@ -247,16 +324,24 @@ func (u *DeviceService) Clean(req []dto.Clean) {
 					if file.Name() == "1Panel.log" || file.IsDir() {
 						continue
 					}
-					dropFileOrDir(path.Join(global.CONF.System.BaseDir, logPath, file.Name()))
+					if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, logPath, file.Name())); err != nil {
+						return err
+					}
 				}
 			} else {
-				dropFileOrDir(path.Join(global.CONF.System.BaseDir, logPath, item.Name))
+				if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, logPath, item.Name)); err != nil {
+					return err
+				}
 			}
 		case "docker_log":
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, dockerLogPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, dockerLogPath, item.Name)); err != nil {
+				return err
+			}
 		case "task_log":
 			pathItem := path.Join(global.CONF.System.BaseDir, taskPath, item.Name)
-			dropFileOrDir(path.Join(global.CONF.System.BaseDir, taskPath, item.Name))
+			if err := dropFileOrDir(path.Join(global.CONF.System.BaseDir, taskPath, item.Name)); err != nil {
+				return err
+			}
 			if len(item.Name) == 0 {
 				files, _ := os.ReadDir(pathItem)
 				if len(files) == 0 {
@@ -291,6 +376,7 @@ func (u *DeviceService) Clean(req []dto.Clean) {
 			}
 		}()
 	}
+	return nil
 }
 
 func (u *DeviceService) CleanForCronjob() (string, error) {
@@ -641,11 +727,70 @@ func loadTreeWithAllFile(isCheck bool, originalPath, treeType, pathItem string, 
 	return lists
 }
 
-func dropFileOrDir(itemPath string) {
+// checkCleanName 校验磁盘清理请求中的 item.Name 是否可安全拼接到各分类目录之下，防止路径穿越。
+//
+// 合法的 Name 只有两类：
+//   - 空字符串：表示清理整个分类目录（前端勾选分类根节点时提交，多个 case 依赖 len(Name)==0 分支）；
+//   - 相对路径形式的名称：Scan（loadTreeWithAllFile）对子级节点会生成形如 "子目录/文件名" 的相对路径，
+//     且上传文件、任务名等可能包含中文、空格等字符，故不做字符白名单限制（utils/files.ValidNameComponent
+//     的白名单会误伤这类合法名称；SanitizeFilename 则禁止 "/"，同样不适用）。
+//
+// 绝对路径、"."、".." 路径分量、反斜杠、空白名称以及 NUL 等控制字符一律拒绝。
+func checkCleanName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.TrimSpace(name) == "" {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if strings.HasPrefix(name, "/") || strings.Contains(name, "\\") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	for _, comp := range strings.Split(name, "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	return nil
+}
+
+// isCleanTargetProtected 基于 file.go 的 isProtectedPath 判断清理目标是否禁止删除。
+// 与文件管理器不同，磁盘清理的合法目标几乎都位于面板数据目录 <BaseDir>/1panel 之下
+// （如 tmp/upgrade、log、uploads 等），因此仅放开面板数据目录之下（不含本体）的包含判定，
+// 其余保护规则（根目录、系统关键目录、回收站目录）与 isProtectedPath 保持一致。
+func isCleanTargetProtected(itemPath string) bool {
+	if !isProtectedPath(itemPath) {
+		return false
+	}
+	if baseDir := global.CONF.System.BaseDir; baseDir != "" {
+		panelDataDir := path.Join(baseDir, "1panel")
+		cleanedPath := filepath.Clean(itemPath)
+		if cleanedPath == panelDataDir {
+			return true
+		}
+		if strings.HasPrefix(cleanedPath, panelDataDir+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+func dropFileOrDir(itemPath string) error {
+	if isCleanTargetProtected(itemPath) {
+		global.LOG.Errorf("drop file %s is a protected path, refuse to delete", itemPath)
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	global.LOG.Debugf("drop file %s", itemPath)
 	if err := os.RemoveAll(itemPath); err != nil {
 		global.LOG.Errorf("drop file %s failed, err %v", itemPath, err)
+		return err
 	}
+	return nil
 }
 
 func dropBuildCache() {

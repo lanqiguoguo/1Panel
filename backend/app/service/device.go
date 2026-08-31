@@ -40,7 +40,7 @@ type IDeviceService interface {
 	LoadConf(name string) (string, error)
 
 	Scan() dto.CleanData
-	Clean(req []dto.Clean)
+	Clean(req []dto.Clean) error
 	CleanForCronjob() (string, error)
 }
 

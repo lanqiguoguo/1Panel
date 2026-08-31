@@ -230,7 +230,10 @@ func (b *BaseApi) SystemClean(c *gin.Context) {
 		return
 	}
 
-	deviceService.Clean(req)
+	if err := deviceService.Clean(req); err != nil {
+		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)
+		return
+	}
 
 	helper.SuccessWithData(c, nil)
 }
