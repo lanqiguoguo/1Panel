@@ -272,6 +272,13 @@ func ExecCmdWithDir(cmdStr, workDir string) error {
 	return nil
 }
 
+// CheckIllegal reports whether any argument contains a shell metacharacter or
+// an "invisible separator": besides the classic metacharacters, the tab,
+// vertical tab and form feed controls are rejected because bash word-splits on
+// them just like on spaces, so they let a single validated value smuggle extra
+// argv entries into an unquoted interpolation (e.g. a tar exclusion rule
+// carrying "--checkpoint-action=exec=..." after a tab). Space is NOT rejected:
+// it is a legal character in file and directory names.
 func CheckIllegal(args ...string) bool {
 	if args == nil {
 		return false
@@ -280,7 +287,8 @@ func CheckIllegal(args ...string) bool {
 		if strings.Contains(arg, "&") || strings.Contains(arg, "|") || strings.Contains(arg, ";") ||
 			strings.Contains(arg, "$") || strings.Contains(arg, "'") || strings.Contains(arg, "`") ||
 			strings.Contains(arg, "(") || strings.Contains(arg, ")") || strings.Contains(arg, "\"") ||
-			strings.Contains(arg, "\n") || strings.Contains(arg, "\r") || strings.Contains(arg, ">") || strings.Contains(arg, "<") {
+			strings.Contains(arg, "\n") || strings.Contains(arg, "\r") || strings.Contains(arg, ">") || strings.Contains(arg, "<") ||
+			strings.Contains(arg, "\t") || strings.Contains(arg, "\v") || strings.Contains(arg, "\f") {
 			return true
 		}
 	}

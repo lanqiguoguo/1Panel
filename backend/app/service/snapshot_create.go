@@ -308,6 +308,15 @@ func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret str
 	if !files.ValidShellArgs(sourceDir, targetDir, name) || (secret != "" && !files.ValidShellArgs(secret)) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
+	// The rules are single-quoted below, so a single quote in them would break
+	// out of the quoting. Callers here pass constant or CheckIllegal-filtered
+	// rules (which never contain a quote); the explicit guard keeps it that way
+	// and mirrors the entry checks of handleTar. Tab and other invisible
+	// separators are neutralized by the quoting itself (a quoted tab stays one
+	// literal tar pattern, not an argv separator).
+	if strings.Contains(exclusionRules, "'") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(targetDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(targetDir, os.ModePerm); err != nil {
 			return err
@@ -324,8 +333,9 @@ func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret str
 		if _, ok := exMap[exclude]; ok {
 			continue
 		}
-		exStr += " --exclude "
-		exStr += exclude
+		// Single-quote every rule so it always lands as ONE tar argument (see
+		// the quoting rationale in handleTar, cronjob_helper.go).
+		exStr += " --exclude '" + exclude + "'"
 		exMap[exclude] = struct{}{}
 	}
 	path := ""
@@ -335,7 +345,7 @@ func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret str
 		if len(aheadDir) == 0 {
 			aheadDir = "/"
 		}
-		path += fmt.Sprintf("-C %s %s", aheadDir, itemDir)
+		path += fmt.Sprintf("-C '%s' '%s'", aheadDir, itemDir)
 	} else {
 		path = sourceDir
 	}
@@ -348,7 +358,7 @@ func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret str
 		// debug log. Mask both the quoted and the bare form.
 		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
 	} else {
-		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -printf '%%P\n' | sed 's|^|./|') -zcf %s %s -C %s .", sourceDir, targetDir+"/"+name, exStr, sourceDir)
+		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -printf '%%P\n' | sed 's|^|./|') -zcf %s %s -C '%s' .", sourceDir, targetDir+"/"+name, exStr, sourceDir)
 		global.LOG.Debug(commands)
 	}
 	stdout, err := cmd.ExecWithTimeOut(commands, 30*time.Minute)

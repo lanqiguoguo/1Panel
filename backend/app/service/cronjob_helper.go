@@ -231,7 +231,11 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 		if len(exclude) == 0 {
 			continue
 		}
-		excludeRules += " --exclude " + exclude
+		// Single-quote every rule: validCronjobExclusionRules (cmd.CheckIllegal)
+		// rejects single quotes, so the rule can never break out of the quoting
+		// and always lands as ONE tar argument — a tab inside the rule can no
+		// longer word-split into extra argv entries (checkpoint-action RCE).
+		excludeRules += " --exclude '" + exclude + "'"
 	}
 	path := ""
 	if strings.Contains(sourceDir, "/") {
@@ -240,7 +244,10 @@ func handleTar(sourceDir, targetDir, name, exclusionRules string, secret string)
 		if len(aheadDir) == 0 {
 			aheadDir = "/"
 		}
-		path += fmt.Sprintf("-C %s %s", aheadDir, itemDir)
+		// Same quoting as the exclude rules: ValidShellArgs guarantees neither
+		// component contains a single quote, and the quotes keep values with
+		// spaces (legal directory names) as single tar arguments.
+		path += fmt.Sprintf("-C '%s' '%s'", aheadDir, itemDir)
 	} else {
 		path = sourceDir
 	}

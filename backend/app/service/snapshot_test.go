@@ -719,3 +719,116 @@ func TestHandleSnapTarDebugLogMasksSecret(t *testing.T) {
 		t.Fatalf("no debug entry with the masked openssl -k option was captured, entries: %v", entries)
 	}
 }
+
+// swapSnapDebugLog installs a debug-level logger wired to the given hook and
+// restores the previous global logger when the test finishes.
+func swapSnapDebugLog(t *testing.T, hook *snapLogCaptureHook) {
+	t.Helper()
+	origLog := global.LOG
+	logger := logrus.New()
+	logger.SetLevel(logrus.DebugLevel)
+	logger.AddHook(hook)
+	global.LOG = logger
+	t.Cleanup(func() { global.LOG = origLog })
+}
+
+// TestHandleSnapTarQuotesAndNeutralizesExclusionRules is the snapshot-side
+// sibling of the handleTar quoting tests. The ignore rules are joined with
+// semicolons and were interpolated unquoted into the bash -c tar command, so a
+// rule carrying tabs could word-split into standalone tar options
+// (--checkpoint-action=exec=<prog> => arbitrary program execution as root).
+// After the fix every rule lands single-quoted as ONE literal tar pattern.
+func TestHandleSnapTarQuotesAndNeutralizesExclusionRules(t *testing.T) {
+	ensureValidateLogger(t)
+	payloadDir := t.TempDir()
+	prog := filepath.Join(payloadDir, "prog.sh")
+	marker := filepath.Join(payloadDir, "pwned")
+	script := "#!/bin/bash\ntouch " + marker + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0755); err != nil {
+		t.Fatalf("write prog: %v", err)
+	}
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "tmp"), 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "tmp", "cache.txt"), []byte("cache"), 0644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "a.log"), []byte("log"), 0644); err != nil {
+		t.Fatalf("write a.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("data"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	// 1) benign rules: run end to end, appear quoted, and really exclude.
+	hook := &snapLogCaptureHook{}
+	swapSnapDebugLog(t, hook)
+	if err := handleSnapTar(srcDir, targetDir, "1panel_data.tar.gz", "./tmp;*.log", ""); err != nil {
+		t.Fatalf("handleSnapTar() benign rules error = %v", err)
+	}
+	members := archiveMembers(t, filepath.Join(targetDir, "1panel_data.tar.gz"))
+	if !strings.Contains(members, "data.txt") {
+		t.Fatalf("data.txt missing from archive:\n%s", members)
+	}
+	if strings.Contains(members, "cache.txt") {
+		t.Fatalf("./tmp rule not applied, cache.txt in archive:\n%s", members)
+	}
+	if strings.Contains(members, "a.log") {
+		t.Fatalf("*.log rule not applied, a.log in archive:\n%s", members)
+	}
+	joined := strings.Join(hookEntries(hook), "\n")
+	for _, want := range []string{"--exclude './tmp'", "--exclude '*.log'"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("built tar command does not contain quoted rule %q, commands logged:\n%s", want, joined)
+		}
+	}
+
+	// 2) tab-separated checkpoint payload: neutralized at runtime by the
+	// quoting (tar treats it as one literal pattern), the planted program
+	// must never run, and the command must show the quoted form.
+	hook2 := &snapLogCaptureHook{}
+	swapSnapDebugLog(t, hook2)
+	payload := "x\t--checkpoint=1\t--checkpoint-action=exec=" + prog
+	if err := handleSnapTar(srcDir, targetDir, "1panel_data_tab.tar.gz", payload, ""); err != nil {
+		t.Fatalf("handleSnapTar() tab payload error = %v (quoting must neutralize, not fail)", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "1panel_data_tab.tar.gz")); err != nil {
+		t.Fatalf("tab-payload archive not created: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("checkpoint-action program was executed")
+	}
+	joined2 := strings.Join(hookEntries(hook2), "\n")
+	if !strings.Contains(joined2, "--exclude '"+payload+"'") {
+		t.Fatalf("tab payload not embedded as one single-quoted literal, commands logged:\n%s", joined2)
+	}
+
+	// 3) a single quote would break out of the quoting: rejected before any
+	// side effect.
+	hook3 := &snapLogCaptureHook{}
+	swapSnapDebugLog(t, hook3)
+	err := handleSnapTar(srcDir, targetDir, "1panel_data_quote.tar.gz", "x'; touch "+marker+"; '", "")
+	if err == nil {
+		t.Fatal("handleSnapTar() single-quote payload error = nil, want ErrCmdIllegal")
+	}
+	if !isErrCmdIllegal(t, err) {
+		t.Fatalf("handleSnapTar() single-quote payload error = %v, want ErrCmdIllegal", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("injection marker was created via single-quote rule")
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "1panel_data_quote.tar.gz")); err == nil {
+		t.Fatal("archive was created although the rule was rejected")
+	}
+}
+
+// hookEntries snapshots the messages collected by a snapLogCaptureHook.
+func hookEntries(hook *snapLogCaptureHook) []string {
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	return append([]string(nil), hook.entries...)
+}

@@ -69,6 +69,51 @@ func TestExecCronjobWithTimeOutKillsProcessGroup(t *testing.T) {
 	assertSleepGone(t)
 }
 
+// TestCheckIllegal covers the shell-metacharacter blacklist, including the
+// "invisible separator" controls (tab, vertical tab, form feed) added with the
+// tar option-injection fix: bash word-splits on them just like on spaces, so a
+// validated value carrying them could smuggle extra argv entries into an
+// unquoted shell interpolation (e.g. an exclusion rule carrying
+// "--checkpoint-action=exec=..." after a tab).
+func TestCheckIllegal(t *testing.T) {
+	illegal := []string{
+		// classic metacharacters (regression of the legacy charset)
+		"a&b", "a|b", "a;b", "a$b", "a'b", "`id`", "a(b", "a)b", `a"b`,
+		"a\nb", "a\rb", "a>b", "a<b",
+		// invisible separators (new)
+		"a\tb",
+		"a\vb",
+		"a\fb",
+	}
+	for _, s := range illegal {
+		if !CheckIllegal(s) {
+			t.Errorf("CheckIllegal(%q) = false, want true", s)
+		}
+	}
+
+	// every legacy metacharacter individually
+	for _, ch := range "&|;$'`()\"\n\r><" {
+		s := "a" + string(ch) + "b"
+		if !CheckIllegal(s) {
+			t.Errorf("CheckIllegal(%q) = false, want true", s)
+		}
+	}
+
+	legal := []string{
+		"a b", // space is a legal file-name character and must stay allowed
+		"*.log",
+		"node_modules",
+		"/opt/1panel/www/sites",
+		"backup-2026_01.01",
+		"logs/[0-9]*.txt",
+	}
+	for _, s := range legal {
+		if CheckIllegal(s) {
+			t.Errorf("CheckIllegal(%q) = true, want false", s)
+		}
+	}
+}
+
 func TestExecWithTimeOutNormal(t *testing.T) {
 	out, err := ExecWithTimeOut("echo hello", 5*time.Second)
 	if err != nil {

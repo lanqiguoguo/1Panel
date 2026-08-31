@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -520,5 +521,189 @@ func TestHandleTarLegitDirectoryBackup(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatalf("archive %s is empty", archive)
+	}
+}
+
+// debugLogCapture is a logrus hook collecting debug-level messages, used to
+// assert the exact command shape handleTar builds (quoted exclude rules).
+type debugLogCapture struct {
+	messages chan string
+}
+
+func (c *debugLogCapture) Levels() []logrus.Level {
+	return []logrus.Level{logrus.DebugLevel}
+}
+
+func (c *debugLogCapture) Fire(entry *logrus.Entry) error {
+	select {
+	case c.messages <- entry.Message:
+	default:
+	}
+	return nil
+}
+
+func (c *debugLogCapture) drain() []string {
+	var msgs []string
+	for {
+		select {
+		case m := <-c.messages:
+			msgs = append(msgs, m)
+		default:
+			return msgs
+		}
+	}
+}
+
+// swapDebugLog installs a debug-level logger wired to the capture and restores
+// the previous global logger when the test finishes.
+func swapDebugLog(t *testing.T, capture *debugLogCapture) {
+	t.Helper()
+	old := global.LOG
+	logger := logrus.New()
+	logger.SetLevel(logrus.DebugLevel)
+	logger.AddHook(capture)
+	global.LOG = logger
+	t.Cleanup(func() { global.LOG = old })
+}
+
+// archiveMembers lists the members of a tar.gz archive via real tar.
+func archiveMembers(t *testing.T, archive string) string {
+	t.Helper()
+	out, err := exec.Command("tar", "-tzf", archive).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tar -tzf %s failed: %v, output: %s", archive, err, out)
+	}
+	return string(out)
+}
+
+// TestHandleTarRejectsTabCheckpointPayload is the regression test for the tar
+// option injection: an exclusion rule whose parts are joined with tabs was
+// word-split by bash after unquoted interpolation, turning the tail into
+// standalone tar options (--checkpoint / --checkpoint-action=exec=<prog>) and
+// achieving arbitrary program execution as root. The rule must now be rejected
+// by the entry check (validCronjobExclusionRules -> cmd.CheckIllegal rejects
+// tabs) before any command is built, and the planted program must never run.
+func TestHandleTarRejectsTabCheckpointPayload(t *testing.T) {
+	ensureValidateLogger(t)
+	payloadDir := t.TempDir()
+	prog := filepath.Join(payloadDir, "prog.sh")
+	marker := filepath.Join(payloadDir, "pwned")
+	script := "#!/bin/bash\ntouch " + marker + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0755); err != nil {
+		t.Fatalf("write prog: %v", err)
+	}
+
+	srcDir := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	targetDir := t.TempDir()
+
+	exclusion := "x\t--checkpoint=1\t--checkpoint-action=exec=" + prog
+
+	// Defense line 1: the entry validator must reject the tab-carrying rule.
+	if validCronjobExclusionRules(exclusion) {
+		t.Fatal("validCronjobExclusionRules() = true for tab-separated checkpoint payload, want false")
+	}
+
+	// Defense line 2 (runtime re-check inside handleTar) returns the same
+	// error, and no shell command is built or executed.
+	err := handleTar(srcDir, targetDir, "backup.tar.gz", exclusion, "")
+	if err == nil {
+		t.Fatal("handleTar() error = nil, want ErrCmdIllegal")
+	}
+	if !isErrCmdIllegal(t, err) {
+		t.Fatalf("handleTar() error = %v, want ErrCmdIllegal", err)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("checkpoint-action program was executed")
+	}
+}
+
+// TestHandleTarQuotesAndAppliesExclusionRules verifies both the shape and the
+// semantics of the quoting fix: benign rules must appear single-quoted in the
+// built command (--exclude '*.log'), tar must still run end to end, and the
+// excluded entries must really be missing from the archive while the rest is
+// kept.
+func TestHandleTarQuotesAndAppliesExclusionRules(t *testing.T) {
+	capture := &debugLogCapture{messages: make(chan string, 16)}
+	swapDebugLog(t, capture)
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "node_modules", "pkg"), 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "app.log"), []byte("log"), 0644); err != nil {
+		t.Fatalf("write app.log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("data"), 0644); err != nil {
+		t.Fatalf("write data.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "node_modules", "pkg", "index.js"), []byte("js"), 0644); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	if err := handleTar(srcDir, targetDir, "backup.tar.gz", "*.log,node_modules", ""); err != nil {
+		t.Fatalf("handleTar() error = %v", err)
+	}
+
+	archive := filepath.Join(targetDir, "backup.tar.gz")
+	if _, err := os.Stat(archive); err != nil {
+		t.Fatalf("archive not created: %v", err)
+	}
+
+	msgs := capture.drain()
+	joined := strings.Join(msgs, "\n")
+	for _, want := range []string{"--exclude '*.log'", "--exclude 'node_modules'"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("built tar command does not contain quoted rule %q, commands logged:\n%s", want, joined)
+		}
+	}
+
+	members := archiveMembers(t, archive)
+	if strings.Contains(members, "app.log") {
+		t.Fatalf("*.log rule not applied, app.log in archive:\n%s", members)
+	}
+	if strings.Contains(members, "node_modules") {
+		t.Fatalf("node_modules rule not applied:\n%s", members)
+	}
+	if !strings.Contains(members, "data.txt") {
+		t.Fatalf("data.txt missing from archive:\n%s", members)
+	}
+}
+
+// TestHandleTarSourceDirWithSpaces proves the -C quoting: a directory whose
+// name contains spaces (legal and previously split into two tar arguments)
+// is now passed as one argument and archived correctly.
+func TestHandleTarSourceDirWithSpaces(t *testing.T) {
+	capture := &debugLogCapture{messages: make(chan string, 16)}
+	swapDebugLog(t, capture)
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "my dir")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	if err := handleTar(srcDir, targetDir, "backup.tar.gz", "", ""); err != nil {
+		t.Fatalf("handleTar() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "backup.tar.gz")); err != nil {
+		t.Fatalf("archive not created: %v", err)
+	}
+
+	joined := strings.Join(capture.drain(), "\n")
+	if !strings.Contains(joined, "-C '"+base+"' 'my dir'") {
+		t.Fatalf("built tar command does not quote the -C operands, commands logged:\n%s", joined)
+	}
+	members := archiveMembers(t, filepath.Join(targetDir, "backup.tar.gz"))
+	if !strings.Contains(members, "data.txt") {
+		t.Fatalf("data.txt missing from archive (space-in-name dir not archived):\n%s", members)
 	}
 }
