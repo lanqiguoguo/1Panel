@@ -16,6 +16,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -249,20 +250,27 @@ func (r *Remote) Backup(info BackupInfo) error {
 	if err != nil {
 		return err
 	}
-	backupCmd := fmt.Sprintf("docker run --rm --net=host -i %s /bin/bash -c '%s --routines -h %s -P %d -u%s -p%s %s --default-character-set=%s %s'",
-		image, dumpCmd, r.Address, r.Port, r.User, r.Password, sslSkip(info.Version, r.Type), info.Format, info.Name)
+	// The password reaches mysqldump through MYSQL_PWD loaded from a 0600
+	// env file (see remoteRunCommand); it must never be interpolated into
+	// the docker run command line.
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
+	backupCmd := remoteRunCommand(envFile, image, dumpCmd, "--routines", r.Address, r.Port, r.User, sslSkip(info.Version, r.Type), info.Format, info.Name)
 
-	global.LOG.Debug(strings.ReplaceAll(backupCmd, r.Password, "******"))
-	cmd := exec.Command("bash", "-c", backupCmd)
+	global.LOG.Debug(backupCmd)
+	cmdItem := exec.Command("bash", "-c", backupCmd)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmdItem.Stderr = &stderr
 
 	gzipCmd := exec.Command("gzip", "-cf")
-	gzipCmd.Stdin, _ = cmd.StdoutPipe()
+	gzipCmd.Stdin, _ = cmdItem.StdoutPipe()
 	gzipCmd.Stdout = outfile
 
 	_ = gzipCmd.Start()
-	if err := cmd.Run(); err != nil {
+	if err := cmdItem.Run(); err != nil {
 		return fmt.Errorf("handle backup database failed, err: %v", stderr.String())
 	}
 	_ = gzipCmd.Wait()
@@ -278,11 +286,17 @@ func (r *Remote) Recover(info RecoverInfo) error {
 		return err
 	}
 
-	recoverCmd := fmt.Sprintf("docker run --rm --net=host -i %s /bin/bash -c '%s -h %s -P %d -u%s -p%s %s --default-character-set=%s %s'",
-		image, r.Type, r.Address, r.Port, r.User, r.Password, sslSkip(info.Version, r.Type), info.Format, info.Name)
+	// See Backup: the password travels via MYSQL_PWD from the 0600 env file
+	// only, never through the command line.
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"MYSQL_PWD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
+	recoverCmd := remoteRunCommand(envFile, image, r.Type, "", r.Address, r.Port, r.User, sslSkip(info.Version, r.Type), info.Format, info.Name)
 
-	global.LOG.Debug(strings.ReplaceAll(recoverCmd, r.Password, "******"))
-	cmd := exec.Command("bash", "-c", recoverCmd)
+	global.LOG.Debug(recoverCmd)
+	cmdItem := exec.Command("bash", "-c", recoverCmd)
 
 	if strings.HasSuffix(info.SourceFile, ".gz") {
 		gzipFile, err := os.Open(info.SourceFile)
@@ -295,17 +309,31 @@ func (r *Remote) Recover(info RecoverInfo) error {
 			return err
 		}
 		defer gzipReader.Close()
-		cmd.Stdin = gzipReader
+		cmdItem.Stdin = gzipReader
 	} else {
-		cmd.Stdin = fi
+		cmdItem.Stdin = fi
 	}
-	stdout, err := cmd.CombinedOutput()
+	stdout, err := cmdItem.CombinedOutput()
 	stdStr := strings.ReplaceAll(string(stdout), "mysql: [Warning] Using a password on the command line interface can be insecure.\n", "")
 	if err != nil || strings.HasPrefix(string(stdStr), "ERROR ") {
 		return errors.New(stdStr)
 	}
 
 	return nil
+}
+
+// remoteRunCommand builds the `docker run ... /bin/bash -c '...'` shell command
+// used by Remote Backup and Recover. The database password must never be
+// interpolated into the returned string: `-p<password>` would expose the
+// credential in the host bash argv, the docker run argv and the container-side
+// mysqldump/mysql argv (all world-readable under /proc/<pid>/cmdline). Instead
+// the password is loaded from the 0600 env file (cmd.WriteDockerEnvFile) via
+// `--env-file` into MYSQL_PWD, which both mysqldump and mysql honor.
+// extraArgs carries the per-operation client flags ("--routines" for backup,
+// "" for recover).
+func remoteRunCommand(envFile, image, clientBin, extraArgs, host string, port uint, user, sslFlag, charset, database string) string {
+	return fmt.Sprintf("docker run --rm --net=host -i --env-file %q %s /bin/bash -c '%s %s -h %s -P %d -u%s %s --default-character-set=%s %s'",
+		envFile, image, clientBin, extraArgs, host, port, user, sslFlag, charset, database)
 }
 
 func (r *Remote) SyncDB(version string) ([]SyncDBInfo, error) {
