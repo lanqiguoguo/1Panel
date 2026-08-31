@@ -71,12 +71,11 @@ func SessionAuth() gin.HandlerFunc {
 func isValid1PanelTimestamp(panelTimestamp string) bool {
 	apiKeyValidityTime := global.CONF.System.ApiKeyValidityTime
 	apiTime, err := strconv.Atoi(apiKeyValidityTime)
-	if err != nil || apiTime < 0 {
+	// apiTime == 0 is rejected as well: it used to skip timestamp validation
+	// entirely, which let a captured signature be replayed forever.
+	if err != nil || apiTime <= 0 {
 		global.LOG.Errorf("apiTime %d, err: %v", apiTime, err)
 		return false
-	}
-	if apiTime == 0 {
-		return true
 	}
 	panelTime, err := strconv.ParseInt(panelTimestamp, 10, 64)
 	if err != nil {

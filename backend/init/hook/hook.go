@@ -207,31 +207,31 @@ func handleUserInfo(tags string, settingRepo repo.ISettingRepo) {
 		return
 	}
 	if tags == "all" {
-		if err := settingRepo.Update("UserName", common.RandStrAndNum(10)); err != nil {
+		if err := settingRepo.Update("UserName", common.RandStrSecure(10)); err != nil {
 			global.LOG.Fatalf("init username before start failed, err: %v", err)
 		}
-		pass, _ := encrypt.StringEncrypt(common.RandStrAndNum(10))
+		pass, _ := encrypt.StringEncrypt(common.RandStrSecure(10))
 		if err := settingRepo.Update("Password", pass); err != nil {
 			global.LOG.Fatalf("init password before start failed, err: %v", err)
 		}
-		if err := settingRepo.Update("SecurityEntrance", common.RandStrAndNum(10)); err != nil {
+		if err := settingRepo.Update("SecurityEntrance", common.RandStrSecure(10)); err != nil {
 			global.LOG.Fatalf("init entrance before start failed, err: %v", err)
 		}
 		return
 	}
 	if strings.Contains(global.CONF.System.ChangeUserInfo, "username") {
-		if err := settingRepo.Update("UserName", common.RandStrAndNum(10)); err != nil {
+		if err := settingRepo.Update("UserName", common.RandStrSecure(10)); err != nil {
 			global.LOG.Fatalf("init username before start failed, err: %v", err)
 		}
 	}
 	if strings.Contains(global.CONF.System.ChangeUserInfo, "password") {
-		pass, _ := encrypt.StringEncrypt(common.RandStrAndNum(10))
+		pass, _ := encrypt.StringEncrypt(common.RandStrSecure(10))
 		if err := settingRepo.Update("Password", pass); err != nil {
 			global.LOG.Fatalf("init password before start failed, err: %v", err)
 		}
 	}
 	if strings.Contains(global.CONF.System.ChangeUserInfo, "entrance") {
-		if err := settingRepo.Update("SecurityEntrance", common.RandStrAndNum(10)); err != nil {
+		if err := settingRepo.Update("SecurityEntrance", common.RandStrSecure(10)); err != nil {
 			global.LOG.Fatalf("init entrance before start failed, err: %v", err)
 		}
 	}

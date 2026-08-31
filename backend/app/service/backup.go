@@ -576,10 +576,15 @@ func isMaskedCredential(v string) bool {
 // value replaced by the mask placeholder. Non-secret fields (accessKey,
 // bucket, endpoint, region, refresh_time/status, ...) are passed through
 // unchanged so the frontend list can still display account state.
+//
+// Vars that cannot be parsed (e.g. a malformed historical row) fail closed:
+// they are masked wholesale as an empty vars object, since echoing the raw
+// value could leak plaintext credentials. The frontend parses the vars JSON
+// and renders an empty object as an account without credentials.
 func maskBackupVars(vars string) string {
 	var varMap map[string]interface{}
 	if err := json.Unmarshal([]byte(vars), &varMap); err != nil {
-		return vars
+		return "{}"
 	}
 	for key := range varMap {
 		if _, ok := backupSecretVars[key]; ok {
@@ -588,7 +593,7 @@ func maskBackupVars(vars string) string {
 	}
 	itemVars, err := json.Marshal(varMap)
 	if err != nil {
-		return vars
+		return "{}"
 	}
 	return string(itemVars)
 }

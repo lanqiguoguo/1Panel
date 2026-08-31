@@ -118,6 +118,7 @@ func (f *fakeAuthService) Login(*gin.Context, dto.Login, string) (*dto.UserLogin
 func (f *fakeAuthService) MFALogin(*gin.Context, dto.MFALogin, string) (*dto.UserLoginInfo, error) {
 	return f.mfaLoginRes, f.mfaLoginErr
 }
+func (f *fakeAuthService) SetSecurityEntranceCookie(*gin.Context, string) {}
 
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)

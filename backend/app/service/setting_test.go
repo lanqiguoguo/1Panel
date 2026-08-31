@@ -973,3 +973,51 @@ func TestUpdateApiConfigEnableKeepsStoredKey(t *testing.T) {
 		t.Errorf("ApiInterfaceStatus = %q after enable, want enable", got)
 	}
 }
+
+// TestUpdateApiConfigRejectsInvalidValidityTime guards the source of the
+// ApiKeyValidityTime setting: 0, negative and non-numeric values are rejected
+// by isValid1PanelTimestamp, so persisting them would lock every API request
+// out; the update must refuse them before anything is written.
+func TestUpdateApiConfigRejectsInvalidValidityTime(t *testing.T) {
+	setupSettingUpdateTest(t)
+	u := &SettingService{}
+	for _, kv := range [][2]string{
+		{"ApiInterfaceStatus", "disable"},
+		{"ApiKey", "stored-key"},
+		{"IpWhiteList", "127.0.0.1"},
+		{"ApiKeyValidityTime", "120"},
+	} {
+		if err := settingRepo.UpdateOrCreate(kv[0], kv[1]); err != nil {
+			t.Fatalf("seed %s failed: %v", kv[0], err)
+		}
+	}
+
+	for _, bad := range []string{"0", "-5", "abc", ""} {
+		if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+			ApiInterfaceStatus: "disable",
+			ApiKey:             "stored-key",
+			IpWhiteList:        "127.0.0.1",
+			ApiKeyValidityTime: bad,
+		}); err == nil {
+			t.Errorf("UpdateApiConfig accepted ApiKeyValidityTime %q, want error", bad)
+		}
+	}
+	if got := settingValue(t, "ApiKeyValidityTime"); got != "120" {
+		t.Errorf("ApiKeyValidityTime = %q after rejected updates, want unchanged 120", got)
+	}
+	if got := settingValue(t, "ApiInterfaceStatus"); got != "disable" {
+		t.Errorf("ApiInterfaceStatus = %q after rejected updates, want unchanged disable", got)
+	}
+
+	if err := u.UpdateApiConfig(dto.ApiInterfaceConfig{
+		ApiInterfaceStatus: "disable",
+		ApiKey:             "stored-key",
+		IpWhiteList:        "127.0.0.1",
+		ApiKeyValidityTime: "60",
+	}); err != nil {
+		t.Fatalf("UpdateApiConfig with positive validity time failed: %v", err)
+	}
+	if got := settingValue(t, "ApiKeyValidityTime"); got != "60" {
+		t.Errorf("ApiKeyValidityTime = %q after valid update, want 60", got)
+	}
+}

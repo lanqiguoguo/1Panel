@@ -29,6 +29,7 @@ type IAuthService interface {
 	MFALogin(c *gin.Context, info dto.MFALogin, entrance string) (*dto.UserLoginInfo, error)
 	GetSecurityEntrance() string
 	IsLogin(c *gin.Context) bool
+	SetSecurityEntranceCookie(c *gin.Context, entrance string)
 }
 
 func NewIAuthService() IAuthService {
@@ -69,9 +70,7 @@ func (u *AuthService) Login(c *gin.Context, info dto.Login, entrance string) (*d
 		return nil, err
 	}
 	if entrance != "" {
-		entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
-		c.SetSameSite(http.SameSiteLaxMode)
-		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
+		u.SetSecurityEntranceCookie(c, entrance)
 	}
 	return loginUser, nil
 }
@@ -112,11 +111,32 @@ func (u *AuthService) MFALogin(c *gin.Context, info dto.MFALogin, entrance strin
 		return nil, err
 	}
 	if entrance != "" {
-		entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
-		c.SetSameSite(http.SameSiteLaxMode)
-		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
+		u.SetSecurityEntranceCookie(c, entrance)
 	}
 	return loginUser, nil
+}
+
+// entranceCookieSecure reports whether a cookie set for this request must
+// carry the Secure attribute: the panel serves HTTPS itself (SSL setting
+// "enable", the same signal the session cookie uses) or the request arrived
+// over TLS.
+func entranceCookieSecure(sslSetting string, requestTLS bool) bool {
+	return sslSetting == "enable" || requestTLS
+}
+
+// SetSecurityEntranceCookie stores the (base64-encoded) security entrance in
+// a cookie so the SPA can route back to it. The Secure flag is decided by
+// entranceCookieSecure instead of being hard-coded to false, so the entrance
+// token is never sent back over plaintext HTTP once HTTPS is configured.
+func (u *AuthService) SetSecurityEntranceCookie(c *gin.Context, entrance string) {
+	requestTLS := c.Request != nil && c.Request.TLS != nil
+	secure := requestTLS
+	if ssl, err := settingRepo.Get(settingRepo.WithByKey("SSL")); err == nil {
+		secure = entranceCookieSecure(ssl.Value, requestTLS)
+	}
+	entranceValue := base64.StdEncoding.EncodeToString([]byte(entrance))
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", secure, true)
 }
 
 func (u *AuthService) generateSession(c *gin.Context, name, authMethod string) (*dto.UserLoginInfo, error) {

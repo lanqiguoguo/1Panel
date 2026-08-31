@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path"
 	"regexp"
@@ -68,9 +67,7 @@ func (b *BaseApi) UpdateSetting(c *gin.Context) {
 		return
 	}
 	if req.Key == "SecurityEntrance" {
-		entranceValue := base64.StdEncoding.EncodeToString([]byte(req.Value))
-		c.SetSameSite(http.SameSiteLaxMode)
-		c.SetCookie("SecurityEntrance", entranceValue, 0, "", "", false, true)
+		authService.SetSecurityEntranceCookie(c, req.Value)
 	}
 	helper.SuccessWithData(c, nil)
 }

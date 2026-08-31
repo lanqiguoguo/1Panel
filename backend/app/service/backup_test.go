@@ -109,11 +109,28 @@ func TestMaskBackupVars(t *testing.T) {
 	}
 }
 
-// TestMaskBackupVarsInvalidJSON verifies masking is a no-op on malformed vars.
+// TestMaskBackupVarsInvalidJSON verifies masking fails closed on malformed
+// vars: a row that cannot be parsed must never echo its (possibly plaintext)
+// secret content back to the frontend, it is masked wholesale as an empty
+// vars object instead.
 func TestMaskBackupVarsInvalidJSON(t *testing.T) {
-	in := `{"secretKey": "x"`
-	if got := maskBackupVars(in); got != in {
-		t.Fatalf("maskBackupVars(%q) = %q, want input unchanged", in, got)
+	cases := []string{
+		`{"secretKey": "x"`,
+		`{`,
+		``,
+		`not-json-at-all`,
+		`{"password":"pw","client_secret":"azure-secret","refresh_token":"tok-abc"`,
+	}
+	for _, in := range cases {
+		got := maskBackupVars(in)
+		if got != "{}" {
+			t.Fatalf("maskBackupVars(%q) = %q, want {} (fail closed)", in, got)
+		}
+		for _, secret := range []string{"x", "pw", "azure-secret", "tok-abc", "secretKey", "password", "client_secret"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("maskBackupVars(%q) leaked %q in: %s", in, secret, got)
+			}
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"math/big"
 	mathRand "math/rand"
 	"net"
 	"os"
@@ -230,6 +231,26 @@ func RandStr(n int) string {
 	b := make([]rune, n)
 	for i := range b {
 		b[i] = letters[mathRand.Intn(len(letters))]
+	}
+	return string(b)
+}
+
+// RandStrSecure returns a cryptographically random n-character string drawn
+// from the same alphabet as RandStr. Use it for security-sensitive material
+// (storage/JWT/API keys, passwords, security entrances); RandStr remains for
+// non-security names (container names etc.).
+func RandStrSecure(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		// rand.Int applies rejection sampling internally, so the drawn index
+		// is uniform over the alphabet even though 62 does not divide 2^256.
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			// crypto/rand is the source of security material; on failure
+			// refuse to fall back to predictable output.
+			panic(fmt.Sprintf("RandStrSecure: read crypto/rand failed, err: %v", err))
+		}
+		b[i] = letters[idx.Int64()]
 	}
 	return string(b)
 }

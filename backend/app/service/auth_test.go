@@ -1,7 +1,10 @@
 package service
 
 import (
+	"encoding/base64"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -202,4 +205,76 @@ func TestIsLoginRequiresLoggedIn(t *testing.T) {
 	if u.IsLogin(cMissing) {
 		t.Fatal("IsLogin = true without any session cookie")
 	}
+}
+
+// TestEntranceCookieSecure pins the Secure-flag decision for the
+// SecurityEntrance cookie: SSL=enable secures it, SSL=disable with a plain
+// HTTP request keeps it off, and an actual TLS request always secures it.
+func TestEntranceCookieSecure(t *testing.T) {
+	cases := []struct {
+		name       string
+		sslSetting string
+		requestTLS bool
+		want       bool
+	}{
+		{"ssl enabled secures cookie", "enable", false, true},
+		{"ssl disabled plain request stays insecure", "disable", false, false},
+		{"tls request secures cookie", "disable", true, true},
+		{"ssl enabled and tls request", "enable", true, true},
+		{"empty ssl setting plain request", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := entranceCookieSecure(tc.sslSetting, tc.requestTLS); got != tc.want {
+				t.Fatalf("entranceCookieSecure(%q, %v) = %v, want %v", tc.sslSetting, tc.requestTLS, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetSecurityEntranceCookieSecureFlag drives SetSecurityEntranceCookie
+// end to end: with the seeded SSL=disable the cookie must not carry Secure;
+// after switching the SSL setting to enable it must.
+func TestSetSecurityEntranceCookieSecureFlag(t *testing.T) {
+	setupAuthServiceTest(t)
+	u := &AuthService{}
+
+	c, w := newAuthTestContext(t)
+	u.SetSecurityEntranceCookie(c, "entrance-1")
+	var ck *http.Cookie
+	for _, item := range w.Result().Cookies() {
+		if item.Name == "SecurityEntrance" {
+			ck = item
+			break
+		}
+	}
+	if ck == nil {
+		t.Fatal("SecurityEntrance cookie was not set")
+	}
+	if ck.Secure {
+		t.Fatal("SecurityEntrance cookie carries Secure while SSL is disabled")
+	}
+	unescaped, err := url.QueryUnescape(ck.Value)
+	if err != nil {
+		t.Fatalf("unescape SecurityEntrance cookie value %q failed: %v", ck.Value, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(unescaped)
+	if err != nil || string(decoded) != "entrance-1" {
+		t.Fatalf("SecurityEntrance cookie value = %q, want url-encoded base64 of entrance-1", ck.Value)
+	}
+
+	if err := settingRepo.Update("SSL", "enable"); err != nil {
+		t.Fatalf("enable SSL setting failed: %v", err)
+	}
+	c2, w2 := newAuthTestContext(t)
+	u.SetSecurityEntranceCookie(c2, "entrance-1")
+	for _, item := range w2.Result().Cookies() {
+		if item.Name == "SecurityEntrance" {
+			if !item.Secure {
+				t.Fatal("SecurityEntrance cookie missing Secure flag while SSL is enabled")
+			}
+			return
+		}
+	}
+	t.Fatal("SecurityEntrance cookie was not set after enabling SSL")
 }

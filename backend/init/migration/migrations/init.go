@@ -66,7 +66,7 @@ var AddTableSetting = &gormigrate.Migration{
 		if err := tx.AutoMigrate(&model.Setting{}); err != nil {
 			return err
 		}
-		encryptKey := common.RandStr(16)
+		encryptKey := common.RandStrSecure(16)
 		if err := tx.Create(&model.Setting{Key: "UserName", Value: global.CONF.System.Username}).Error; err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ var AddTableSetting = &gormigrate.Migration{
 		if err := tx.Create(&model.Setting{Key: "SecurityEntrance", Value: global.CONF.System.Entrance}).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&model.Setting{Key: "JWTSigningKey", Value: common.RandStr(16)}).Error; err != nil {
+		if err := tx.Create(&model.Setting{Key: "JWTSigningKey", Value: common.RandStrSecure(16)}).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&model.Setting{Key: "EncryptKey", Value: encryptKey}).Error; err != nil {

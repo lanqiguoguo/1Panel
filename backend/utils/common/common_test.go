@@ -1,6 +1,40 @@
 package common
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+// TestRandStrSecure verifies length and alphabet guarantees of the
+// crypto/rand-backed generator used for security material (EncryptKey,
+// JWTSigningKey, ApiKey, initial credentials, security entrance).
+func TestRandStrSecure(t *testing.T) {
+	for _, n := range []int{0, 1, 16, 32, 128} {
+		got := RandStrSecure(n)
+		if utf8.RuneCountInString(got) != n {
+			t.Fatalf("RandStrSecure(%d) length = %d, want %d", n, utf8.RuneCountInString(got), n)
+		}
+		for _, r := range got {
+			if !strings.ContainsRune(string(letters), r) {
+				t.Fatalf("RandStrSecure(%d) produced character %q outside the RandStr alphabet", n, r)
+			}
+		}
+	}
+
+	// EncryptKey/JWTSigningKey are consumed as raw 16-byte AES-128 / HMAC
+	// material: the output must be pure ASCII so byte length equals rune
+	// length (16 chars == 16 bytes).
+	if len(RandStrSecure(16)) != 16 {
+		t.Fatal("RandStrSecure(16) byte length != 16")
+	}
+
+	// two independent 32-character draws must differ; the collision
+	// probability (62^-32) is negligible
+	if RandStrSecure(32) == RandStrSecure(32) {
+		t.Fatal("RandStrSecure produced identical 32-char outputs, source is not random")
+	}
+}
 
 func TestComparePanelVersion(t *testing.T) {
 	tests := []struct {
