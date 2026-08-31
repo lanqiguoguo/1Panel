@@ -697,7 +697,10 @@ func parseAcceptedLog(parts []string, timeIndex int, dateStr string) dto.SSHHist
 	return data
 }
 func handleGunzip(path string) error {
-	if _, err := cmd.Execf("gunzip %s", path); err != nil {
+	// Parameterized argv execution (no shell): path comes from the /var/log
+	// directory walk, and `gunzip <path>` quoting would break on names with
+	// spaces or shell metacharacters.
+	if _, err := cmd.ExecWithCheck("gunzip", path); err != nil {
 		return err
 	}
 	return nil

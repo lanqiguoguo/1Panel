@@ -327,6 +327,22 @@ func validSupervisorName(name string) bool {
 	return true
 }
 
+// maxSupervisorNumprocs caps the supervisor numprocs value: it is expanded by
+// getProcessName into a process name list (and into supervisorctl arguments),
+// so an unbounded value could exhaust memory.
+const maxSupervisorNumprocs = 999
+
+// validSupervisorNumprocs reports whether numprocs is a plain integer within
+// 1-999. Anything else (non-numeric, zero, negative, above the cap) is
+// rejected before it can be persisted into the ini file.
+func validSupervisorNumprocs(numprocs string) bool {
+	num, err := strconv.Atoi(numprocs)
+	if err != nil || num < 1 || num > maxSupervisorNumprocs {
+		return false
+	}
+	return true
+}
+
 func (h *HostToolService) OperateSupervisorProcess(req request.SupervisorProcessConfig) error {
 	if !validSupervisorName(req.Name) {
 		return buserr.New(constant.ErrCmdIllegal)
@@ -341,6 +357,9 @@ func (h *HostToolService) OperateSupervisorProcess(req request.SupervisorProcess
 		fileOp         = files.NewFileOp()
 	)
 	if req.Operate == "update" || req.Operate == "create" {
+		if !validSupervisorNumprocs(req.Numprocs) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
 		if !fileOp.Stat(req.Dir) {
 			return buserr.New("ErrConfigDirNotFound")
 		}
@@ -578,6 +597,11 @@ func getProcessName(name, numprocs string) []string {
 	)
 	num, err := strconv.Atoi(numprocs)
 	if err != nil {
+		return processNames
+	}
+	// The value can also come from a previously written (or hand-edited) ini
+	// file; refuse to expand an out-of-range count into a name list.
+	if num < 1 || num > maxSupervisorNumprocs {
 		return processNames
 	}
 	if num == 1 {

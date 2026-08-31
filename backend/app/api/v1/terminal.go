@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -103,9 +104,10 @@ func (b *BaseApi) ContainerWsSSH(c *gin.Context) {
 	source := c.Query("source")
 	var containerID string
 	var initCmd []string
+	var cleanup func()
 	switch source {
 	case "redis":
-		containerID, initCmd, err = loadRedisInitCmd(c)
+		containerID, initCmd, cleanup, err = loadRedisInitCmd(c)
 	case "ollama":
 		containerID, initCmd, err = loadOllamaInitCmd(c)
 	case "container":
@@ -118,12 +120,17 @@ func (b *BaseApi) ContainerWsSSH(c *gin.Context) {
 	if wshandleError(wsConn, err) {
 		return
 	}
+	if cleanup != nil {
+		// The redis loader hands the password to docker exec through a 0600
+		// env file; it must not outlive the session.
+		defer cleanup()
+	}
 	pidMap := loadMapFromDockerTop(containerID)
 	slave, err := terminal.NewCommand(initCmd)
 	if wshandleError(wsConn, err) {
 		return
 	}
-	defer killBash(containerID, strings.ReplaceAll(strings.Join(initCmd, " "), fmt.Sprintf("exec -it %s ", containerID), ""), pidMap)
+	defer killBash(containerID, dockerExecComm(containerID, initCmd), pidMap)
 	defer slave.Close()
 
 	tty, err := terminal.NewLocalWsSession(cols, rows, wsConn, slave, false)
@@ -143,32 +150,71 @@ func (b *BaseApi) ContainerWsSSH(c *gin.Context) {
 
 }
 
-func loadRedisInitCmd(c *gin.Context) (string, []string, error) {
+func loadRedisInitCmd(c *gin.Context) (string, []string, func(), error) {
 	name := c.Query("name")
 	from := c.Query("from")
 	commands := []string{"exec", "-it"}
 	database, err := databaseService.Get(name)
 	if err != nil {
-		return "", nil, fmt.Errorf("no such database in db, err: %v", err)
+		return "", nil, nil, fmt.Errorf("no such database in db, err: %v", err)
 	}
 	if from == "local" {
 		redisInfo, err := appInstallService.LoadConnInfo(dto.OperationWithNameAndType{Name: name, Type: "redis"})
 		if err != nil {
-			return "", nil, fmt.Errorf("no such app in db, err: %v", err)
+			return "", nil, nil, fmt.Errorf("no such app in db, err: %v", err)
 		}
 		name = redisInfo.ContainerName
 		commands = append(commands, []string{name, "redis-cli"}...)
-		if len(database.Password) != 0 {
-			commands = append(commands, []string{"-a", database.Password, "--no-auth-warning"}...)
-		}
 	} else {
 		name = "1Panel-redis-cli-tools"
 		commands = append(commands, []string{name, "redis-cli", "-h", database.Address, "-p", fmt.Sprintf("%v", database.Port)}...)
-		if len(database.Password) != 0 {
-			commands = append(commands, []string{"-a", database.Password, "--no-auth-warning"}...)
+	}
+	if len(database.Password) == 0 {
+		return name, commands, nil, nil
+	}
+	commands = append(commands, "--no-auth-warning")
+	fullArgs, cleanup, err := redisExecEnvFile(commands, database.Password)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("prepare redis auth env file failed, err: %v", err)
+	}
+	return name, fullArgs, cleanup, nil
+}
+
+// redisExecEnvFile writes the redis password to a fresh 0600 file and wraps
+// the given docker exec args with `--env-file`, so the password never shows
+// up in the world-readable process argv: redis-cli picks it up from the
+// REDISCLI_AUTH environment variable (redis >= 6), mirroring
+// service/database_redis.go redisExecEnvFile. The returned cleanup removes
+// the env file and must be called once the command (here: the websocket
+// session) has finished.
+func redisExecEnvFile(commands []string, password string) ([]string, func(), error) {
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"REDISCLI_AUTH": password})
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(commands) < 2 || commands[0] != "exec" {
+		_ = os.Remove(envFile)
+		return nil, nil, fmt.Errorf("empty docker exec command")
+	}
+	cleanup := func() { _ = os.Remove(envFile) }
+	fullArgs := make([]string, 0, len(commands)+2)
+	fullArgs = append(fullArgs, "exec", "--env-file", envFile)
+	fullArgs = append(fullArgs, commands[1:]...)
+	return fullArgs, cleanup, nil
+}
+
+// dockerExecComm extracts the in-container command line from a docker exec
+// argv: everything after the container name/id. killBash matches it against
+// the `docker top` command column, which only lists the container-side
+// process — the docker-side options (e.g. `--env-file <path>` with its env
+// file path) and the container name itself must not leak into the comparison.
+func dockerExecComm(containerID string, initCmd []string) string {
+	for i := 1; i < len(initCmd); i++ {
+		if initCmd[i] == containerID {
+			return strings.Join(initCmd[i+1:], " ")
 		}
 	}
-	return name, commands, nil
+	return strings.Join(initCmd, " ")
 }
 
 func loadOllamaInitCmd(c *gin.Context) (string, []string, error) {

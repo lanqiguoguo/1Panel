@@ -29,6 +29,25 @@ func ValidateBanIPs(ips []string) error {
 	return nil
 }
 
+// filterBanIPs keeps only the entries that are strict IP literals (IPv4/IPv6),
+// dropping everything else. It guards the rollback path, which re-bans the
+// output of ListBanned(): that output is not user-controlled but still reaches
+// the same shell-backed `fail2ban-client set sshd banip <ips>` command line,
+// so every entry must pass the same strict check. The rollback is best-effort,
+// so illegal entries are skipped (and logged) instead of failing the whole
+// rollback.
+func filterBanIPs(ips []string) []string {
+	legal := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if net.ParseIP(ip) != nil {
+			legal = append(legal, ip)
+		} else {
+			global.LOG.Errorf("skip invalid ip %s in fail2ban rollback", ip)
+		}
+	}
+	return legal
+}
+
 type FirewallClient interface {
 	Status() (bool, bool, bool)
 	Version() (string, error)
@@ -105,9 +124,14 @@ func (f *Fail2ban) ReBanIPs(ips []string) error {
 	ipItems, _ := f.ListBanned()
 	stdout, err := cmd.Execf("fail2ban-client unban --all")
 	if err != nil {
-		stdout1, err := cmd.Execf("fail2ban-client set sshd banip %s", strings.Join(ipItems, " "))
-		if err != nil {
-			global.LOG.Errorf("rebanip after fail2ban-client unban --all failed, err: %s", stdout1)
+		// Rollback re-bans the previously banned list; only entries that pass
+		// the same strict IP check may reach the banip command line.
+		legalItems := filterBanIPs(ipItems)
+		if len(legalItems) != 0 {
+			stdout1, err := cmd.Execf("fail2ban-client set sshd banip %s", strings.Join(legalItems, " "))
+			if err != nil {
+				global.LOG.Errorf("rebanip after fail2ban-client unban --all failed, err: %s", stdout1)
+			}
 		}
 		return fmt.Errorf("fail2ban-client unban --all failed, err: %s", stdout)
 	}

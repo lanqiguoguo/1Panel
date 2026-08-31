@@ -1,6 +1,7 @@
 package service
 
 import (
+	"compress/gzip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -328,5 +329,59 @@ func TestLoadLogRejectsMaliciousInfo(t *testing.T) {
 		if _, statErr := os.Stat(pwned); statErr == nil {
 			t.Fatalf("malicious info caused a file side effect, %s was created: %q", pwned, p)
 		}
+	}
+}
+
+// writeTestGz 生成一个 gzip 压缩文件，用于验证 handleGunzip 的执行行为。
+func writeTestGz(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", path, err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	if _, err := gz.Write([]byte(content)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return path
+}
+
+// TestHandleGunzipParameterized 验证 handleGunzip 使用参数化 argv 执行
+// （exec.Command("gunzip", path)，无 shell）：文件名含空格或 shell
+// 元字符时，旧实现 `gunzip %s`（bash -c 未加引号）会因分词/展开而失败或
+// 触发注入，参数化后按字面路径处理，正常解压。
+func TestHandleGunzipParameterized(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "log file.log.gz", content: "secure log with spaces\n"},
+		{name: "auth$(id).log.gz", content: "auth log, command substitution stays literal\n"},
+		{name: "messages;a;id.log.gz", content: "messages log, semicolon stays literal\n"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			gzPath := writeTestGz(t, dir, tt.name, tt.content)
+			outPath := strings.TrimSuffix(gzPath, ".gz")
+			if err := handleGunzip(gzPath); err != nil {
+				t.Fatalf("handleGunzip(%q) failed: %v", gzPath, err)
+			}
+			data, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatalf("decompressed file %q missing: %v", outPath, err)
+			}
+			if string(data) != tt.content {
+				t.Fatalf("decompressed content = %q, want %q", string(data), tt.content)
+			}
+			if _, err := os.Stat(gzPath); !os.IsNotExist(err) {
+				t.Fatalf("gunzip should have removed the .gz file: %v", err)
+			}
+		})
 	}
 }
