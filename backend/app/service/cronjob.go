@@ -225,6 +225,24 @@ func validCronjobExclusionRules(rules string) bool {
 	return true
 }
 
+// validCronjobURL reports whether url is safe to interpolate into
+// `curl '<url>'`, which the host shell executes for curl cronjobs. The URL is
+// optional (an empty value makes the job body a no-op), must use the http(s)
+// scheme and must be free of shell metacharacters and quotes so it can never
+// break out of the single quoting. Shared by the Create/Update entry-point
+// checks and the runtime HandleJob guard.
+func validCronjobURL(url string) bool {
+	if url == "" {
+		return true
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return false
+	}
+	// The URL is interpolated into `curl '<url>'`; a quote or any
+	// shell metacharacter would break out of it.
+	return !cmd.CheckIllegal(url) && !strings.ContainsAny(url, `"'`)
+}
+
 // validCronjobContainerFields reports whether the docker-exec container name
 // and the in-container shell command of a shell cronjob are safe to
 // interpolate into `docker exec -i <container> <command>`, which the host
@@ -273,15 +291,8 @@ func validateCronjobFields(cronjobType, name, sourceDir, exclusionRules, url, co
 			return buserr.New(constant.ErrCmdIllegal)
 		}
 	case "curl":
-		if len(url) != 0 {
-			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-				return buserr.New(constant.ErrCmdIllegal)
-			}
-			// The URL is interpolated into `curl '<url>'`; a quote or any
-			// shell metacharacter would break out of it.
-			if cmd.CheckIllegal(url) || strings.ContainsAny(url, `"'`) {
-				return buserr.New(constant.ErrCmdIllegal)
-			}
+		if !validCronjobURL(url) {
+			return buserr.New(constant.ErrCmdIllegal)
 		}
 	}
 	return nil
@@ -370,6 +381,21 @@ func (u *CronjobService) Update(id uint, req dto.CronjobUpdate) error {
 	cronModel, err := cronjobRepo.Get(commonRepo.WithByID(id))
 	if err != nil {
 		return constant.ErrRecordNotFound
+	}
+	// The persisted/executed job type is the one already stored in the DB
+	// (cronjob.Type is overwritten with cronModel.Type below and req.Type is
+	// discarded), so the values that will actually be executed by that type
+	// must be validated against it, not against req.Type. Otherwise a request
+	// declaring type=shell bypasses the URL check while req.URL is still
+	// persisted and later interpolated into `curl '<url>'` by the curl branch
+	// of the stored type=curl job (shell-quote escape, root RCE). If the
+	// request carries a field that the stored type would execute but the
+	// request type would not, the update is rejected.
+	if err := validateCronjobFields(cronModel.Type, req.Name, req.SourceDir, req.ExclusionRules, req.URL, req.ContainerName, req.Command); err != nil {
+		return err
+	}
+	if req.Type != cronModel.Type && req.URL != "" && !validCronjobURL(req.URL) {
+		return buserr.New(constant.ErrCmdIllegal)
 	}
 	upMap := make(map[string]interface{})
 	cronjob.EntryIDs = cronModel.EntryIDs

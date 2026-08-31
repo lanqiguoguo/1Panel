@@ -75,6 +75,15 @@ func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 			global.LOG.Errorf("cronjob %s container name or command contains illegal characters, skip execution", cronjob.Name)
 			return
 		}
+		// Defense in depth: re-validate the URL of a curl cronjob before it is
+		// interpolated into `curl '<url>'` run by the host shell. Covers legacy
+		// records and legacy rows written by a pre-fix Update that skipped the
+		// URL check via type confusion; such a job is skipped instead of giving
+		// an attacker host root command execution.
+		if cronjob.Type == "curl" && !validCronjobURL(cronjob.URL) {
+			global.LOG.Errorf("cronjob %s url contains illegal characters, skip execution", cronjob.Name)
+			return
+		}
 		var (
 			message []byte
 			err     error

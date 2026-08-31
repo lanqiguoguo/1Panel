@@ -8,11 +8,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/glebarez/sqlite"
+	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 func ensureValidateLogger(t *testing.T) {
@@ -284,6 +288,150 @@ func TestValidateCronjobFields(t *testing.T) {
 				t.Fatalf("validateCronjobFields() error = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestValidCronjobURL covers the pure function shared by the entry-point
+// (validateCronjobFields) and the runtime HandleJob guard: the URL must be
+// empty, http(s) and free of shell metacharacters or quotes so it can never
+// escape the `curl '<url>'` single quoting.
+func TestValidCronjobURL(t *testing.T) {
+	legal := []string{
+		"",
+		"http://example.com/hook",
+		"https://example.com/hook",
+		// '&' is rejected by the pre-existing CheckIllegal curl check (and
+		// stays rejected: this fix must not change the accepted URL set), so
+		// query separators are limited to '?'-only queries.
+		"https://example.com/a/b?c=d",
+		"http://127.0.0.1:8080/ping",
+		"https://example.com/path%20with%20space",
+	}
+	for _, url := range legal {
+		if !validCronjobURL(url) {
+			t.Errorf("validCronjobURL(%q) = false, want true", url)
+		}
+	}
+
+	illegal := []string{
+		// quote escape payload of the Update type-confusion bug
+		"http://x' -o /tmp/pwn '#",
+		"ftp://example.com/x",
+		"file:///etc/passwd",
+		"http://a' ; touch /tmp/pwned",
+		`http://a" -o /tmp/pwn`,
+		"http://a$(touch /tmp/pwned)",
+		"http://a`touch /tmp/pwned`",
+		"http://a&b",
+		"http://a|b",
+		"http://a;b",
+		"http://a>b",
+		"http://a<b",
+		"http://a\nb",
+		"http://a\tb",
+		"example.com/no-scheme",
+		"/etc/passwd",
+	}
+	for _, url := range illegal {
+		if validCronjobURL(url) {
+			t.Errorf("validCronjobURL(%q) = true, want false", url)
+		}
+	}
+}
+
+// TestUpdateRejectsTypeConfusedURL is the regression test for the Update type
+// confusion: a request declaring type=shell used to skip the URL check while
+// req.URL was still persisted onto the stored type=curl job, whose next run
+// interpolated it into `curl '<url>'` executed by the host shell (quote
+// escape, root RCE). Update must validate the request values against the type
+// actually stored in the DB, so the malicious URL is rejected and never
+// written.
+func TestUpdateRejectsTypeConfusedURL(t *testing.T) {
+	setupCronjobUpdateTestDB(t)
+	if err := global.DB.Create(&model.Cronjob{
+		Name:   "legacy-curl",
+		Type:   "curl",
+		Spec:   "* * * * *",
+		Status: constant.StatusDisable,
+	}).Error; err != nil {
+		t.Fatalf("seed curl cronjob: %v", err)
+	}
+
+	// The Update flow persists req.URL unconditionally (upMap["url"]), so a
+	// URL that the stored curl job would execute must be rejected outright.
+	malicious := []dto.CronjobUpdate{
+		{
+			ID:   1,
+			Type: "shell", // req.Type is discarded; the DB row stays type=curl
+			Name: "legacy-curl",
+			Spec: "* * * * *",
+			URL:  "http://x' -o /tmp/pwn '#",
+		},
+		{
+			ID:   1,
+			Type: "curl",
+			Name: "legacy-curl",
+			Spec: "* * * * *",
+			URL:  "http://x' -o /tmp/pwn '#",
+		},
+	}
+	for i, req := range malicious {
+		if err := NewICronjobService().Update(req.ID, req); err == nil {
+			t.Fatalf("Update malicious case %d: error = nil, want ErrCmdIllegal", i)
+		} else if !isErrCmdIllegal(t, err) {
+			t.Fatalf("Update malicious case %d: error = %v, want ErrCmdIllegal", i, err)
+		}
+		var stored model.Cronjob
+		if err := global.DB.First(&stored, 1).Error; err != nil {
+			t.Fatalf("reload cronjob: %v", err)
+		}
+		if stored.URL != "" {
+			t.Fatalf("Update malicious case %d: malicious URL was persisted (url = %q)", i, stored.URL)
+		}
+	}
+
+	// The benign edit of the same curl job (matching type, legal URL) passes.
+	legal := dto.CronjobUpdate{
+		ID:   1,
+		Type: "curl",
+		Name: "legacy-curl",
+		Spec: "* * * * *",
+		URL:  "https://example.com/hook",
+	}
+	if err := NewICronjobService().Update(legal.ID, legal); err != nil {
+		t.Fatalf("Update legal curl URL: unexpected error: %v", err)
+	}
+	var stored model.Cronjob
+	if err := global.DB.First(&stored, 1).Error; err != nil {
+		t.Fatalf("reload cronjob: %v", err)
+	}
+	if stored.URL != "https://example.com/hook" {
+		t.Fatalf("legal URL not persisted, url = %q", stored.URL)
+	}
+	if stored.Type != "curl" {
+		t.Fatalf("Update must keep the stored type, got %q", stored.Type)
+	}
+}
+
+// TestHandleJobSkipsIllegalCurlURL verifies the runtime guard: a legacy type=
+// curl record carrying an unvalidated quote-escape URL must be skipped before
+// `curl '<url>'` is built, so the injection marker is never created.
+func TestHandleJobSkipsIllegalCurlURL(t *testing.T) {
+	ensureValidateLogger(t)
+	marker := "/tmp/pwned-cron-curl-guard"
+	_ = os.Remove(marker)
+	defer os.Remove(marker)
+
+	u := &CronjobService{}
+	u.HandleJob(&model.Cronjob{
+		BaseModel: model.BaseModel{ID: 9004},
+		Name:      "legacy-curl-inject",
+		Type:      "curl",
+		Spec:      "* * * * *",
+		URL:       "http://x' -o " + marker + " '#",
+	})
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("injection marker was created by HandleJob")
 	}
 }
 
@@ -748,5 +896,28 @@ func TestHandleTarEncryptedRoundTrip(t *testing.T) {
 	}
 	if string(content) != "cronjob payload" {
 		t.Fatalf("restored content = %q, want %q", content, "cronjob payload")
+	}
+}
+
+// setupCronjobUpdateTestDB wires an in-memory sqlite with the Cronjob and
+// JobRecords tables so the service Update method can read the stored row back
+// through cronjobRepo. It also installs an idle (never started) scheduler and
+// a logger, mirroring the setupMonitorConcurrentTest pattern in
+// monitor_test.go, and restores the previous globals when the test finishes.
+func setupCronjobUpdateTestDB(t *testing.T) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open in-memory sqlite failed: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Cronjob{}, &model.JobRecords{}); err != nil {
+		t.Fatalf("migrate cronjob tables failed: %v", err)
+	}
+	oldDB, oldCron := global.DB, global.Cron
+	global.DB = db
+	global.Cron = cron.New()
+	t.Cleanup(func() { global.DB, global.Cron = oldDB, oldCron })
+	if global.LOG == nil {
+		global.LOG = logrus.New()
 	}
 }
