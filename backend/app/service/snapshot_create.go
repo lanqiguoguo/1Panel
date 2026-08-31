@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
@@ -288,6 +289,15 @@ func snapUpload(snap snapHelper, accounts string, file string) {
 }
 
 func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret string) error {
+	// Defense in depth, mirroring handleTar in cronjob_helper.go: every
+	// user-influenced argument is validated before it is interpolated into the
+	// bash -c archive command. Checking the secret here (not only in the
+	// request entry points) also covers stored cronjob records whose secret is
+	// replayed by snapshotCompress, and the check runs before any side effect
+	// (the target dir is not even created for an illegal argument).
+	if !files.ValidShellArgs(sourceDir, targetDir, name) || (secret != "" && !files.ValidShellArgs(secret)) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(targetDir); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(targetDir, os.ModePerm); err != nil {
 			return err
@@ -323,7 +333,10 @@ func handleSnapTar(sourceDir, targetDir, name, exclusionRules string, secret str
 	if len(secret) != 0 {
 		extraCmd := "| openssl enc -aes-256-cbc -salt -k '" + secret + "' -out"
 		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -print) -zcf %s %s %s %s", sourceDir, " -"+exStr, path, extraCmd, targetDir+"/"+name)
-		global.LOG.Debug(strings.ReplaceAll(commands, fmt.Sprintf(" %s ", secret), "******"))
+		// The secret appears quoted in the command (-k '<secret>'); the old
+		// ' %s ' pattern never matched that form, leaking the key into the
+		// debug log. Mask both the quoted and the bare form.
+		global.LOG.Debug(strings.ReplaceAll(strings.ReplaceAll(commands, "'"+secret+"'", "******"), secret, "******"))
 	} else {
 		commands = fmt.Sprintf("tar --warning=no-file-changed --ignore-failed-read --exclude-from=<(find %s -type s -printf '%%P\n' | sed 's|^|./|') -zcf %s %s -C %s .", sourceDir, targetDir+"/"+name, exStr, sourceDir)
 		global.LOG.Debug(commands)

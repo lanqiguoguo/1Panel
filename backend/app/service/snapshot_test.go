@@ -530,3 +530,192 @@ func TestSnapshotDeleteLocalCleanup(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleSnapTarRejectsInjection verifies the defense-in-depth checks at
+// the top of handleSnapTar (mirroring handleTar): the snapshot secret from
+// dto.SnapshotCreate / cronjob.Secret is interpolated single-quoted into the
+// openssl -k option of a bash -c command, so a secret containing a single
+// quote (or any other shell metacharacter) must be rejected with
+// ErrCmdIllegal before any command is built or executed — and before the
+// target directory is even created.
+func TestHandleSnapTarRejectsInjection(t *testing.T) {
+	ensureValidateLogger(t)
+	marker := filepath.Join(t.TempDir(), "pwned-snap")
+	srcDir := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(t.TempDir(), "out") // intentionally absent
+
+	tests := []struct {
+		caseName    string
+		sourceDir   string
+		targetDir   string
+		archiveName string
+		secret      string
+	}{
+		{
+			caseName:    "secret single quote escape",
+			sourceDir:   srcDir,
+			targetDir:   targetDir,
+			archiveName: "1panel_data.tar.gz",
+			secret:      "'; touch " + marker + "; '",
+		},
+		{
+			caseName:    "secret command substitution",
+			sourceDir:   srcDir,
+			targetDir:   targetDir,
+			archiveName: "1panel_data.tar.gz",
+			secret:      "$(touch " + marker + ")",
+		},
+		{
+			caseName:    "secret backtick substitution",
+			sourceDir:   srcDir,
+			targetDir:   targetDir,
+			archiveName: "1panel_data.tar.gz",
+			secret:      "`touch " + marker + "`",
+		},
+		{
+			caseName:    "secret newline",
+			sourceDir:   srcDir,
+			targetDir:   targetDir,
+			archiveName: "1panel_data.tar.gz",
+			secret:      "pass\nword",
+		},
+		{
+			caseName:    "sourceDir injection",
+			sourceDir:   "$(touch " + marker + ")",
+			targetDir:   targetDir,
+			archiveName: "1panel_data.tar.gz",
+		},
+		{
+			caseName:    "targetDir injection",
+			sourceDir:   srcDir,
+			targetDir:   "$(touch " + marker + ")",
+			archiveName: "1panel_data.tar.gz",
+		},
+		{
+			caseName:    "archive name injection",
+			sourceDir:   srcDir,
+			targetDir:   targetDir,
+			archiveName: "x.tar.gz; touch " + marker,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.caseName, func(t *testing.T) {
+			err := handleSnapTar(tc.sourceDir, tc.targetDir, tc.archiveName, "", tc.secret)
+			if err == nil {
+				t.Fatal("handleSnapTar() error = nil, want ErrCmdIllegal")
+			}
+			if !isErrCmdIllegal(t, err) {
+				t.Fatalf("handleSnapTar() error = %v, want ErrCmdIllegal", err)
+			}
+			if _, statErr := os.Stat(marker); statErr == nil {
+				t.Fatal("command injection marker was created")
+			}
+			// The validation runs before any side effect: the target dir (and
+			// with it the archive) must not have been created.
+			if _, statErr := os.Stat(tc.targetDir); statErr == nil {
+				t.Fatalf("target dir %q was created despite the rejection", tc.targetDir)
+			}
+		})
+	}
+}
+
+// TestHandleSnapTarBenignSecretNotRejected pins that a legitimate alphanumeric
+// secret still passes the entry validation: handleSnapTar must not fail with
+// ErrCmdIllegal. The rest of the run (tar | openssl) depends on the host
+// toolchain, so the archive is only asserted when the command itself
+// succeeded.
+func TestHandleSnapTarBenignSecretNotRejected(t *testing.T) {
+	ensureValidateLogger(t)
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	targetDir := filepath.Join(base, "out")
+
+	err := handleSnapTar(srcDir, targetDir, "1panel_data.tar.gz", "", "S3cretKey2026")
+	if isErrCmdIllegal(t, err) {
+		t.Fatalf("benign alphanumeric secret was rejected: %v", err)
+	}
+	if err == nil {
+		info, statErr := os.Stat(filepath.Join(targetDir, "1panel_data.tar.gz"))
+		if statErr != nil {
+			t.Fatalf("archive was not created on the happy path: %v", statErr)
+		}
+		if info.Size() == 0 {
+			t.Fatal("archive created on the happy path is empty")
+		}
+	}
+}
+
+// snapLogCaptureHook collects every log message routed through global.LOG so
+// the debug output of handleSnapTar can be asserted on.
+type snapLogCaptureHook struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (h *snapLogCaptureHook) Fire(entry *logrus.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.entries = append(h.entries, entry.Message)
+	return nil
+}
+
+func (h *snapLogCaptureHook) Levels() []logrus.Level { return logrus.AllLevels }
+
+// TestHandleSnapTarDebugLogMasksSecret is the regression test for the broken
+// log masking: the debug line of the encrypted branch used to replace the
+// pattern " <secret> ", which never matches the -k '<secret>' form actually
+// present in the command, leaking the encryption key into the log. The debug
+// output must now contain neither the quoted nor the bare secret.
+func TestHandleSnapTarDebugLogMasksSecret(t *testing.T) {
+	origLog := global.LOG
+	hook := &snapLogCaptureHook{}
+	logger := logrus.New()
+	logger.SetLevel(logrus.DebugLevel)
+	logger.AddHook(hook)
+	global.LOG = logger
+	t.Cleanup(func() { global.LOG = origLog })
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	const secret = "S3cretKey2026"
+	// The command is logged before it is executed, so the masking assertions
+	// below hold even when tar/openssl are unavailable in the environment.
+	_ = handleSnapTar(srcDir, filepath.Join(base, "out"), "1panel_data.tar.gz", "", secret)
+
+	hook.mu.Lock()
+	entries := append([]string(nil), hook.entries...)
+	hook.mu.Unlock()
+
+	maskedCommandSeen := false
+	for _, msg := range entries {
+		if strings.Contains(msg, secret) {
+			t.Fatalf("debug log leaked the secret: %s", msg)
+		}
+		// the quoted form "'<secret>'" is replaced wholesale, leaving -k ******
+		if strings.Contains(msg, "-k ******") {
+			maskedCommandSeen = true
+		}
+	}
+	if !maskedCommandSeen {
+		t.Fatalf("no debug entry with the masked openssl -k option was captured, entries: %v", entries)
+	}
+}
