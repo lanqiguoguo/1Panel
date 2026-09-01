@@ -114,7 +114,7 @@ func (u *ImageRepoService) Delete(req dto.OperateByID) error {
 		return buserr.New("ErrRecordNotFound")
 	}
 	if itemRepo.Auth {
-		_, _ = cmd.Execf("docker logout -i %s", itemRepo.DownloadUrl)
+		safeDockerLogout(itemRepo.DownloadUrl)
 	}
 	if itemRepo.Protocol == "https" {
 		return imageRepoRepo.Delete(commonRepo.WithByID(req.ID))
@@ -155,7 +155,7 @@ func (u *ImageRepoService) Update(req dto.ImageRepoUpdate) error {
 		}
 	}
 	if repo.Auth {
-		_, _ = cmd.Execf("docker logout -i %s", repo.DownloadUrl)
+		safeDockerLogout(repo.DownloadUrl)
 	}
 	if req.Auth {
 		if err := u.CheckConn(req.DownloadUrl, req.Username, req.Password); err != nil {
@@ -188,6 +188,24 @@ func (u *ImageRepoService) CheckConn(host, user, password string) error {
 		return nil
 	}
 	return errors.New(string(stdout))
+}
+
+// safeDockerLogout best-effort logs out of a registry whose address comes from
+// the image_repos row. The address may be a legacy value persisted before the
+// service-level CheckIllegal validation existed, so it must never be
+// interpolated into a bash -c string: the logout runs as exec argv (no shell
+// parsing possible) and any address carrying shell metacharacters is skipped.
+// A failed logout only leaves stale credentials in docker's config.json - it
+// must not interrupt the surrounding Delete/Update flow, so the error is
+// merely logged.
+func safeDockerLogout(url string) {
+	if cmd.CheckIllegal(url) {
+		global.LOG.Errorf("docker logout skipped: registry address %q contains illegal characters", url)
+		return
+	}
+	if _, err := cmd.ExecWithTimeOutArgv("docker", 20*time.Second, "logout", "-i", url); err != nil {
+		global.LOG.Errorf("docker logout %s failed, err: %v", url, err)
+	}
 }
 
 // Indirections over the docker control-plane steps, for tests only: unit

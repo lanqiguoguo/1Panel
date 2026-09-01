@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -738,14 +739,9 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 			}
 		}
 
-		command := exec.Command("/bin/bash", "-c", fmt.Sprintf("cp -rn %s/* %s || true", detailDir, install.GetPath()))
-		stdout, err := command.CombinedOutput()
-		if err != nil {
-			// 非致命：cp -rn 为尽力而为的覆盖式复制，失败不影响后续升级流程，仅记录
+		// 非致命：升级文件拷贝为尽力而为的 no-clobber 复制，失败不影响后续升级流程，仅记录
+		if err := copyDirContent(detailDir, install.GetPath()); err != nil {
 			global.LOG.Warnf("upgrade app [%s] [%s] cp file failed, err: %v", install.App.Key, install.Name, err)
-		}
-		if stdout != nil {
-			global.LOG.Infof("upgrade app [%s] [%s] cp file log : %s ", install.App.Key, install.Name, string(stdout))
 		}
 		sourceScripts := path.Join(detailDir, "scripts")
 		if fileOp.Stat(sourceScripts) {
@@ -1001,6 +997,44 @@ func copyData(app model.App, appDetail model.AppDetail, appInstall *model.AppIns
 		return err
 	}
 	return
+}
+
+// copyDirContent copies every first-level entry of srcDir into dstDir without
+// overwriting existing destination files, mirroring the previous
+// `cp -rn <srcDir>/* <dstDir> || true` semantics. The source directory is
+// derived from app Key/Version values synced from the app store into the
+// database, which a tampered store can populate with shell metacharacters, so
+// the copy runs as exec argv (never through bash -c): each entry returned by
+// filepath.Glob is handed to one `cp -rn` invocation as literal arguments.
+// Per-entry failures (and a missing srcDir) are non-fatal: the original
+// `|| true` swallows them, so they are logged and the copy keeps going with
+// the remaining entries.
+func copyDirContent(srcDir, dstDir string) error {
+	entries, err := filepath.Glob(filepath.Join(srcDir, "*"))
+	if err != nil {
+		// only for a malformed pattern; srcDir was already built via path.Join
+		return err
+	}
+	if len(entries) == 0 {
+		// cp(1) with a no-match glob would have failed and been swallowed by
+		// `|| true`; treat it the same way
+		return nil
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, entry := range entries {
+		if _, err := exec.Command("cp", "-rn", entry, dstDir).CombinedOutput(); err != nil {
+			// non-fatal: -n makes an existing destination a no-op skip, so the
+			// error is a real copy failure; keep copying the remaining entries
+			global.LOG.Warnf("copy %s to %s failed, err: %v", entry, dstDir, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 func runScript(appInstall *model.AppInstall, operate string) error {
