@@ -42,6 +42,16 @@ func (u *BackupService) AppBackup(req dto.CommonBackup) (*model.BackupRecord, er
 	if req.FileName == "" {
 		fileName = fmt.Sprintf("%s_%s.tar.gz", req.DetailName, timeNow+common.RandStrAndNum(5))
 	}
+	// The final name (caller-supplied, or DetailName-derived when generated)
+	// must stay a plain .tar.gz basename: it is interpolated unquoted into
+	// handleTar's archive command (targetDir+"/"+name) and later joined into
+	// the LOCAL delete path of BatchDeleteRecord, so a value containing
+	// separators or ".." would turn app backup/delete into arbitrary
+	// directory create/delete. Validating the generated branch too guards
+	// against installs whose stored Name carries traversal characters.
+	if err := validateBackupFileName(fileName); err != nil {
+		return nil, err
+	}
 	if err := handleAppBackup(&install, backupDir, fileName, "", req.Secret); err != nil {
 		return nil, err
 	}
@@ -82,6 +92,27 @@ func (u *BackupService) AppRecover(req dto.CommonRecover) error {
 	}
 	if err := handleAppRecover(&install, req.File, false, req.Secret); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateBackupFileName rejects a backup file name that is not a plain
+// .tar.gz basename inside the app backup directory. SanitizeFilename is
+// deliberately not used: it accepts "..foo" and any suffix, while this name
+// must always be a concrete .tar.gz archive (see AppBackup for the abuse it
+// prevents).
+func validateBackupFileName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return buserr.New(constant.ErrTypeInvalidParams)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return buserr.New(constant.ErrTypeInvalidParams)
+	}
+	if name != path.Base(name) || strings.Contains(name, "..") {
+		return buserr.New(constant.ErrTypeInvalidParams)
+	}
+	if !strings.HasSuffix(name, ".tar.gz") || name == ".tar.gz" {
+		return buserr.New(constant.ErrTypeInvalidParams)
 	}
 	return nil
 }

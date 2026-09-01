@@ -392,10 +392,38 @@ func (u *BackupService) DeleteRecordByName(backupType, name, detailName string, 
 	return nil
 }
 
+// validateBackupRecordPath re-validates a backup record's relative path parts
+// before they are joined into a storage client delete call. Records are read
+// back from the database here, so this also covers legacy rows written before
+// the entry-point checks existed: a FileDir/FileName pair that could escape
+// the backup root (e.g. FileName "../cron.d/pwn") must be refused instead of
+// being handed to the LOCAL client, whose Delete does an unguarded
+// os.RemoveAll(path.Join(dir, file)). The same pair is accepted for the
+// download path (DownloadRecord), so the delete path enforces exactly the
+// same rules.
+func validateBackupRecordPath(record model.BackupRecord) error {
+	if _, err := sanitizeBackupDir(record.FileDir); err != nil {
+		return err
+	}
+	if _, err := fileUtils.SanitizeFilename(record.FileName); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (u *BackupService) BatchDeleteRecord(ids []uint) error {
 	records, err := backupRepo.ListRecord(commonRepo.WithIdsIn(ids))
 	if err != nil {
 		return err
+	}
+	// Validate every record's path before deleting anything, so a single
+	// traversal row (legacy data written before the entry-point checks)
+	// fails the whole batch instead of realizing an arbitrary
+	// os.RemoveAll via the LOCAL client.
+	for _, record := range records {
+		if err := validateBackupRecordPath(record); err != nil {
+			return fmt.Errorf("backup record %d (%s/%s) contains an illegal path, err: %v", record.ID, record.FileDir, record.FileName, err)
+		}
 	}
 	for _, record := range records {
 		backupAccount, err := backupRepo.Get(commonRepo.WithByType(record.Source))
