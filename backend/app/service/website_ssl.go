@@ -723,6 +723,18 @@ func (w WebsiteSSLService) Upload(req request.WebsiteSSLUpload) error {
 		websiteSSL.Organization = cert.Issuer.CommonName
 	}
 
+	// A manually uploaded certificate is attacker-controlled: x509 dNSName
+	// entries carry no charset restriction, DNSNames[0] becomes PrimaryDomain
+	// and the rest are stored in Domains, and PrimaryDomain is later joined
+	// into the SSL log path and the download directory
+	// (BaseDir/1panel/tmp/ssl/<primary>, see DownloadFile). Reject path
+	// traversal and shell metacharacters exactly like Create/Update do for
+	// their PrimaryDomain/OtherDomains inputs.
+	for _, domain := range cert.DNSNames {
+		if !common.IsValidDomain(domain) {
+			return buserr.WithName("ErrDomainFormat", domain)
+		}
+	}
 	var domains []string
 	if len(cert.DNSNames) > 0 {
 		websiteSSL.PrimaryDomain = cert.DNSNames[0]
@@ -755,6 +767,14 @@ func (w WebsiteSSLService) DownloadFile(id uint) (*os.File, error) {
 	websiteSSL, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(id))
 	if err != nil {
 		return nil, err
+	}
+	// Defense in depth: PrimaryDomain is joined into the download directory.
+	// Every write path (Create/Update/Upload) validates it, but legacy rows
+	// predating that validation could still carry a traversal string, so
+	// re-check here instead of trusting the stored value. IP-typed primary
+	// domains (dotted-decimal) pass IsValidDomain as well.
+	if !common.IsValidDomain(websiteSSL.PrimaryDomain) {
+		return nil, buserr.WithName("ErrDomainFormat", websiteSSL.PrimaryDomain)
 	}
 	fileOp := files.NewFileOp()
 	dir := path.Join(global.CONF.System.BaseDir, "1panel/tmp/ssl", websiteSSL.PrimaryDomain)
