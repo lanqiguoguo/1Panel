@@ -1141,6 +1141,19 @@ func getResourceContent(fileOp files.FileOp, resourcePath string) (string, error
 	return "", nil
 }
 
+// applyAllowIPs replaces the server-level allow/deny directives of a website
+// with a whitelist that only permits the given IPs (an explicit `deny all` is
+// always appended). It is the single place that decides the nginx content
+// written by ConfigAllowIPs, so it can be unit tested without a database,
+// an nginx install or a running container.
+func applyAllowIPs(server *components.Server, ips []string) {
+	server.RemoveDirective("allow", nil)
+	server.RemoveDirective("deny", nil)
+	if len(ips) > 0 {
+		server.UpdateAllowIPs(ips)
+	}
+}
+
 func ConfigAllowIPs(ips []string, website model.Website) error {
 	nginxFull, err := getNginxFull(&website)
 	if err != nil {
@@ -1149,15 +1162,24 @@ func ConfigAllowIPs(ips []string, website model.Website) error {
 	nginxConfig := nginxFull.SiteConfig
 	config := nginxFull.SiteConfig.Config
 	server := config.FindServers()[0]
-	server.RemoveDirective("allow", nil)
-	server.RemoveDirective("deny", nil)
-	if len(ips) > 0 {
-		server.UpdateAllowIPs(ips)
-	}
+	applyAllowIPs(server, ips)
 	if err := nginx.WriteConfig(config, nginx.IndentedStyle); err != nil {
 		return err
 	}
 	return nginxCheckAndReload(nginxConfig.OldContent, config.FilePath, nginxFull.Install.ContainerName)
+}
+
+// validateBindDomainIPs enforces access control on domain-bound proxy sites
+// (MCP servers and Ollama). These proxies expose unauthenticated admin-facing
+// services (tool execution endpoints, model pull/remove/inference), so an
+// empty IP whitelist would expose them anonymously on the public internet.
+// An empty or whitespace-only list is rejected; otherwise the list is parsed
+// (single IPs and CIDR blocks, IPv4 and IPv6).
+func validateBindDomainIPs(ipList string) ([]string, error) {
+	if strings.TrimSpace(ipList) == "" {
+		return nil, buserr.New("ErrAllowIPsRequired")
+	}
+	return common.HandleIPList(ipList)
 }
 
 func GetAllowIps(website model.Website) []string {

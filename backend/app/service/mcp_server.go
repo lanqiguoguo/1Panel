@@ -11,7 +11,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
-	"github.com/1Panel-dev/1Panel/backend/utils/common"
 	"github.com/1Panel-dev/1Panel/backend/utils/compose"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
@@ -264,11 +263,11 @@ func (m McpServerService) BindDomain(req request.McpBindDomain) error {
 		ipList []string
 		err    error
 	)
-	if len(req.IPList) > 0 {
-		ipList, err = common.HandleIPList(req.IPList)
-		if err != nil {
-			return err
-		}
+	// MCP servers expose tool execution endpoints (e.g. filesystem/exec)
+	// without authentication, so an IP whitelist is mandatory.
+	ipList, err = validateBindDomainIPs(req.IPList)
+	if err != nil {
+		return err
 	}
 	if req.SSLID > 0 {
 		ssl, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.SSLID))
@@ -327,11 +326,11 @@ func (m McpServerService) UpdateBindDomain(req request.McpBindDomainUpdate) erro
 		ipList []string
 		err    error
 	)
-	if len(req.IPList) > 0 {
-		ipList, err = common.HandleIPList(req.IPList)
-		if err != nil {
-			return err
-		}
+	// MCP servers expose tool execution endpoints (e.g. filesystem/exec)
+	// without authentication, so an IP whitelist is mandatory.
+	ipList, err = validateBindDomainIPs(req.IPList)
+	if err != nil {
+		return err
 	}
 	if req.SSLID > 0 {
 		ssl, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.SSLID))

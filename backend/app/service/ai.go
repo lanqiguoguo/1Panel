@@ -9,8 +9,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/1Panel-dev/1Panel/backend/utils/common"
-
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -239,11 +237,11 @@ func (u *AIToolService) BindDomain(req dto.OllamaBindDomain) error {
 		ipList []string
 		err    error
 	)
-	if len(req.IPList) > 0 {
-		ipList, err = common.HandleIPList(req.IPList)
-		if err != nil {
-			return err
-		}
+	// The Ollama API proxied here has no built-in auth and allows model
+	// pull/delete and inference, so an IP whitelist is mandatory.
+	ipList, err = validateBindDomainIPs(req.IPList)
+	if err != nil {
+		return err
 	}
 	if req.SSLID > 0 {
 		ssl, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.SSLID))
@@ -323,11 +321,11 @@ func (u *AIToolService) UpdateBindDomain(req dto.OllamaBindDomain) error {
 		ipList []string
 		err    error
 	)
-	if len(req.IPList) > 0 {
-		ipList, err = common.HandleIPList(req.IPList)
-		if err != nil {
-			return err
-		}
+	// The Ollama API proxied here has no built-in auth and allows model
+	// pull/delete and inference, so an IP whitelist is mandatory.
+	ipList, err = validateBindDomainIPs(req.IPList)
+	if err != nil {
+		return err
 	}
 	if req.SSLID > 0 {
 		ssl, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.SSLID))
