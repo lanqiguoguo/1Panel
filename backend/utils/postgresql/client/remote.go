@@ -14,6 +14,7 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/docker/docker/api/types/image"
 	"github.com/pkg/errors"
 
@@ -130,6 +131,9 @@ func (r *Remote) ChangePassword(info PasswordChangeInfo) error {
 }
 
 func (r *Remote) Backup(info BackupInfo) error {
+	if err := validateRemoteFields(r.Address, r.User, info.Name); err != nil {
+		return err
+	}
 	imageTag, err := loadImageTag()
 	if err != nil {
 		return err
@@ -171,6 +175,9 @@ func (r *Remote) Backup(info BackupInfo) error {
 }
 
 func (r *Remote) Recover(info RecoverInfo) error {
+	if err := validateRemoteFields(r.Address, r.User, info.Name); err != nil {
+		return err
+	}
 	imageTag, err := loadImageTag()
 	if err != nil {
 		return err
@@ -215,6 +222,27 @@ func (r *Remote) Recover(info RecoverInfo) error {
 		global.LOG.Infof("[Postgresql] DB:[%s] Restoring: %s", info.Name, readString)
 	}
 
+	return nil
+}
+
+// validateRemoteFields whitelists every remote-controlled value that the
+// backup/restore `docker run ... bash -c` commands interpolate into the
+// single-quoted pg_dump/pg_restore invocation: r.Address and r.User come from
+// the (user-supplied) remote connection record and info.Name may be re-synced
+// from a malicious remote server (LoadFromRemote), so all three are rejected
+// unless they fall inside the whitelist - before any docker image lookup,
+// file access or command construction happens. The password already reaches
+// the container through the quoted PGPASSWORD assignment (shellquote).
+func validateRemoteFields(address, user, name string) error {
+	if !cmd.ValidDBHost(address) {
+		return fmt.Errorf("invalid remote database address: %q", address)
+	}
+	if !cmd.ValidDBUser(user) {
+		return fmt.Errorf("invalid remote database user: %q", user)
+	}
+	if !cmd.ValidDBName(name) {
+		return fmt.Errorf("invalid remote database name: %q", name)
+	}
 	return nil
 }
 

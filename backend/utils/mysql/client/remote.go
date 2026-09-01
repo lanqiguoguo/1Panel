@@ -230,6 +230,9 @@ func (r *Remote) ChangeAccess(info AccessChangeInfo) error {
 }
 
 func (r *Remote) Backup(info BackupInfo) error {
+	if err := validateRemoteFields(r.Address, r.User, info.Format, info.Name); err != nil {
+		return err
+	}
 	fileOp := files.NewFileOp()
 	if !fileOp.Stat(info.TargetDir) {
 		if err := os.MkdirAll(info.TargetDir, os.ModePerm); err != nil {
@@ -278,6 +281,9 @@ func (r *Remote) Backup(info BackupInfo) error {
 }
 
 func (r *Remote) Recover(info RecoverInfo) error {
+	if err := validateRemoteFields(r.Address, r.User, info.Format, info.Name); err != nil {
+		return err
+	}
 	fi, _ := os.Open(info.SourceFile)
 	defer fi.Close()
 
@@ -319,6 +325,30 @@ func (r *Remote) Recover(info RecoverInfo) error {
 		return errors.New(stdStr)
 	}
 
+	return nil
+}
+
+// validateRemoteFields whitelists every remote-controlled value that
+// remoteRunCommand interpolates unquoted into the host `bash -c` command
+// line. r.Address / r.User come from the (user-supplied) remote connection
+// record; info.Format / info.Name may be re-synced from a malicious remote
+// server (LoadFromRemote), so all four are rejected unless they fall inside
+// the whitelist - before any connection, file or docker command is touched.
+// The password is intentionally not covered here: it travels only via
+// MYSQL_PWD from the 0600 env file (see remoteRunCommand).
+func validateRemoteFields(host, user, charset, database string) error {
+	if !cmd.ValidDBHost(host) {
+		return fmt.Errorf("invalid remote database host: %q", host)
+	}
+	if !cmd.ValidDBUser(user) {
+		return fmt.Errorf("invalid remote database user: %q", user)
+	}
+	if !cmd.ValidDBCharset(charset) {
+		return fmt.Errorf("invalid remote database charset: %q", charset)
+	}
+	if !cmd.ValidDBName(database) {
+		return fmt.Errorf("invalid remote database name: %q", database)
+	}
 	return nil
 }
 

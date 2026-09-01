@@ -196,6 +196,14 @@ func (u *MysqlService) LoadFromRemote(req dto.MysqlLoadDB) error {
 	}
 	deleteList := databases
 	for _, data := range datas {
+		// The name and charset are reported by the remote server, which may be
+		// malicious or compromised: they are later interpolated unquoted into
+		// the host `bash -c` backup/restore command (utils/mysql/client/remote.go).
+		// Skip values outside the whitelist instead of failing the whole sync.
+		if !validRemoteSyncedDB(data.Name, data.Format) {
+			global.LOG.Warnf("load from remote: skip database %q with illegal name or charset %q", data.Name, data.Format)
+			continue
+		}
 		hasOld := false
 		for i := 0; i < len(databases); i++ {
 			if strings.EqualFold(databases[i].Name, data.Name) && strings.EqualFold(databases[i].MysqlName, data.MysqlName) {

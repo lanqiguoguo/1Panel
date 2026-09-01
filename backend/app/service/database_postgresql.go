@@ -218,6 +218,14 @@ func (u *PostgresqlService) LoadFromRemote(database string) error {
 	}
 	deleteList := databases
 	for _, data := range datas {
+		// The name is reported by the remote server, which may be malicious or
+		// compromised: it is later interpolated unquoted into the host
+		// `bash -c` backup/restore command (utils/postgresql/client/remote.go).
+		// Skip values outside the whitelist instead of failing the whole sync.
+		if !validRemoteSyncedDB(data.Name, "") {
+			global.LOG.Warnf("load from remote: skip database with illegal name %q", data.Name)
+			continue
+		}
 		hasOld := false
 		for i := 0; i < len(databases); i++ {
 			if strings.EqualFold(databases[i].Name, data.Name) && strings.EqualFold(databases[i].PostgresqlName, data.PostgresqlName) {

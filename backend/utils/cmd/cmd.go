@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -371,6 +372,84 @@ func CheckIllegal(args ...string) bool {
 		}
 	}
 	return false
+}
+
+// validHostRegexp whitelists the values accepted as a remote database host in
+// shell-built backup/restore commands: an optional IPv6 zone index (%eth0),
+// then either a bracketed IPv6 body ("[2001:db8::1]", optionally :port) or a
+// plain hostname / IPv4 / bare-IPv6 body drawn from alphanumerics, dots,
+// dashes, underscores and colons, optionally followed by a docker network
+// scope suffix (e.g. "mynet", "br-0a1b2c3d4e5e"). Whitespace and every shell
+// metacharacter fall outside the class, so a rejected value can never break
+// out of the enclosing single-quoted bash -c string; colons are inert to the
+// shell and only ever select address/port forms.
+var validHostRegexp = regexp.MustCompile(`^%?(?:\[[\p{L}\p{N}_.:-]+\]|[\p{L}\p{N}_.:-]+)(?::\d+)?(?:%[\p{L}\p{N}-]+)?$`)
+
+// ValidDBHost reports whether host is safe to interpolate into the
+// `docker run ... bash -c 'client -h <host> ...'` command built by the remote
+// mysql/postgresql clients. It accepts hostnames, IPv4, bracketed IPv6 (the
+// address may already arrive wrapped in brackets, see mysql.NewMysqlClient),
+// an optional :port suffix and docker network-style names; it rejects empty
+// values, whitespace and anything carrying shell metacharacters.
+func ValidDBHost(host string) bool {
+	if host == "" || len(host) > 253 || strings.ContainsAny(host, " \t\v\f\r\n") {
+		return false
+	}
+	return validHostRegexp.MatchString(host)
+}
+
+// ValidDBUser reports whether user is safe to interpolate unquoted into the
+// remote client command line (`-u<user>`, `-U <user>`). Databases only allow
+// alphanumerics, underscore, dot and dash in user names, so the whitelist is
+// restricted to that charset; empty values and shell metacharacters
+// ($ ( ) ` ' " ; & | < > \n \r, tab and friends) are rejected.
+func ValidDBUser(user string) bool {
+	if user == "" || len(user) > 128 {
+		return false
+	}
+	for _, r := range user {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '_' && r != '.' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidDBCharset reports whether charset is one of the client-encodable
+// character set names ([A-Za-z0-9_-]+). MySQL collation/charset identifiers
+// only ever use that charset, so anything else (spaces, quotes, semicolons)
+// is rejected.
+func ValidDBCharset(charset string) bool {
+	if charset == "" || len(charset) > 64 {
+		return false
+	}
+	for _, r := range charset {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// validDBNameRegexp whitelists database/schema names embedded in backup and
+// restore commands. MySQL allows the same charset (plus "$"), PostgreSQL adds
+// no further characters; dots cover "my-db.v2" style names. Shell
+// metacharacters, whitespace and empty names are all outside the class.
+var validDBNameRegexp = regexp.MustCompile(`^[\p{L}\p{N}$_-][\p{L}\p{N}$_.\-]*(?:\.[\p{L}\p{N}$_.\-]+)*$`)
+
+// ValidDBName reports whether name is a legal database/schema name safe for
+// interpolation into the remote client shell command. MySQL identifiers
+// accept alphanumerics plus _ - . $ (Unicode letters and digits included);
+// the dot keeps multi-component names like "my-db.v2" working. Empty strings,
+// pure dots ("." / ".."), whitespace, quotes, semicolons, backticks, $() and
+// every other shell metacharacter are rejected.
+func ValidDBName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	return validDBNameRegexp.MatchString(name)
 }
 
 // WriteDockerEnvFile writes key=value pairs to a fresh 0600 file under dir and

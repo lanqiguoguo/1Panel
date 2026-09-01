@@ -14,6 +14,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/encrypt"
 	"github.com/1Panel-dev/1Panel/backend/utils/mysql"
 	"github.com/1Panel-dev/1Panel/backend/utils/mysql/client"
@@ -155,6 +156,35 @@ func (u *DatabaseService) CheckDatabase(req dto.DatabaseCreate) bool {
 	return false
 }
 
+// validateRemoteDatabaseConn whitelists the remote connection fields that are
+// later interpolated unquoted into the host `bash -c` backup/restore command
+// built by the remote mysql/postgresql clients (utils/*/client/remote.go).
+// It applies only to remote-type connections (From=="remote" / Update, which
+// always targets a remote record); local app connections are untouched.
+func validateRemoteDatabaseConn(address, username string) error {
+	if !cmd.ValidDBHost(address) {
+		return fmt.Errorf("invalid remote database address: %q", address)
+	}
+	if !cmd.ValidDBUser(username) {
+		return fmt.Errorf("invalid remote database username: %q", username)
+	}
+	return nil
+}
+
+// validRemoteSyncedDB reports whether a database reported by a remote server
+// (mysql SyncDB / pg SyncDB, consumed by the LoadFromRemote services) may be
+// synced into the local record table. The name and charset are attacker
+// controlled when the remote server is malicious or compromised, and they are
+// later interpolated unquoted into the host `bash -c` backup/restore command,
+// so anything outside the whitelist must be skipped. The synced pg rows carry
+// no charset, which the callers pass as an empty string.
+func validRemoteSyncedDB(name, format string) bool {
+	if !cmd.ValidDBName(name) {
+		return false
+	}
+	return format == "" || cmd.ValidDBCharset(format)
+}
+
 func (u *DatabaseService) Create(req dto.DatabaseCreate) error {
 	db, _ := databaseRepo.Get(commonRepo.WithByName(req.Name))
 	if db.ID != 0 {
@@ -162,6 +192,11 @@ func (u *DatabaseService) Create(req dto.DatabaseCreate) error {
 			return buserr.New(constant.ErrLocalExist)
 		}
 		return constant.ErrRecordExist
+	}
+	if req.From != "local" {
+		if err := validateRemoteDatabaseConn(req.Address, req.Username); err != nil {
+			return err
+		}
 	}
 	switch req.Type {
 	case constant.AppPostgresql:
@@ -267,6 +302,11 @@ func (u *DatabaseService) Delete(req dto.DatabaseDelete) error {
 }
 
 func (u *DatabaseService) Update(req dto.DatabaseUpdate) error {
+	// Update always targets a remote connection record (local apps are edited
+	// elsewhere), so the same whitelist as Create applies.
+	if err := validateRemoteDatabaseConn(req.Address, req.Username); err != nil {
+		return err
+	}
 	switch req.Type {
 	case constant.AppPostgresql:
 		if _, err := postgresql.NewPostgresqlClient(pgclient.DBInfo{
