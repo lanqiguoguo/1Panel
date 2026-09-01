@@ -101,7 +101,20 @@ const GlobalStore = defineStore({
             this.defaultNetwork = net;
         },
     },
-    persist: piniaPersistConfig('GlobalState'),
+    // 仅持久化 UI 偏好类键；entrance/isLogin/errStatus/ignoreCaptcha 等会话敏感键
+    // 不落盘，避免安全入口码等泄漏到 localStorage
+    persist: piniaPersistConfig('GlobalState', [
+        'language',
+        'themeConfig',
+        'openMenuTabs',
+        'agreeLicense',
+        'device',
+        'lastFilePath',
+        'currentDB',
+        'currentRedisDB',
+        'showEntranceWarn',
+        'defaultNetwork',
+    ]),
 });
 
 export default GlobalStore;

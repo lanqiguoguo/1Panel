@@ -20,7 +20,12 @@
                             v-model="extensions.extensions"
                         />
                     </el-form-item>
-                    <el-link target="_blank" type="primary" :href="globalStore.docsUrl + phpDocURL">
+                    <el-link
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        type="primary"
+                        :href="globalStore.docsUrl + phpDocURL"
+                    >
                         {{ $t('php.toExtensionsList') }}
                     </el-link>
                 </el-form>

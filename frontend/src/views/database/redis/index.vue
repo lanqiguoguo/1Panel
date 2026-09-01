@@ -310,7 +310,9 @@ const initTerminal = async () => {
             redisStatus.value = 'Running';
             terminalRef.value.acceptParams({
                 endpoint: '/api/v1/containers/exec',
-                args: `source=redis&name=${currentDBName.value}&from=${currentDB.value.from}`,
+                args: `source=redis&name=${encodeURIComponent(currentDBName.value)}&from=${encodeURIComponent(
+                    currentDB.value.from,
+                )}`,
                 error: '',
                 initCmd: '',
             });
@@ -328,7 +330,9 @@ const initTerminal = async () => {
                     terminalShow.value = true;
                     terminalRef.value.acceptParams({
                         endpoint: '/api/v1/containers/exec',
-                        args: `source=redis&name=${currentDBName.value}&from=${currentDB.value.from}`,
+                        args: `source=redis&name=${encodeURIComponent(currentDBName.value)}&from=${encodeURIComponent(
+                            currentDB.value.from,
+                        )}`,
                         error: '',
                         initCmd: '',
                     });

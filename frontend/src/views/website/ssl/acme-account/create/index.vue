@@ -49,6 +49,7 @@
                             class="ml-1.5"
                             type="primary"
                             target="_blank"
+                            rel="noopener noreferrer"
                             href="https://cloud.google.com/certificate-manager/docs/public-ca-tutorial?hl=zh-cn"
                         >
                             {{ $t('ssl.googleHelper') }}

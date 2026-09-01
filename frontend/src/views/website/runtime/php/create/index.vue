@@ -109,7 +109,12 @@
                                     <el-alert :title="$t('runtime.buildHelper')" type="warning" :closable="false" />
                                     <span class="input-help">
                                         <span>{{ $t('runtime.extendHelper') }}</span>
-                                        <el-link target="_blank" type="primary" :href="globalStore.docsUrl + phpDocURL">
+                                        <el-link
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            type="primary"
+                                            :href="globalStore.docsUrl + phpDocURL"
+                                        >
                                             {{ $t('php.toExtensionsList') }}
                                         </el-link>
                                         <br />

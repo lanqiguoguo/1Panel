@@ -86,6 +86,9 @@ const onSaveUserName = async (formEl: FormInstance | undefined) => {
                     loading.value = false;
                     MsgSuccess(i18n.global.t('commons.msg.operationSuccess'));
                     router.push({ name: 'entrance', params: { code: globalStore.entrance } });
+                    // 登出后清空内存中的安全入口码（entrance 已不再持久化到 localStorage）；
+                    // 需在上方 push 之后执行，避免跳转 URL 丢失入口码
+                    globalStore.entrance = '';
                     globalStore.setLogStatus(false);
                     return;
                 })

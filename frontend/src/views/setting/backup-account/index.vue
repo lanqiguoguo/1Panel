@@ -39,6 +39,7 @@
                                 class="ml-1 text-xs"
                                 type="primary"
                                 target="_blank"
+                                rel="noopener noreferrer"
                                 :href="globalStore.docsUrl + '/user_manual/settings/#3'"
                             >
                                 {{ $t('commons.button.helpDoc') }}

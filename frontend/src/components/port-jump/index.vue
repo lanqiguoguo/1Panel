@@ -52,13 +52,13 @@ const acceptParams = async (params: DialogProps): Promise<void> => {
             MsgWarning(i18n.global.t('setting.systemIPWarning1', ['IPv4']));
             return;
         }
-        window.open(`${protocol}://${res.data.systemIP}:${params.port}`, '_blank');
+        window.open(`${protocol}://${res.data.systemIP}:${params.port}`, '_blank', 'noopener,noreferrer');
     } else {
         if (params.ip && params.ip === 'ipv4') {
             MsgWarning(i18n.global.t('setting.systemIPWarning1', ['IPv6']));
             return;
         }
-        window.open(`${protocol}://[${res.data.systemIP}]:${params.port}`, '_blank');
+        window.open(`${protocol}://[${res.data.systemIP}]:${params.port}`, '_blank', 'noopener,noreferrer');
     }
 };
 

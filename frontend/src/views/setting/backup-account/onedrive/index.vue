@@ -227,9 +227,17 @@ const jumpAzure = async (formEl: FormInstance | undefined) => {
     let redirect_uri = oneDriveData.value.rowData.varsJson['redirect_uri'];
     let commonUrl = `response_type=code&client_id=${client_id}&redirect_uri=${redirect_uri}&scope=offline_access+Files.ReadWrite.All+User.Read`;
     if (!oneDriveData.value.rowData!.varsJson['isCN']) {
-        window.open('https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' + commonUrl, '_blank');
+        window.open(
+            'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' + commonUrl,
+            '_blank',
+            'noopener,noreferrer',
+        );
     } else {
-        window.open('https://login.chinacloudapi.cn/common/oauth2/v2.0/authorize?' + commonUrl, '_blank');
+        window.open(
+            'https://login.chinacloudapi.cn/common/oauth2/v2.0/authorize?' + commonUrl,
+            '_blank',
+            'noopener,noreferrer',
+        );
     }
 };
 

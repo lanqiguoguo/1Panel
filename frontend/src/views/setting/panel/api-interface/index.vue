@@ -21,12 +21,24 @@
                             <el-text type="danger">{{ $t('setting.apiInterfaceAlert2') }}</el-text>
                         </li>
                         <li>
-                            <el-link :href="apiURL" type="warning" target="_blank" class="mb-0.5 ml-0.5">
+                            <el-link
+                                :href="apiURL"
+                                type="warning"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="mb-0.5 ml-0.5"
+                            >
                                 {{ $t('setting.apiInterfaceAlert3') }}
                             </el-link>
                         </li>
                         <li>
-                            <el-link :href="panelURL" type="warning" target="_blank" class="mb-0.5 ml-0.5">
+                            <el-link
+                                :href="panelURL"
+                                type="warning"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="mb-0.5 ml-0.5"
+                            >
                                 {{ $t('setting.apiInterfaceAlert4') }}
                             </el-link>
                         </li>
