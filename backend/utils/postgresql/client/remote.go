@@ -25,13 +25,6 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// shellquote wraps a value in single quotes so it can be interpolated safely
-// into the host `bash -c` command line: single quotes are closed, escaped
-// and reopened, which makes the value opaque to the outer shell.
-func shellquote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
 type Remote struct {
 	Client   *sql.DB
 	From     string
@@ -145,13 +138,17 @@ func (r *Remote) Backup(info BackupInfo) error {
 		}
 	}
 	fileNameItem := info.TargetDir + "/" + strings.TrimSuffix(info.FileName, ".gz")
-	// The password travels inside the container via `docker run -e PGPASSWORD`
-	// (over the daemon socket), so it never appears in the world-readable
-	// host argv of `bash -c` (the previous PGPASSWORD="..." inline form was
-	// visible to every local user under /proc/<pid>/cmdline).
+	// The password reaches pg_dump via PGPASSWORD loaded from a 0600 env file
+	// (cmd.WriteDockerEnvFile) through `docker run --env-file`: it crosses the
+	// docker daemon socket only, so the host bash cmdline no longer contains
+	// it (see remoteBackupCommand).
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"PGPASSWORD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
 	backupCommand := exec.Command("bash", "-c",
-		fmt.Sprintf("docker run --rm --net=host -i -e PGPASSWORD=%s %s /bin/bash -c 'pg_dump -h %s -p %d --no-owner -Fc -U %s %s' > %s",
-			shellquote(r.Password), imageTag, r.Address, r.Port, r.User, info.Name, fileNameItem))
+		remoteBackupCommand(envFile, imageTag, r.Address, r.Port, r.User, info.Name, fileNameItem))
 	_ = backupCommand.Run()
 	b := make([]byte, 5)
 	n := []byte{80, 71, 68, 77, 80}
@@ -195,12 +192,15 @@ func (r *Remote) Recover(info RecoverInfo) error {
 			_, _ = gzipCmd.CombinedOutput()
 		}()
 	}
-	// The password travels inside the container via `docker run -e PGPASSWORD`
-	// (over the daemon socket), so it never appears in the world-readable
-	// host argv of `bash -c` (see Backup for the rationale).
+	// See Backup: the password travels via PGPASSWORD from the 0600 env file
+	// only, never through the host bash cmdline (see remoteRecoverCommand).
+	envFile, err := cmd.WriteDockerEnvFile(global.CONF.System.TmpDir, map[string]string{"PGPASSWORD": r.Password})
+	if err != nil {
+		return err
+	}
+	defer os.Remove(envFile)
 	recoverCommand := exec.Command("bash", "-c",
-		fmt.Sprintf("docker run --rm --net=host -i -e PGPASSWORD=%s %s /bin/bash -c 'pg_restore -h %s -p %d --verbose --clean --no-privileges --no-owner -Fc -U %s -d %s --role=%s' < %s",
-			shellquote(r.Password), imageTag, r.Address, r.Port, r.User, info.Name, info.Username, fileName))
+		remoteRecoverCommand(envFile, imageTag, r.Address, r.Port, r.User, info.Name, info.Username, fileName))
 	pipe, _ := recoverCommand.StdoutPipe()
 	stderrPipe, _ := recoverCommand.StderrPipe()
 	defer pipe.Close()
@@ -231,8 +231,9 @@ func (r *Remote) Recover(info RecoverInfo) error {
 // the (user-supplied) remote connection record and info.Name may be re-synced
 // from a malicious remote server (LoadFromRemote), so all three are rejected
 // unless they fall inside the whitelist - before any docker image lookup,
-// file access or command construction happens. The password already reaches
-// the container through the quoted PGPASSWORD assignment (shellquote).
+// file access or command construction happens. The password is intentionally
+// not covered here: it travels only via PGPASSWORD from the 0600 env file
+// (cmd.WriteDockerEnvFile, see remoteBackupCommand/remoteRecoverCommand).
 func validateRemoteFields(address, user, name string) error {
 	if !cmd.ValidDBHost(address) {
 		return fmt.Errorf("invalid remote database address: %q", address)
@@ -288,6 +289,36 @@ func (r *Remote) ExecSQL(command string, timeout uint) error {
 	}
 
 	return nil
+}
+
+// remoteBackupCommand builds the `docker run ... bash -c 'pg_dump ...'` shell
+// command used by Remote Backup. The database password must never be
+// interpolated into the returned string: `docker run -e PGPASSWORD=<password>`
+// would expose the credential in the host bash argv (world-readable under
+// /proc/<pid>/cmdline, 0444), from where every local user could read it.
+// Instead the password is loaded from the 0600 env file
+// (cmd.WriteDockerEnvFile) via `--env-file` into PGPASSWORD, which libpq and
+// pg_dump honor natively. The redirect target is shellquoted so it stays a
+// single argv word of the host bash process.
+func remoteBackupCommand(envFile, imageTag, host string, port uint, user, database, outFile string) string {
+	return fmt.Sprintf("docker run --rm --net=host -i --env-file %q %s /bin/bash -c 'pg_dump -h %s -p %d --no-owner -Fc -U %s %s' > %s",
+		envFile, imageTag, host, port, user, database, shellquote(outFile))
+}
+
+// remoteRecoverCommand is the pg_restore sibling of remoteBackupCommand: same
+// env-file handling (the password only travels via PGPASSWORD from the 0600
+// env file, never through the command line), same shape as the pre-fix
+// invocation. fileName is shellquoted like the backup redirect target.
+func remoteRecoverCommand(envFile, imageTag, host string, port uint, user, database, role, fileName string) string {
+	return fmt.Sprintf("docker run --rm --net=host -i --env-file %q %s /bin/bash -c 'pg_restore -h %s -p %d --verbose --clean --no-privileges --no-owner -Fc -U %s -d %s --role=%s' < %s",
+		envFile, imageTag, host, port, user, database, role, shellquote(fileName))
+}
+
+// shellquote wraps a value in single quotes so it can be interpolated safely
+// into the host `bash -c` command line: single quotes are closed, escaped
+// and reopened, which makes the value opaque to the outer shell.
+func shellquote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func loadImageTag() (string, error) {
