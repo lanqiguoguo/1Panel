@@ -52,6 +52,19 @@ func NewTransportWith(responseHeaderTimeout, tlsHandshakeTimeout time.Duration) 
 	}
 }
 
+// IsPublicIP reports whether ip is safe to connect to: loopback, private,
+// link-local, multicast and unspecified addresses are all rejected. It is the
+// single source of truth shared by the entry-point URL check
+// (ValidatePublicURL) and the per-connection re-validation in the download
+// dialer, so both layers can never disagree about what counts as "internal".
+func IsPublicIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified()
+}
+
 // ValidatePublicURL 校验目标 URL 可被服务端安全请求：
 // 仅允许 http/https，且 host 解析结果不得为环回/私有/链路本地/保留地址，防 SSRF。
 func ValidatePublicURL(rawURL string) error {
@@ -71,8 +84,7 @@ func ValidatePublicURL(rawURL string) error {
 		return err
 	}
 	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		if !IsPublicIP(ip) {
 			return errors.New("request to internal or reserved address is forbidden")
 		}
 	}

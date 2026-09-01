@@ -438,6 +438,19 @@ func (f *FileService) Wget(w request.FileWget) (string, error) {
 	return key, fo.DownloadFileWithProcess(w.Url, filepath.Join(w.Path, name), key, w.IgnoreCertificate)
 }
 
+func init() {
+	// Cut 在执行点复核保护路径，files 包无法反向 import service（会成环），
+	// 故由本包在初始化时把 isProtectedPath 注入进去：任一路径受保护即中止。
+	files.SetCutProtectedPathCheck(func(paths ...string) bool {
+		for _, p := range paths {
+			if isProtectedPath(p) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func (f *FileService) MvFile(m request.FileMove) error {
 	// cut/copy 都会向 NewPath（或 NewPath/Name）写入并移除源路径，
 	// 源与目标都必须位于非保护目录内

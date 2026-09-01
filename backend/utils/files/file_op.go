@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/buserr"
@@ -36,12 +39,38 @@ import (
 
 type FileOp struct {
 	Fs afero.Fs
+	// cutProtectedPathCheck, when set, is consulted by Cut immediately before
+	// executing the move: every source path and the effective destination is
+	// passed through it, and a true verdict aborts the operation. It exists
+	// because package files cannot import app/service (import cycle) where
+	// the protected-path policy lives; the service layer installs its check
+	// via SetCutProtectedPathCheck. When nil (tests, other callers) Cut skips
+	// this re-check and relies on its own argument validation only.
+	cutProtectedPathCheck func(paths ...string) bool
 }
 
+// SetCutProtectedPathCheck installs the execution-point protected-path
+// re-check used by Cut (see FileOp.cutProtectedPathCheck). It must be called
+// once during service-layer initialization.
+func SetCutProtectedPathCheck(check func(paths ...string) bool) {
+	cutProtectedPathOnce.Do(func() {
+		cutProtectedPathCheckGlobal = check
+	})
+}
+
+var (
+	cutProtectedPathCheckGlobal func(paths ...string) bool
+	cutProtectedPathOnce        sync.Once
+)
+
 func NewFileOp() FileOp {
-	return FileOp{
+	fo := FileOp{
 		Fs: afero.NewOsFs(),
 	}
+	if cutProtectedPathCheckGlobal != nil {
+		fo.cutProtectedPathCheck = cutProtectedPathCheckGlobal
+	}
+	return fo
 }
 
 func (f FileOp) OpenFile(dst string) (fs.File, error) {
@@ -354,15 +383,81 @@ var downloadMaxSize = int64(512 << 20)
 // It is a variable so tests can relax it for local httptest servers.
 var validateDownloadURL = http2.ValidatePublicURL
 
+// validateDownloadRedirectURL re-validates every redirect target of
+// DownloadFileWithProcess: the scheme must stay http/https and the new host
+// must again resolve to a public address, so a public URL cannot be used as a
+// trampoline into the internal network via a 302.
+// It is a variable so tests can relax it for local httptest servers.
+var validateDownloadRedirectURL = http2.ValidatePublicURL
+
+// errSSRFAddressRejected marks connections the download dialer refused because
+// the resolved address is loopback/private/link-local/reserved. The entry
+// check (validateDownloadURL) and this per-connection check share the same
+// verdict function (http2.IsPublicIP), so a rejection at this layer means the
+// address flipped between the two DNS resolutions (DNS rebinding) or a
+// redirect slipped past the per-hop check.
+var errSSRFAddressRejected = errors.New("download target resolves to an internal or reserved address")
+
+// verifyDownloadIP vets the already-resolved IP of each new connection; it is
+// a variable so tests running against loopback httptest servers can relax it.
+var verifyDownloadIP = func(host string) error {
+	ip := net.ParseIP(host)
+	if !http2.IsPublicIP(ip) {
+		return fmt.Errorf("%w: %s", errSSRFAddressRejected, host)
+	}
+	return nil
+}
+
+// ssrfGuardedTransport returns an http.Transport whose Control hook vets the
+// already-resolved IP of every new connection right before the connect syscall
+// runs, leaving no window between the check and the actual connect. A hostile
+// DNS answer that flips the record to an internal address (169.254.169.254,
+// 127.0.0.1, ...) after the entry check is refused here, before any byte is
+// sent. The control hook runs on every dialed connection including redirect
+// hops, since those are plain new connections too.
+func ssrfGuardedTransport(insecureTLS bool) *http.Transport {
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   60 * time.Second,
+			KeepAlive: 60 * time.Second,
+			Control: func(network, address string, c syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				return verifyDownloadIP(host)
+			},
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       15 * time.Second,
+	}
+	if insecureTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return transport
+}
+
 func (f FileOp) DownloadFileWithProcess(url, dst, key string, ignoreCertificate bool) error {
 	if err := validateDownloadURL(url); err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: constant.TimeOut5m * time.Second}
-	if ignoreCertificate {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
+	client := &http.Client{
+		Timeout:   constant.TimeOut5m * time.Second,
+		Transport: ssrfGuardedTransport(ignoreCertificate),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// every hop is a fresh request to a possibly different (and
+			// possibly hostile) host: re-run the full entry check on the new
+			// URL, scheme included, and abort the chain on failure. The
+			// returned error must carry the validator verdict at its cause so
+			// callers can errors.Is against it even after net/http wraps
+			// CheckRedirect errors in *url.Error.
+			if err := validateDownloadRedirectURL(req.URL.String()); err != nil {
+				global.LOG.Errorf("download redirect to [%s] blocked, err %s", req.URL, err.Error())
+				return fmt.Errorf("blocked redirect to %s: %w", req.URL, err)
+			}
+			return nil
+		},
 	}
 	request, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -460,7 +555,8 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 		return nil
 	}
 	// every oldPath plus the computed destination is interpolated into the
-	// mv command below, so all of them must be free of shell metacharacters
+	// mv fallback command below, so all of them must be free of shell
+	// metacharacters
 	values := make([]string, 0, len(oldPaths)+2)
 	values = append(values, oldPaths...)
 	values = append(values, dst)
@@ -483,6 +579,81 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 	} else {
 		dstPath = dst
 		coverFlag = "-f"
+	}
+
+	// Cut removes the entries at oldPaths and creates them at dstPath, so a
+	// TOCTOU flip by a concurrent rename between the service-layer validation
+	// and this execution point would move data into (or out of) a protected
+	// directory. Re-check every source and the effective destination right
+	// before the move; the window shrinks to the rename syscall itself.
+	//
+	// The destination must be re-derived from the same logic as above because
+	// the effective target switches to dst when the joined path already
+	// exists. isProtectedPathMulti is injectable: package files cannot import
+	// app/service (import cycle), so production wiring is done via
+	// SetCutProtectedPathCheck by the service layer at init time.
+	if f.cutProtectedPathCheck != nil {
+		targets := append([]string{dstPath}, oldPaths...)
+		if f.cutProtectedPathCheck(targets...) {
+			return buserr.New(constant.ErrPathNotDelete)
+		}
+	}
+
+	// Preferred path: rename(2) is atomic, keeps attributes (same inode) and
+	// needs no shell, removing the bash dependency entirely for the common
+	// same-filesystem case. Per-source fallback keeps the original multi-path
+	// semantics: each entry is moved (and overwritten with cover) exactly as
+	// "mv [coverFlag] <oldPaths...> <dstPath>" would do. Cross-device moves
+	// (EXDEV) fall back to the original shell mv, which copies+removes across
+	// filesystems — os.Rename cannot.
+	//
+	// Target derivation, mirroring mv's argument semantics:
+	//   - dstPath is an existing directory  -> sources land INSIDE it, i.e.
+	//     target = dstPath/<base> ("mv a b dstDir/" moves both under dstDir)
+	//   - otherwise (single source rename-with-new-name, or overwrite) the
+	//     target IS dstPath
+	movedAny := false
+	shellFallback := false
+	dstPathIsDir := false
+	if info, err := f.Fs.Stat(dstPath); err == nil && info.IsDir() {
+		dstPathIsDir = true
+	}
+	for _, p := range oldPaths {
+		target := dstPath
+		if dstPathIsDir {
+			target = filepath.Join(dstPath, filepath.Base(p))
+		}
+		if err := f.Fs.Rename(p, target); err != nil {
+			if errors.Is(err, syscall.EXDEV) {
+				shellFallback = true
+				break
+			}
+			return err
+		}
+		movedAny = true
+	}
+	if movedAny && !shellFallback {
+		return nil
+	}
+	if shellFallback {
+		// one of the sources lives on another filesystem; redo the whole
+		// batch with mv, which handles cross-device moves. Sources already
+		// moved by rename are gone, so mv must only see the remainder —
+		// simplest correct behavior: let mv operate on the originals of the
+		// remaining sources by passing the full original list minus the moved
+		// ones. To keep the original call contract (single mv for all paths,
+		// preserving multi-source semantics with existing tests), fall back
+		// only for the sources that failed with EXDEV.
+		var remaining []string
+		for _, p := range oldPaths {
+			if f.Stat(p) {
+				remaining = append(remaining, p)
+			}
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+		oldPaths = remaining
 	}
 	var quotedPaths []string
 	for _, p := range oldPaths {

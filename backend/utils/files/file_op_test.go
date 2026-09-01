@@ -16,14 +16,26 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// usePermissiveDownloadURL relaxes the SSRF guard for tests that exercise
-// downloads from local httptest servers (127.0.0.1); the guard is restored
-// after the test so it stays covered by the dedicated SSRF tests.
+// usePermissiveDownloadURL relaxes the SSRF guards for tests that exercise
+// downloads from local httptest servers (127.0.0.1): both the entry URL check
+// and the per-connection IP re-check performed by the download dialer are
+// stubbed out. The guards are restored after the test so they stay covered by
+// the dedicated SSRF tests.
 func usePermissiveDownloadURL(t *testing.T) {
 	t.Helper()
 	orig := validateDownloadURL
 	validateDownloadURL = func(rawURL string) error { return nil }
 	t.Cleanup(func() { validateDownloadURL = orig })
+	usePermissiveDownloadIP(t)
+}
+
+// usePermissiveDownloadIP relaxes only the per-connection IP re-check, for
+// tests that need the entry check to stay active while dialing loopback.
+func usePermissiveDownloadIP(t *testing.T) {
+	t.Helper()
+	orig := verifyDownloadIP
+	verifyDownloadIP = func(host string) error { return nil }
+	t.Cleanup(func() { verifyDownloadIP = orig })
 }
 
 // TestMain sets up the globals used by DownloadFileWithProcess so the

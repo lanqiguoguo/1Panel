@@ -79,9 +79,16 @@ func TestWgetRejectsBadName(t *testing.T) {
 }
 
 // TestWgetLegalPathReachesDownloadLayer 验证合法目录与合法文件名能通过全部
-// 入口校验并进入下载层：请求指向本机 httptest 地址，下载层 SSRF 校验返回
-// 普通（非 BusinessError）错误——错误类型差异本身证明拒绝发生在下载层而
-// 非入口校验，即入口校验未误伤合法路径。
+// 入口校验并到达下载层：请求指向本机 httptest 地址，最终被下载层的 SSRF
+// 防护拒绝并返回普通（非 BusinessError）错误——错误类型差异本身证明拒绝
+// 发生在下载层而非入口校验，即入口校验未误伤合法路径。
+//
+// P2-10 加固后下载层有三道 SSRF 校验：入口 URL 校验（下载函数内部的第一步，
+// 属下载层而非 service 入口）、每连接 IP 复验（dialer Control）、每跳重定向
+// 复验。本机 httptest 地址在第一道即被拒绝（err = "request to internal or
+// reserved address is forbidden"），恰好证明 service 入口放行了该请求、拒绝
+// 来自下载层内部；redirect/IP 两道守卫由 utils/files 的 ssrf_guard_test.go
+// 与 utils/http 的 IsPublicIP 测试单独覆盖。
 func TestWgetLegalPathReachesDownloadLayer(t *testing.T) {
 	setTestBaseDir(t, "/opt")
 	setupWgetCache(t)
@@ -100,6 +107,11 @@ func TestWgetLegalPathReachesDownloadLayer(t *testing.T) {
 	var be buserr.BusinessError
 	if errors.As(err, &be) {
 		t.Fatalf("legal path must pass entrance validation, got business error %v", err)
+	}
+	// 拒绝必须来自下载层内部的 SSRF 校验（错误文案为下载层 SSRF 守卫的固定
+	// 文案），且不会在目标目录留下文件
+	if err.Error() != "request to internal or reserved address is forbidden" {
+		t.Fatalf("expected download-layer SSRF rejection, got: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "ok.bin")); !os.IsNotExist(statErr) {
 		t.Fatalf("failed download must not leave a file behind: %v", statErr)
