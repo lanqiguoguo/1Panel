@@ -22,6 +22,7 @@ import (
 	"github.com/subosito/gotenv"
 	"gopkg.in/yaml.v3"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -41,6 +42,21 @@ type IMcpServerService interface {
 
 func NewIMcpServerService() IMcpServerService {
 	return &McpServerService{}
+}
+
+// mcpNameRegexp matches the charset the frontend enforces for MCP server
+// names (Rules.appName: alphanumerics, underscore and dash, no leading/trailing
+// separator), capped at 64 characters. A name is joined into
+// path.Join(constant.McpDir, name) for the server's compose/.env directory, so
+// anything outside this whitelist (path separators, "..", spaces, shell
+// metacharacters) must be refused before it reaches the filesystem.
+var mcpNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+// validMcpName reports whether name is a safe MCP server name (see
+// mcpNameRegexp). The leading-alphanumeric rule already excludes "..", so no
+// extra segment check is needed.
+func validMcpName(name string) bool {
+	return mcpNameRegexp.MatchString(name)
 }
 
 func (m McpServerService) Page(req request.McpServerSearch) response.McpServersRes {
@@ -88,6 +104,9 @@ func (m McpServerService) Update(req request.McpServerUpdate) error {
 	if err != nil {
 		return err
 	}
+	if !validMcpName(req.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if mcpServer.Port != req.Port {
 		if err := checkPortExist(req.Port); err != nil {
 			return err
@@ -127,6 +146,9 @@ func (m McpServerService) Update(req request.McpServerUpdate) error {
 }
 
 func (m McpServerService) Create(create request.McpServerCreate) error {
+	if !validMcpName(create.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	servers, _ := mcpServerRepo.List()
 	for _, server := range servers {
 		if server.Port == create.Port {

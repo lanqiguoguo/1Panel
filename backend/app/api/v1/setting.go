@@ -146,6 +146,15 @@ func (b *BaseApi) UpdateMenu(c *gin.Context) {
 	if err := helper.CheckBindAndValidate(&req, c); err != nil {
 		return
 	}
+	// UpdateMenu shares dto.SettingUpdate with UpdateSetting, so a crafted
+	// key/value can reach the same whitelist through this endpoint; apply the
+	// same SecurityEntrance format gate here (empty resets the entrance).
+	if req.Key == "SecurityEntrance" {
+		if !checkEntrancePattern(req.Value) {
+			helper.ErrorWithDetail(c, constant.CodeErrBadRequest, constant.ErrTypeInvalidParams, fmt.Errorf("the format of the security entrance %s is incorrect.", req.Value))
+			return
+		}
+	}
 
 	if err := settingService.Update(req.Key, req.Value); err != nil {
 		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, err)

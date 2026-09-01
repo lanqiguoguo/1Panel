@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,49 @@ import (
 const defaultDNSPath = "/etc/resolv.conf"
 const defaultHostPath = "/etc/hosts"
 const defaultFstab = "/etc/fstab"
+
+// hostIPRegexp / hostNameRegexp whitelist the characters accepted for
+// /etc/hosts entries written by UpdateHosts. IP is validated with net.ParseIP
+// (falling back to a hex/colon/dot charset for exotic forms) and the host part
+// accepts any hostname token ([a-zA-Z0-9._-]+), which is deliberately looser
+// than common.IsValidDomain because hosts entries may be arbitrary hostnames.
+// Both parts are single tokens: newlines, tabs and spaces would inject extra
+// lines or fields into /etc/hosts, and '#' would comment out the remainder.
+var (
+	hostIPRegexp   = regexp.MustCompile(`^[0-9a-fA-F.:]+$`)
+	hostNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+)
+
+// validHostEntry reports whether ip and host form a safe /etc/hosts entry pair.
+func validHostEntry(ip, host string) bool {
+	if ip == "" || host == "" || len(ip) > 45 || len(host) > 255 {
+		return false
+	}
+	if strings.ContainsAny(ip, "#\n\r\t ") || strings.ContainsAny(host, "#\n\r\t ") {
+		return false
+	}
+	if net.ParseIP(ip) == nil && !hostIPRegexp.MatchString(ip) {
+		return false
+	}
+	return hostNameRegexp.MatchString(host)
+}
+
+// validDNSServer reports whether value is a safe nameserver address for a
+// single-line `nameserver <addr>` directive in /etc/resolv.conf. A newline or
+// carriage return would inject additional resolv.conf directives, so anything
+// beyond a plain address token is refused.
+func validDNSServer(value string) bool {
+	if value == "" || len(value) > 45 {
+		return false
+	}
+	if strings.ContainsAny(value, "#\n\r\t ") {
+		return false
+	}
+	if cmd.CheckIllegal(value) {
+		return false
+	}
+	return net.ParseIP(value) != nil || hostIPRegexp.MatchString(value)
+}
 
 type DeviceService struct{}
 
@@ -194,6 +238,12 @@ func (u *DeviceService) UpdateHosts(req []dto.HostHelper) error {
 		}
 	}
 	for _, item := range req {
+		// Each entry is written as one "IP host" line into /etc/hosts; a
+		// newline, tab, space or '#' inside either part would inject or
+		// comment out hosts entries, so refuse anything outside the whitelist.
+		if !validHostEntry(item.IP, item.Host) {
+			return fmt.Errorf("invalid hosts entry %s %s", item.IP, item.Host)
+		}
 		newFile += fmt.Sprintf("%s   %s \n", item.IP, item.Host)
 	}
 	file, err := os.OpenFile(defaultHostPath, os.O_WRONLY|os.O_TRUNC, 0640)
@@ -333,6 +383,11 @@ func updateDNS(list []string) error {
 	}
 	for _, item := range list {
 		if len(item) != 0 {
+			// resolv.conf directives are single-line; a newline inside the
+			// address would append attacker-controlled directives.
+			if !validDNSServer(item) {
+				return fmt.Errorf("invalid nameserver address %s", item)
+			}
 			newFile += fmt.Sprintf("nameserver %s \n", item)
 		}
 	}

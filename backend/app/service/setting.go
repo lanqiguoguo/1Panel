@@ -180,6 +180,16 @@ func (u *SettingService) Update(key, value string) error {
 		if value != "disable" {
 			return fmt.Errorf("setting key %s is not allowed", key)
 		}
+	case "SessionTimeout":
+		// The value feeds SESSION.Set as a TTL; a zero/negative or absurdly
+		// large value would expire sessions immediately or effectively never,
+		// locking every operator out. Validate before any write so a bad
+		// submit cannot persist a self-lockout value (frontend offers
+		// seconds-based timeouts, default 86400).
+		timeout, err := strconv.Atoi(value)
+		if err != nil || timeout < 1 || timeout > 1000000 {
+			return fmt.Errorf("invalid session timeout %s", value)
+		}
 	case "AppStoreLastModified":
 		exist, _ := settingRepo.Get(settingRepo.WithByKey("AppStoreLastModified"))
 		if exist.ID == 0 {
@@ -206,6 +216,12 @@ func (u *SettingService) Update(key, value string) error {
 			_ = global.SESSION.Clean()
 		}
 	case "UserName", "Password":
+		_ = global.SESSION.Clean()
+	case "SecurityEntrance":
+		// The entrance check gates every request by comparing the configured
+		// entrance against the request path; sessions issued before the change
+		// may still hold artifacts (cookie/URL) tied to the old entrance, so
+		// drop them all. Logging out the current operator is expected.
 		_ = global.SESSION.Clean()
 
 	}
@@ -736,7 +752,15 @@ func (u *SettingService) UpdateMFA(interval, secret string) error {
 	if err := settingRepo.Update("MFAStatus", "enable"); err != nil {
 		return err
 	}
-	return settingRepo.Update("MFASecret", secret)
+	if err := settingRepo.Update("MFASecret", secret); err != nil {
+		return err
+	}
+	// The login flow re-evaluates the MFA requirement per session; existing
+	// sessions were established before MFA was enforced, so drop them all.
+	// Cleaning every session also logs out the current operator, which is the
+	// expected security behavior (same as a password change).
+	_ = global.SESSION.Clean()
+	return nil
 }
 
 func exportPrivateKeyToPEM(privateKey *rsa.PrivateKey) string {

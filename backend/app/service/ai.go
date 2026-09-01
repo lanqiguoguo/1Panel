@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -38,6 +39,45 @@ type IAIToolService interface {
 
 func NewIAIToolService() IAIToolService {
 	return &AIToolService{}
+}
+
+// ollamaModelNameRegexp matches valid ollama model names: alphanumerics plus
+// ".", "_", "-", ":" and "/" (e.g. "llama3:8b", "qwen/qwen2.5:7b"), capped at
+// 128 characters. "/" is intentionally allowed because namespaced model names
+// ("user/model") are legal ollama identifiers. The name is both interpolated
+// into `docker exec ... ollama pull <name>` (via bash -c) and joined into the
+// DataDir/log/AITools log path, so ".." segments and shell metacharacters must
+// not appear: CheckIllegal gates the shell charset first, the regex excludes
+// spaces/backslashes, and validOllamaModelName rejects ".." segments so the
+// joined log path can never escape the AITools directory.
+var ollamaModelNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$`)
+
+// validOllamaModelName reports whether name is a safe ollama model name. In
+// addition to the charset whitelist it rejects ".." path segments, so the
+// value can never traverse out of DataDir/log/AITools when joined into the
+// log file path.
+func validOllamaModelName(name string) bool {
+	if !ollamaModelNameRegexp.MatchString(name) {
+		return false
+	}
+	if name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") || strings.HasSuffix(name, "/..") {
+		return false
+	}
+	return true
+}
+
+// ollamaModelLogPath joins the model log path under DataDir/log/AITools and
+// re-checks the result stayed inside that directory. Used as defense in depth
+// behind validOllamaModelName: with path.Join cleaning, a whitelisted name can
+// no longer escape, but the containment check makes the invariant explicit. An
+// empty result means the path escaped and must not be used.
+func ollamaModelLogPath(dataDir, name string) string {
+	baseDir := path.Join(dataDir, "log", "AITools")
+	logPath := path.Join(baseDir, name)
+	if !strings.HasPrefix(logPath+string(os.PathSeparator), baseDir+string(os.PathSeparator)) {
+		return ""
+	}
+	return logPath
 }
 
 func (u *AIToolService) Search(req dto.SearchWithPage) (int64, []dto.OllamaModelInfo, error) {
@@ -80,7 +120,7 @@ func (u *AIToolService) LoadDetail(name string) (string, error) {
 }
 
 func (u *AIToolService) Create(name string) error {
-	if cmd.CheckIllegal(name) {
+	if cmd.CheckIllegal(name) || !validOllamaModelName(name) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
 	modelInfo, _ := aiRepo.Get(commonRepo.WithByName(name))
@@ -91,7 +131,10 @@ func (u *AIToolService) Create(name string) error {
 	if err != nil {
 		return err
 	}
-	logItem := path.Join(global.CONF.System.DataDir, "log", "AITools", name)
+	logItem := ollamaModelLogPath(global.CONF.System.DataDir, name)
+	if logItem == "" {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(path.Dir(logItem)); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(path.Dir(logItem), os.ModePerm); err != nil {
 			return err
@@ -129,7 +172,7 @@ func (u *AIToolService) Close(name string) error {
 }
 
 func (u *AIToolService) Recreate(name string) error {
-	if cmd.CheckIllegal(name) {
+	if cmd.CheckIllegal(name) || !validOllamaModelName(name) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
 	modelInfo, _ := aiRepo.Get(commonRepo.WithByName(name))
@@ -143,7 +186,10 @@ func (u *AIToolService) Recreate(name string) error {
 	if err := aiRepo.Update(modelInfo.ID, map[string]interface{}{"status": constant.StatusWaiting, "from": "local"}); err != nil {
 		return err
 	}
-	logItem := path.Join(global.CONF.System.DataDir, "log", "AITools", name)
+	logItem := ollamaModelLogPath(global.CONF.System.DataDir, name)
+	if logItem == "" {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	if _, err := os.Stat(path.Dir(logItem)); err != nil && os.IsNotExist(err) {
 		if err = os.MkdirAll(path.Dir(logItem), os.ModePerm); err != nil {
 			return err

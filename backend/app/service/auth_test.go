@@ -31,6 +31,9 @@ func setupAuthServiceTest(t *testing.T) {
 	seeds := []model.Setting{
 		{Key: "SessionTimeout", Value: "60"},
 		{Key: "SSL", Value: "disable"},
+		// NewJWT now fails closed when the key row is missing (a valid JWT
+		// key must exist for generateSession to mint a token).
+		{Key: "JWTSigningKey", Value: "unit-test-jwt-signing-key"},
 	}
 	for i := range seeds {
 		if err := db.Create(&seeds[i]).Error; err != nil {

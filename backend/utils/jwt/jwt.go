@@ -32,7 +32,14 @@ type BaseClaims struct {
 
 func NewJWT() *JWT {
 	settingRepo := repo.NewISettingRepo()
-	jwtSign, _ := settingRepo.Get(settingRepo.WithByKey("JWTSigningKey"))
+	jwtSign, err := settingRepo.Get(settingRepo.WithByKey("JWTSigningKey"))
+	if err != nil || jwtSign.Value == "" {
+		// HS256 with an empty key would let anyone forge valid tokens. The
+		// key is created by the init migration, so a missing row means a
+		// broken database: refuse to boot into an insecure state instead of
+		// failing open (same fail-fast style as RandStrSecure).
+		panic("jwt signing key is missing")
+	}
 	return &JWT{
 		[]byte(jwtSign.Value),
 	}
