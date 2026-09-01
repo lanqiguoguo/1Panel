@@ -16,7 +16,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/website/index.vue'),
             meta: {
                 title: 'menu.website',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -27,7 +27,7 @@ const webSiteRouter = {
             props: true,
             meta: {
                 activeMenu: '/websites',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -36,7 +36,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/ssl/index.vue'),
             meta: {
                 title: 'menu.ssl',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -45,7 +45,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/php/index.vue'),
             meta: {
                 title: 'menu.runtime',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -55,7 +55,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/node/index.vue'),
             meta: {
                 activeMenu: '/websites/runtimes/php',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -65,7 +65,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/java/index.vue'),
             meta: {
                 activeMenu: '/websites/runtimes/php',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -75,7 +75,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/go/index.vue'),
             meta: {
                 activeMenu: '/websites/runtimes/php',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -85,7 +85,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/python/index.vue'),
             meta: {
                 activeMenu: '/websites/runtimes/php',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -95,7 +95,7 @@ const webSiteRouter = {
             component: () => import('@/views/website/runtime/dotnet/index.vue'),
             meta: {
                 activeMenu: '/websites/runtimes/php',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
     ],

@@ -24,7 +24,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -34,7 +34,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -44,7 +44,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -54,7 +54,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -64,7 +64,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -74,7 +74,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -84,7 +84,7 @@ const toolboxRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/toolbox',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
             ],

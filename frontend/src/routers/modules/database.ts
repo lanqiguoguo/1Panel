@@ -24,7 +24,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -35,7 +35,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -45,7 +45,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -55,7 +55,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -65,7 +65,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -76,7 +76,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -86,7 +86,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
                 {
@@ -96,7 +96,7 @@ const databaseRouter = {
                     hidden: true,
                     meta: {
                         activeMenu: '/databases',
-                        requiresAuth: false,
+                        requiresAuth: true,
                     },
                 },
             ],

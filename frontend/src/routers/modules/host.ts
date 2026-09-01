@@ -17,7 +17,7 @@ const hostRouter = {
             component: () => import('@/views/host/file-management/index.vue'),
             meta: {
                 title: 'menu.files',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -26,7 +26,7 @@ const hostRouter = {
             component: () => import('@/views/host/monitor/monitor/index.vue'),
             meta: {
                 title: 'menu.monitor',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -37,7 +37,7 @@ const hostRouter = {
             meta: {
                 activeMenu: '/hosts/monitor/monitor',
                 title: 'menu.monitor',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -48,7 +48,7 @@ const hostRouter = {
             meta: {
                 title: 'menu.terminal',
                 keepAlive: true,
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -57,7 +57,7 @@ const hostRouter = {
             component: () => import('@/views/host/firewall/port/index.vue'),
             meta: {
                 title: 'menu.firewall',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -67,7 +67,7 @@ const hostRouter = {
             hidden: true,
             meta: {
                 activeMenu: '/hosts/firewall/port',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -77,7 +77,7 @@ const hostRouter = {
             hidden: true,
             meta: {
                 activeMenu: '/hosts/firewall/port',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -88,7 +88,7 @@ const hostRouter = {
                 title: 'menu.processManage',
                 activeMenu: '/hosts/process/process',
                 keepAlive: true,
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -98,7 +98,7 @@ const hostRouter = {
             component: () => import('@/views/host/process/network/index.vue'),
             meta: {
                 activeMenu: '/hosts/process/process',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -109,7 +109,7 @@ const hostRouter = {
                 title: 'menu.ssh',
                 activeMenu: '/hosts/ssh/ssh',
                 keepAlive: true,
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -119,7 +119,7 @@ const hostRouter = {
             hidden: true,
             meta: {
                 activeMenu: '/hosts/ssh/ssh',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
         {
@@ -129,7 +129,7 @@ const hostRouter = {
             hidden: true,
             meta: {
                 activeMenu: '/hosts/ssh/ssh',
-                requiresAuth: false,
+                requiresAuth: true,
             },
         },
     ],
