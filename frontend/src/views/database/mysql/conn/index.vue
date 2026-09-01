@@ -99,8 +99,25 @@
                             <CopyButton :content="form.username" type="icon" />
                         </el-form-item>
                         <el-form-item :label="$t('commons.login.password')">
-                            <el-tag>{{ form.password }}</el-tag>
-                            <CopyButton :content="form.password" type="icon" />
+                            <div class="flex items-center flex-wrap">
+                                <span v-if="!showPassword">**********</span>
+                                <span v-else>{{ form.password }}</span>
+                                <el-button
+                                    v-if="!showPassword"
+                                    link
+                                    icon="View"
+                                    class="ml-1.5"
+                                    @click="showPassword = true"
+                                ></el-button>
+                                <el-button
+                                    v-if="showPassword"
+                                    link
+                                    icon="Hide"
+                                    class="ml-1.5"
+                                    @click="showPassword = false"
+                                ></el-button>
+                                <CopyButton :content="form.password" type="icon" />
+                            </div>
                         </el-form-item>
                     </div>
                 </el-col>
@@ -135,6 +152,7 @@ import { getSettingInfo } from '@/api/modules/setting';
 const loading = ref(false);
 
 const dialogVisible = ref(false);
+const showPassword = ref(false);
 const form = reactive({
     status: '',
     systemIP: '',
@@ -167,6 +185,7 @@ interface DialogProps {
 
 const acceptParams = (param: DialogProps): void => {
     form.password = '';
+    showPassword.value = false;
     form.from = param.from;
     form.type = param.type;
     form.database = param.database;

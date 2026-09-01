@@ -13,7 +13,10 @@
             <el-col :span="22" :offset="1">
                 <el-descriptions border :column="1">
                     <el-descriptions-item v-for="(param, key) in params" :label="getLabel(param)" :key="key">
-                        <span>{{ param.showValue && param.showValue != '' ? param.showValue : param.value }}</span>
+                        <span v-if="param.type == 'password'">**********</span>
+                        <span v-else>
+                            {{ param.showValue && param.showValue != '' ? param.showValue : param.value }}
+                        </span>
                     </el-descriptions-item>
                 </el-descriptions>
             </el-col>
@@ -47,7 +50,18 @@
                                     :disabled="!p.edit"
                                 ></el-option>
                             </el-select>
-                            <el-input v-else v-model.trim="paramModel.params[p.key]" :disabled="!p.edit"></el-input>
+                            <el-input
+                                v-else-if="p.type != 'password'"
+                                v-model.trim="paramModel.params[p.key]"
+                                :disabled="!p.edit"
+                            ></el-input>
+                            <el-input
+                                v-else
+                                type="password"
+                                show-password
+                                v-model.trim="paramModel.params[p.key]"
+                                :disabled="!p.edit"
+                            ></el-input>
                         </el-form-item>
                         <el-form-item :prop="p.key" :label="getLabel(p)" v-else>
                             <el-input v-model.trim="p.showValue" :disabled="!p.edit"></el-input>
