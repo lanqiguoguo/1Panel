@@ -424,9 +424,18 @@ func (f *FileService) ChangeName(req request.FileRename) error {
 }
 
 func (f *FileService) Wget(w request.FileWget) (string, error) {
+	// 下载目标会在该路径落盘新文件，与上传/写入同风格：目录与最终路径
+	// 都必须位于非保护目录内，且文件名不得包含路径分隔符或穿越分量。
+	if isProtectedPath(w.Path) || isProtectedPath(path.Join(w.Path, w.Name)) {
+		return "", buserr.New(constant.ErrPathNotDelete)
+	}
+	name, err := files.SanitizeFilename(w.Name)
+	if err != nil {
+		return "", err
+	}
 	fo := files.NewFileOp()
 	key := "file-wget-" + common.GetUuid()
-	return key, fo.DownloadFileWithProcess(w.Url, filepath.Join(w.Path, w.Name), key, w.IgnoreCertificate)
+	return key, fo.DownloadFileWithProcess(w.Url, filepath.Join(w.Path, name), key, w.IgnoreCertificate)
 }
 
 func (f *FileService) MvFile(m request.FileMove) error {

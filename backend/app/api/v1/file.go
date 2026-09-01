@@ -760,6 +760,12 @@ func mergeChunks(fileName string, fileDir string, dstDir string, chunkCount int,
 			return errors.New("error paths in request")
 		}
 	}
+	// fileName 已在上方清洗为安全 basename，Join 结果即最终合并落盘路径；
+	// 与普通上传一致，目标必须位于非保护目录内。放在建目录/写文件之前，
+	// 避免对受保护目录产生任何副作用。
+	if service.IsProtectedPath(filepath.Join(dstDir, fileName)) {
+		return buserr.New(constant.ErrPathNotDelete)
+	}
 	mode, _ := files.GetParentMode(dstDir)
 	if mode == 0 {
 		mode = 0755
