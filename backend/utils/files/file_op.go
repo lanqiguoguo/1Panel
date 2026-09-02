@@ -589,13 +589,36 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 	//
 	// The destination must be re-derived from the same logic as above because
 	// the effective target switches to dst when the joined path already
-	// exists. isProtectedPathMulti is injectable: package files cannot import
-	// app/service (import cycle), so production wiring is done via
-	// SetCutProtectedPathCheck by the service layer at init time.
+	// exists. And per mv's argument semantics every source lands at a
+	// per-source real target: when dstPath is an existing directory the real
+	// target is dstPath/<base(oldPath)>, otherwise the target is dstPath
+	// itself — both shapes must be vetted so a move into (or onto) an
+	// already-existing protected directory cannot slip through with only the
+	// bare dstPath checked. isProtectedPathMulti is injectable: package files
+	// cannot import app/service (import cycle), so production wiring is done
+	// via SetCutProtectedPathCheck by the service layer at init time.
+	dstPathIsDir := false
+	if info, err := f.Fs.Stat(dstPath); err == nil && info.IsDir() {
+		dstPathIsDir = true
+	}
 	if f.cutProtectedPathCheck != nil {
-		targets := append([]string{dstPath}, oldPaths...)
-		if f.cutProtectedPathCheck(targets...) {
-			return buserr.New(constant.ErrPathNotDelete)
+		if !dstPathIsDir {
+			// single rename target (or overwrite of an existing non-directory):
+			// the destination checked above IS the real landing spot
+			for _, p := range oldPaths {
+				if f.cutProtectedPathCheck(p, dstPath) {
+					return buserr.New(constant.ErrPathNotDelete)
+				}
+			}
+		} else {
+			// every source is moved INSIDE dstPath as dstPath/<base>: the
+			// per-source real target must be vetted, not only dstPath
+			for _, p := range oldPaths {
+				realTarget := filepath.Join(dstPath, filepath.Base(p))
+				if f.cutProtectedPathCheck(p, dstPath, realTarget) {
+					return buserr.New(constant.ErrPathNotDelete)
+				}
+			}
 		}
 	}
 
@@ -614,10 +637,6 @@ func (f FileOp) Cut(oldPaths []string, dst, name string, cover bool) error {
 	//     target IS dstPath
 	movedAny := false
 	shellFallback := false
-	dstPathIsDir := false
-	if info, err := f.Fs.Stat(dstPath); err == nil && info.IsDir() {
-		dstPathIsDir = true
-	}
 	for _, p := range oldPaths {
 		target := dstPath
 		if dstPathIsDir {
@@ -725,19 +744,44 @@ func (f FileOp) CopyAndReName(src, dst, name string, cover bool) error {
 		return err
 	}
 
+	var dstPath string
 	if srcInfo.IsDir() {
-		dstPath := dst
+		dstPath = dst
 		if name != "" && !cover {
 			dstPath = filepath.Join(dst, name)
 		}
-		return cmd.ExecCmd(fmt.Sprintf(`cp -rf '%s' '%s'`, src, dstPath))
 	} else {
-		dstPath := filepath.Join(dst, name)
+		// file branch: dst/name, except cover mode where the joined path is
+		// skipped and the file is copied onto dst itself
+		dstPath = filepath.Join(dst, name)
 		if cover {
 			dstPath = dst
 		}
-		return cmd.ExecCmd(fmt.Sprintf(`cp -f '%s' '%s'`, src, dstPath))
 	}
+	// CopyAndReName backs the user-facing /files/move copy API (and the
+	// cut+cover sub-branch of the same endpoint), so its destination follows
+	// the same protected-path policy as Cut. cp follows symlinks on the
+	// destination side and writes INSIDE an existing directory-shaped
+	// destination, so the real landing spot is dstPath/<base(src)> in that
+	// shape and dstPath otherwise; both the destination argument and the real
+	// landing spot are handed to the injectable execution-point check (the
+	// same hook Cut uses, installed by the service layer via
+	// SetCutProtectedPathCheck). Generic copy methods (Copy/CopyDir/CopyFile)
+	// deliberately do NOT run this check: internal flows (app install, nginx
+	// backup, restore) legitimately copy inside the protected panel data dir.
+	if f.cutProtectedPathCheck != nil {
+		realTarget := dstPath
+		if info, err := f.Fs.Stat(dstPath); err == nil && info.IsDir() {
+			realTarget = filepath.Join(dstPath, filepath.Base(src))
+		}
+		if f.cutProtectedPathCheck(src, dstPath, realTarget) {
+			return buserr.New(constant.ErrPathNotDelete)
+		}
+	}
+	if srcInfo.IsDir() {
+		return cmd.ExecCmd(fmt.Sprintf(`cp -rf '%s' '%s'`, src, dstPath))
+	}
+	return cmd.ExecCmd(fmt.Sprintf(`cp -f '%s' '%s'`, src, dstPath))
 }
 
 func (f FileOp) CopyDir(src, dst string) error {
