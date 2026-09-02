@@ -571,6 +571,7 @@ interface CommonRule {
     requiredInput: FormItemRule;
     requiredSelect: FormItemRule;
     requiredSelectBusiness: FormItemRule;
+    requiredSelectId: FormItemRule;
     noSpace: FormItemRule;
     name: FormItemRule;
     userName: FormItemRule;
@@ -630,6 +631,13 @@ export const Rules: CommonRule = {
         required: true,
         min: 1,
         max: 65535,
+        type: 'number',
+        message: i18n.global.t('commons.rule.requiredSelect'),
+        trigger: 'change',
+    },
+    requiredSelectId: {
+        required: true,
+        min: 1,
         type: 'number',
         message: i18n.global.t('commons.rule.requiredSelect'),
         trigger: 'change',

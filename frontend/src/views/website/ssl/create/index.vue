@@ -209,8 +209,8 @@ const sslForm = ref<FormInstance>();
 const websites = ref();
 const rules = ref({
     primaryDomain: [Rules.requiredInput, Rules.domain],
-    acmeAccountId: [Rules.requiredSelectBusiness],
-    dnsAccountId: [Rules.requiredSelectBusiness],
+    acmeAccountId: [Rules.requiredSelectId],
+    dnsAccountId: [Rules.requiredSelectId],
     provider: [Rules.requiredInput],
     autoRenew: [Rules.requiredInput],
     keyType: [Rules.requiredInput],

@@ -139,7 +139,7 @@ const req = ref({
 });
 const rules = reactive<FormRules>({
     domain: [Rules.domainWithPort],
-    sslID: [Rules.requiredSelectBusiness],
+    sslID: [Rules.requiredSelectId],
 });
 const emit = defineEmits(['close']);
 
