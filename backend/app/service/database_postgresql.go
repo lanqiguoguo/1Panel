@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"path"
 	"strings"
 
@@ -308,25 +307,44 @@ func (u *PostgresqlService) Delete(ctx context.Context, req dto.PostgresqlDBDele
 		return err
 	}
 
-	if req.DeleteBackup {
-		uploadDir := path.Join(global.CONF.System.BaseDir, fmt.Sprintf("1panel/uploads/database/%s/%s/%s", req.Type, req.Database, db.Name))
-		if _, err := os.Stat(uploadDir); err == nil {
-			_ = os.RemoveAll(uploadDir)
-		}
+	pgServer := pgDBTypeAndServer(db, req.Database)
+	if req.DeleteBackup && pgServer != "" {
+		uploadRoot := path.Join(global.CONF.System.BaseDir, "1panel/uploads/database")
+		uploadDir := path.Join(uploadRoot, "postgresql", pgServer, db.Name)
+		removeDatabaseBackupDirs(uploadDir, uploadRoot, "upload", db.Name)
 		localDir, err := loadLocalDir()
 		if err != nil && !req.ForceDelete {
 			return err
 		}
-		backupDir := path.Join(localDir, fmt.Sprintf("database/%s/%s/%s", req.Type, db.PostgresqlName, db.Name))
-		if _, err := os.Stat(backupDir); err == nil {
-			_ = os.RemoveAll(backupDir)
-		}
-		_ = backupRepo.DeleteRecord(ctx, commonRepo.WithByType(req.Type), commonRepo.WithByName(req.Database), backupRepo.WithByDetailName(db.Name))
-		global.LOG.Infof("delete database %s-%s backups successful", req.Database, db.Name)
+		backupRoot := path.Join(localDir, "database")
+		backupDir := path.Join(backupRoot, "postgresql", pgServer, db.Name)
+		removeDatabaseBackupDirs(backupDir, backupRoot, "backup", db.Name)
+		_ = backupRepo.DeleteRecord(ctx, commonRepo.WithByType("postgresql"), commonRepo.WithByName(db.PostgresqlName), backupRepo.WithByDetailName(db.Name))
+		global.LOG.Infof("delete database %s-%s backups successful", db.PostgresqlName, db.Name)
 	}
 
 	_ = postgresqlRepo.Delete(ctx, commonRepo.WithByID(db.ID))
 	return nil
+}
+
+// pgDBTypeAndServer resolves the type ("postgresql") and the connection
+// record name that a DatabasePostgresql row belongs to. The row carries
+// PostgresqlName but not the type, so the owning record in the databases
+// table is consulted when possible.
+func pgDBTypeAndServer(db model.DatabasePostgresql, fallback string) string {
+	if len(db.PostgresqlName) == 0 {
+		return fallback
+	}
+	conn, err := databaseRepo.Get(commonRepo.WithByName(db.PostgresqlName))
+	if err == nil && conn.ID != 0 {
+		if conn.Type == "postgresql" {
+			return db.PostgresqlName
+		}
+		global.LOG.Warnf("database connection %s has unexpected type %q, skip backup cleanup", db.PostgresqlName, conn.Type)
+		return ""
+	}
+	global.LOG.Warnf("resolve database connection %s failed, err: %v", db.PostgresqlName, err)
+	return db.PostgresqlName
 }
 
 func (u *PostgresqlService) ChangePrivileges(req dto.PostgresqlPrivileges) error {

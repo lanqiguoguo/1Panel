@@ -124,17 +124,17 @@ func (r *Local) ChangePassword(info PasswordChangeInfo) error {
 }
 
 func (r *Local) Backup(info BackupInfo) error {
-	fileOp := files.NewFileOp()
-	if !fileOp.Stat(info.TargetDir) {
-		if err := os.MkdirAll(info.TargetDir, os.ModePerm); err != nil {
-			return fmt.Errorf("mkdir %s failed, err: %v", info.TargetDir, err)
-		}
-	}
-	outfile, err := os.OpenFile(path.Join(info.TargetDir, info.FileName), os.O_RDWR|os.O_CREATE, 0755)
+	outPath, outfile, err := backupOutFile(info.TargetDir, info.FileName)
 	if err != nil {
-		return fmt.Errorf("open file %s failed, err: %v", path.Join(info.TargetDir, info.FileName), err)
+		return err
 	}
-	defer outfile.Close()
+	ok := false
+	defer func() {
+		outfile.Close()
+		if !ok {
+			_ = os.Remove(outPath)
+		}
+	}()
 	global.LOG.Infof("start to pg_dump | gzip > %s.gzip", info.TargetDir+"/"+info.FileName)
 	cmd := exec.Command("docker", "exec", r.ContainerName, "pg_dump", "-F", "c", "-U", r.Username, "-d", info.Name)
 	var stderr bytes.Buffer
@@ -143,13 +143,44 @@ func (r *Local) Backup(info BackupInfo) error {
 	gzipCmd := exec.Command("gzip", "-cf")
 	gzipCmd.Stdin, _ = cmd.StdoutPipe()
 	gzipCmd.Stdout = outfile
-	_ = gzipCmd.Start()
+	if err := gzipCmd.Start(); err != nil {
+		return fmt.Errorf("start gzip failed, err: %v", err)
+	}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("handle backup database failed, err: %v", stderr.String())
 	}
-	_ = gzipCmd.Wait()
+	if err := gzipCmd.Wait(); err != nil {
+		return fmt.Errorf("compress backup database failed, err: %v", err)
+	}
+	ok = true
 	return nil
+}
+
+// backupOutFile prepares the output file of a pg dump: targetDir is created
+// as 0750 and the dump file as 0600 (not os.ModePerm/0755), because the
+// dumped database content is written incrementally and must never be
+// readable or replaceable by other local users. The caller must remove the
+// returned path when the backup fails so no partial dump survives.
+func backupOutFile(targetDir, fileName string) (string, *os.File, error) {
+	// The dump file name must be a plain base name: a caller-supplied
+	// traversal would otherwise redirect the dump (or its cleanup) outside
+	// the intended backup directory.
+	if fileName == "" || fileName == "." || fileName == ".." || strings.ContainsAny(fileName, `/\`) {
+		return "", nil, fmt.Errorf("invalid backup file name %q", fileName)
+	}
+	fileOp := files.NewFileOp()
+	if !fileOp.Stat(targetDir) {
+		if err := os.MkdirAll(targetDir, 0750); err != nil {
+			return "", nil, fmt.Errorf("mkdir %s failed, err: %v", targetDir, err)
+		}
+	}
+	outPath := path.Join(targetDir, fileName)
+	outfile, err := os.OpenFile(outPath, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return "", nil, fmt.Errorf("open file %s failed, err: %v", outPath, err)
+	}
+	return outPath, outfile, nil
 }
 
 func (r *Local) Recover(info RecoverInfo) error {

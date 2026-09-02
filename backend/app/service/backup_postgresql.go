@@ -137,8 +137,11 @@ func handlePostgresqlRecover(req dto.CommonRecover, isRollback bool) error {
 	}
 	defer cli.Close()
 
+	var rollbackFile string
 	if !isRollback {
-		rollbackFile := path.Join(global.CONF.System.TmpDir, fmt.Sprintf("database/%s/%s_%s.sql.gz", req.Type, req.DetailName, time.Now().Format(constant.DateTimeSlimLayout)))
+		// Random suffix (same style as regular backups) so two recovers in the
+		// same second cannot overwrite each other's rollback snapshot.
+		rollbackFile = path.Join(global.CONF.System.TmpDir, fmt.Sprintf("database/%s/%s", req.Type, dbRollbackFileName(req.DetailName, "sql.gz")))
 		if err := cli.Backup(client.BackupInfo{
 			Name:      req.DetailName,
 			TargetDir: path.Dir(rollbackFile),
@@ -178,4 +181,13 @@ func handlePostgresqlRecover(req dto.CommonRecover, isRollback bool) error {
 	}
 	isOk = true
 	return nil
+}
+
+// dbRollbackFileName names the pre-recover snapshot of a database so two
+// recoveries started within the same second (or on hosts whose clock stepped
+// backwards) cannot collide: the second one would otherwise truncate the
+// first one's rollback file through the shared <db>_<timestamp> name and
+// leave the first recovery without a usable snapshot.
+func dbRollbackFileName(dbName, suffix string) string {
+	return fmt.Sprintf("%s_%s_%s.%s", dbName, time.Now().Format(constant.DateTimeSlimLayout), common.RandStrAndNum(5), suffix)
 }

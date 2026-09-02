@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -287,25 +288,98 @@ func (u *MysqlService) Delete(ctx context.Context, req dto.MysqlDBDelete) error 
 		return err
 	}
 
+	// The connection record and the row type are resolved from the DB
+	// (req.Database/req.Type can be stale or tampered with, and the backup
+	// layout below is keyed by both), so the paths and the record cleanup are
+	// built exclusively from row values.
+	serverType, serverName := mysqlDBTypeAndServer(db, req.Database)
+
 	if req.DeleteBackup {
-		uploadDir := path.Join(global.CONF.System.BaseDir, fmt.Sprintf("1panel/uploads/database/%s/%s/%s", req.Type, req.Database, db.Name))
-		if _, err := os.Stat(uploadDir); err == nil {
-			_ = os.RemoveAll(uploadDir)
-		}
+		uploadRoot := path.Join(global.CONF.System.BaseDir, "1panel/uploads/database")
+		uploadDir := path.Join(uploadRoot, serverType, serverName, db.Name)
+		removeDatabaseBackupDirs(uploadDir, uploadRoot, "upload", db.Name)
 		localDir, err := loadLocalDir()
 		if err != nil && !req.ForceDelete {
 			return err
 		}
-		backupDir := path.Join(localDir, fmt.Sprintf("database/%s/%s/%s", req.Type, db.MysqlName, db.Name))
-		if _, err := os.Stat(backupDir); err == nil {
-			_ = os.RemoveAll(backupDir)
-		}
-		_ = backupRepo.DeleteRecord(ctx, commonRepo.WithByType(req.Type), commonRepo.WithByName(req.Database), backupRepo.WithByDetailName(db.Name))
-		global.LOG.Infof("delete database %s-%s backups successful", req.Database, db.Name)
+		backupRoot := path.Join(localDir, "database")
+		backupDir := path.Join(backupRoot, serverType, serverName, db.Name)
+		removeDatabaseBackupDirs(backupDir, backupRoot, "backup", db.Name)
+		_ = backupRepo.DeleteRecord(ctx, commonRepo.WithByType(serverType), commonRepo.WithByName(serverName), backupRepo.WithByDetailName(db.Name))
+		global.LOG.Infof("delete database %s-%s backups successful", serverName, db.Name)
 	}
 
 	_ = mysqlRepo.Delete(ctx, commonRepo.WithByID(db.ID))
 	return nil
+}
+
+// mysqlDBTypeAndServer resolves the type ("mysql"/"mariadb") and the
+// connection-record name (server name) that a DatabaseMysql row belongs to.
+// DatabaseMysql rows carry MysqlName but not the connection type, so the
+// owning record in the databases table is consulted; the fallback argument
+// (already validated at the API layer) is used only when the record lookup
+// fails - e.g. the row was orphaned and ForceDelete is still cleaning up.
+func mysqlDBTypeAndServer(db model.DatabaseMysql, fallback string) (string, string) {
+	if len(db.MysqlName) == 0 {
+		return "mysql", fallback
+	}
+	conn, err := databaseRepo.Get(commonRepo.WithByName(db.MysqlName))
+	if err == nil && conn.ID != 0 {
+		if conn.Type == "mysql" || conn.Type == "mariadb" {
+			return conn.Type, db.MysqlName
+		}
+		global.LOG.Warnf("database connection %s has unexpected type %q, fall back to mysql", db.MysqlName, conn.Type)
+		return "mysql", db.MysqlName
+	}
+	global.LOG.Warnf("resolve database connection %s failed, err: %v", db.MysqlName, err)
+	return "mysql", db.MysqlName
+}
+
+// removeDatabaseBackupDirs removes one database backup/upload directory tree.
+// The caller builds the target path exclusively from DB-row fields (db.Name /
+// db.MysqlName / db.PostgresqlName - never from free-form request values) and
+// passes the panel-owned prefix root (…/1panel/uploads/database or
+// <localDir>/database) the tree hangs off. RemoveAll would follow a symlink
+// anywhere along the path - a trailing link deletes its target, a link in an
+// intermediate component redirects the walk into an unrelated tree - so the
+// resolved target must both exist and stay strictly inside the resolved
+// prefix root before anything is removed. A missing directory (nothing to
+// clean) is not an error.
+func removeDatabaseBackupDirs(dir, rootPrefix string, kind string, dbName string) {
+	dir = filepath.Clean(dir)
+	if _, err := os.Lstat(dir); err != nil {
+		if err != nil && !os.IsNotExist(err) {
+			global.LOG.Warnf("stat %s dir %s failed, skip removal, err: %v", kind, dir, err)
+		}
+		return
+	}
+	// Reject a trailing symlink outright: RemoveAll(dir) would remove the
+	// link's target, not the link itself.
+	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		global.LOG.Warnf("refuse to remove %s dir %s: it is a symlink", kind, dir)
+		return
+	}
+	leaf, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		global.LOG.Warnf("resolve %s dir %s failed, skip removal, err: %v", kind, dir, err)
+		return
+	}
+	rootResolved := filepath.Clean(rootPrefix)
+	if resolvedRoot, err := filepath.EvalSymlinks(rootPrefix); err == nil {
+		rootResolved = resolvedRoot
+	} else if !os.IsNotExist(err) {
+		global.LOG.Warnf("resolve %s root %s failed, skip removal, err: %v", kind, rootPrefix, err)
+		return
+	}
+	rel, err := filepath.Rel(rootResolved, leaf)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		global.LOG.Warnf("refuse to remove %s dir %s: it resolves outside %s", kind, dir, rootPrefix)
+		return
+	}
+	if _, err := os.Stat(dir); err == nil {
+		_ = os.RemoveAll(dir)
+	}
+	global.LOG.Infof("remove %s directory %s for database %s successful", kind, dir, dbName)
 }
 
 func (u *MysqlService) ChangePassword(req dto.ChangeDBInfo) error {

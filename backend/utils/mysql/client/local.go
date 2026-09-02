@@ -219,17 +219,20 @@ func (r *Local) ChangeAccess(info AccessChangeInfo) error {
 }
 
 func (r *Local) Backup(info BackupInfo) error {
-	fileOp := files.NewFileOp()
-	if !fileOp.Stat(info.TargetDir) {
-		if err := os.MkdirAll(info.TargetDir, os.ModePerm); err != nil {
-			return fmt.Errorf("mkdir %s failed, err: %v", info.TargetDir, err)
-		}
-	}
-	outfile, err := os.OpenFile(path.Join(info.TargetDir, info.FileName), os.O_RDWR|os.O_CREATE, 0755)
+	outPath, outfile, err := backupOutFile(info.TargetDir, info.FileName)
 	if err != nil {
-		return fmt.Errorf("open file %s failed, err: %v", path.Join(info.TargetDir, info.FileName), err)
+		return err
 	}
-	defer outfile.Close()
+	ok := false
+	defer func() {
+		outfile.Close()
+		// Never leave a partial dump behind on a failed path: it would sit in
+		// the backup dir with 0600 as a confusing half file and would be
+		// offered as a valid backup by later directory listings.
+		if !ok {
+			_ = os.Remove(outPath)
+		}
+	}()
 	dumpCmd := "mysqldump"
 	if r.Type == constant.AppMariaDB {
 		dumpCmd = "mariadb-dump"
@@ -250,13 +253,45 @@ func (r *Local) Backup(info BackupInfo) error {
 	gzipCmd := exec.Command("gzip", "-cf")
 	gzipCmd.Stdin, _ = cmdItem.StdoutPipe()
 	gzipCmd.Stdout = outfile
-	_ = gzipCmd.Start()
+	if err := gzipCmd.Start(); err != nil {
+		return fmt.Errorf("start gzip failed, err: %v", err)
+	}
 
 	if err := cmdItem.Run(); err != nil {
 		return fmt.Errorf("handle backup database failed, err: %v", stderr.String())
 	}
-	_ = gzipCmd.Wait()
+	if err := gzipCmd.Wait(); err != nil {
+		return fmt.Errorf("compress backup database failed, err: %v", err)
+	}
+	ok = true
 	return nil
+}
+
+// backupOutFile prepares the output file of a dump: it creates targetDir
+// (0750, not os.ModePerm 0777 - the dumped SQL embeds the whole database
+// content and must not be readable or replaceable by other local users) and
+// then the file itself with 0600. A world-readable mode would expose partial
+// (still sensitive) data while the dump is streamed into the file. The
+// caller must remove the returned path when the backup fails.
+func backupOutFile(targetDir, fileName string) (string, *os.File, error) {
+	// The dump file name must be a plain base name: a caller-supplied
+	// traversal would otherwise redirect the dump (or its cleanup) outside
+	// the intended backup directory.
+	if fileName == "" || fileName == "." || fileName == ".." || strings.ContainsAny(fileName, `/\`) {
+		return "", nil, fmt.Errorf("invalid backup file name %q", fileName)
+	}
+	fileOp := files.NewFileOp()
+	if !fileOp.Stat(targetDir) {
+		if err := os.MkdirAll(targetDir, 0750); err != nil {
+			return "", nil, fmt.Errorf("mkdir %s failed, err: %v", targetDir, err)
+		}
+	}
+	outPath := path.Join(targetDir, fileName)
+	outfile, err := os.OpenFile(outPath, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return "", nil, fmt.Errorf("open file %s failed, err: %v", outPath, err)
+	}
+	return outPath, outfile, nil
 }
 
 func (r *Local) Recover(info RecoverInfo) error {

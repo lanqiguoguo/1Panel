@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"os"
 	"path"
 
 	"github.com/1Panel-dev/1Panel/backend/utils/postgresql"
@@ -268,18 +267,16 @@ func (u *DatabaseService) Delete(req dto.DatabaseDelete) error {
 	}
 
 	if req.DeleteBackup {
-		uploadDir := path.Join(global.CONF.System.BaseDir, fmt.Sprintf("1panel/uploads/database/%s/%s", db.Type, db.Name))
-		if _, err := os.Stat(uploadDir); err == nil {
-			_ = os.RemoveAll(uploadDir)
-		}
+		uploadRoot := path.Join(global.CONF.System.BaseDir, "1panel/uploads/database")
+		uploadDir := path.Join(uploadRoot, db.Type, db.Name)
+		removeDatabaseBackupDirs(uploadDir, uploadRoot, "upload", db.Name)
 		localDir, err := loadLocalDir()
 		if err != nil && !req.ForceDelete {
 			return err
 		}
-		backupDir := path.Join(localDir, fmt.Sprintf("database/%s/%s", db.Type, db.Name))
-		if _, err := os.Stat(backupDir); err == nil {
-			_ = os.RemoveAll(backupDir)
-		}
+		backupRoot := path.Join(localDir, "database")
+		backupDir := path.Join(backupRoot, db.Type, db.Name)
+		removeDatabaseBackupDirs(backupDir, backupRoot, "backup", db.Name)
 		_ = backupRepo.DeleteRecord(context.Background(), commonRepo.WithByType(db.Type), commonRepo.WithByName(db.Name))
 		global.LOG.Infof("delete database %s-%s backups successful", db.Type, db.Name)
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/utils/docker"
-	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -131,13 +130,13 @@ func (r *Remote) Backup(info BackupInfo) error {
 	if err != nil {
 		return err
 	}
-	fileOp := files.NewFileOp()
-	if !fileOp.Stat(info.TargetDir) {
-		if err := os.MkdirAll(info.TargetDir, os.ModePerm); err != nil {
-			return fmt.Errorf("mkdir %s failed, err: %v", info.TargetDir, err)
-		}
-	}
 	fileNameItem := info.TargetDir + "/" + strings.TrimSuffix(info.FileName, ".gz")
+	finalPath := info.TargetDir + "/" + info.FileName
+	// 0600/0750 (see backupOutFile): the pg dump of a remote database is
+	// streamed by pg_dump and must not be world-readable at any moment.
+	if _, _, err := backupOutFile(info.TargetDir, strings.TrimSuffix(info.FileName, ".gz")); err != nil {
+		return err
+	}
 	// The password reaches pg_dump via PGPASSWORD loaded from a 0600 env file
 	// (cmd.WriteDockerEnvFile) through `docker run --env-file`: it crosses the
 	// docker daemon socket only, so the host bash cmdline no longer contains
@@ -147,12 +146,25 @@ func (r *Remote) Backup(info BackupInfo) error {
 		return err
 	}
 	defer os.Remove(envFile)
+	// The bash redirect in remoteBackupCommand truncates the pre-created file
+	// without resetting its 0600 mode. Never leave a partial dump behind on a
+	// failed path.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(fileNameItem)
+			_ = os.RemoveAll(finalPath)
+		}
+	}()
 	backupCommand := exec.Command("bash", "-c",
 		remoteBackupCommand(envFile, imageTag, r.Address, r.Port, r.User, info.Name, fileNameItem))
-	_ = backupCommand.Run()
+	out, err := backupCommand.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("dump database %s failed, err: %v", info.Name, string(out))
+	}
 	b := make([]byte, 5)
 	n := []byte{80, 71, 68, 77, 80}
-	handle, err := os.OpenFile(fileNameItem, os.O_RDONLY, os.ModePerm)
+	handle, err := os.OpenFile(fileNameItem, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("backup file not found,err:%v", err)
 	}
@@ -168,6 +180,7 @@ func (r *Remote) Backup(info BackupInfo) error {
 	if err != nil {
 		return fmt.Errorf("gzip file %s failed, stdout: %v, err: %v", strings.TrimSuffix(info.FileName, ".gz"), string(stdout), err)
 	}
+	ok = true
 	return nil
 }
 

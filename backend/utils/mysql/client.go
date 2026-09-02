@@ -25,6 +25,8 @@ type MysqlClient interface {
 	Backup(info client.BackupInfo) error
 	Recover(info client.RecoverInfo) error
 
+	ExecSQL(command string, timeout uint) error
+
 	SyncDB(version string) ([]client.SyncDBInfo, error)
 	Close()
 }

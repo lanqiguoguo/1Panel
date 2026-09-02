@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"strings"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
-	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
@@ -233,17 +231,20 @@ func (r *Remote) Backup(info BackupInfo) error {
 	if err := validateRemoteFields(r.Address, r.User, info.Format, info.Name); err != nil {
 		return err
 	}
-	fileOp := files.NewFileOp()
-	if !fileOp.Stat(info.TargetDir) {
-		if err := os.MkdirAll(info.TargetDir, os.ModePerm); err != nil {
-			return fmt.Errorf("mkdir %s failed, err: %v", info.TargetDir, err)
-		}
-	}
-	outfile, err := os.OpenFile(path.Join(info.TargetDir, info.FileName), os.O_RDWR|os.O_CREATE, 0755)
+	// 0600/0750 (see backupOutFile): the dumped SQL of a remote database is
+	// streamed into the file over the network, so partial content would
+	// otherwise be world-readable while the dump runs.
+	outPath, outfile, err := backupOutFile(info.TargetDir, info.FileName)
 	if err != nil {
-		return fmt.Errorf("open file %s failed, err: %v", path.Join(info.TargetDir, info.FileName), err)
+		return err
 	}
-	defer outfile.Close()
+	ok := false
+	defer func() {
+		outfile.Close()
+		if !ok {
+			_ = os.Remove(outPath)
+		}
+	}()
 	dumpCmd := "mysqldump"
 	if r.Type == constant.AppMariaDB {
 		dumpCmd = "mariadb-dump"
@@ -272,11 +273,16 @@ func (r *Remote) Backup(info BackupInfo) error {
 	gzipCmd.Stdin, _ = cmdItem.StdoutPipe()
 	gzipCmd.Stdout = outfile
 
-	_ = gzipCmd.Start()
+	if err := gzipCmd.Start(); err != nil {
+		return fmt.Errorf("start gzip failed, err: %v", err)
+	}
 	if err := cmdItem.Run(); err != nil {
 		return fmt.Errorf("handle backup database failed, err: %v", stderr.String())
 	}
-	_ = gzipCmd.Wait()
+	if err := gzipCmd.Wait(); err != nil {
+		return fmt.Errorf("compress backup database failed, err: %v", err)
+	}
+	ok = true
 	return nil
 }
 
