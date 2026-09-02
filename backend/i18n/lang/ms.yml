@@ -108,6 +108,7 @@ ErrImageNotExist: "Imej persekitaran runtime {{.name}} tidak wujud, sila sunting
 ErrSSLCannotDelete: "Sijil {{ .name }} sedang digunakan oleh laman web dan tidak boleh dihapuskan"
 ErrAccountCannotDelete: "Sijil yang dikaitkan dengan akaun tidak boleh dihapuskan"
 ErrSSLApply: "Sijil berjaya terus ditandatangani, tetapi reload OpenResty gagal, sila semak konfigurasi!"
+ErrSSLApplying: "Sijil sedang dimohon. Jangan hantar permohonan pendua; muat semula senarai kemudian untuk melihat status terkini"
 ErrEmailIsExist: "Emel sudah wujud"
 ErrSSLKeyNotFound: "Fail kunci peribadi tidak wujud"
 ErrSSLCertificateNotFound: "Fail sijil tidak wujud"

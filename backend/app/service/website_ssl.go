@@ -45,6 +45,16 @@ import (
 // this mutex so one slow application cannot serialize all others.
 var sslApplyMu sync.Mutex
 
+// sslApplyAllowedStatuses is the CAS guard set for starting a certificate
+// application (ObtainSSL). A record may move into "applying" only from one of
+// these states, atomically via websiteSSLRepo.TryBeginApply. Records created
+// with Status=SSLInit race the Create goroutine and a manual/cron apply.
+// systemRestart rows (an application interrupted by a panel restart, see
+// SyncForRestart) must stay retryable — after a restart no application is
+// actually running, and the UI lets the user re-apply them. Only "applying"
+// (a live application owns the record) and unexpected statuses are refused.
+var sslApplyAllowedStatuses = []string{constant.SSLInit, constant.SSLError, constant.SSLReady, constant.SSLApplyError, constant.SystemRestart}
+
 // originalLegoLogger is the lego package's default Logger (log.New(os.Stderr,
 // ...)) captured at package initialization. Every holder of sslApplyMu
 // restores legoLogger.Logger to this value BEFORE releasing the lock, so that
@@ -287,38 +297,65 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 	if err != nil {
 		return err
 	}
-	acmeAccount, err = websiteAcmeRepo.GetFirst(commonRepo.WithByID(websiteSSL.AcmeAccountID))
+	// Atomically claim the right to be the ONLY active application for this
+	// record, right after the read: CREATE (auto apply goroutine, line 212),
+	// the manual apply API (ApplyWebsiteSSL) and the daily renew cron
+	// (cron/job/ssl.go) all funnel through this single CAS, so no two of
+	// them can ever run ObtainSSL for the same record concurrently. A failed
+	// claim (rows==0) means another application is already running or the
+	// record sits in a state no application may start from — return a clear
+	// error and leave the record untouched. The status flips to applying
+	// only when the claim wins.
+	claimed, err := websiteSSLRepo.TryBeginApply(websiteSSL.ID, sslApplyAllowedStatuses)
 	if err != nil {
 		return err
 	}
+	if claimed == 0 {
+		return buserr.New(constant.ErrSSLApplying)
+	}
+	// From here on the record is marked applying in the DB. Every
+	// synchronous failure below happens BEFORE the applying goroutine
+	// starts, so it must release the reservation through rollback (never
+	// leaving the record stuck as applying); failures AFTER the goroutine
+	// started are handled inside it by handleError (applying ->
+	// applyError/error, persisted).
+	rollback := func(err error) error {
+		w.releaseFailedApply(websiteSSL, err)
+		return err
+	}
+
+	acmeAccount, err = websiteAcmeRepo.GetFirst(commonRepo.WithByID(websiteSSL.AcmeAccountID))
+	if err != nil {
+		return rollback(err)
+	}
 	client, err := ssl.NewAcmeClient(acmeAccount)
 	if err != nil {
-		return err
+		return rollback(err)
 	}
 
 	switch websiteSSL.Provider {
 	case constant.DNSAccount:
 		dnsAccount, err = websiteDnsRepo.GetFirst(commonRepo.WithByID(websiteSSL.DnsAccountID))
 		if err != nil {
-			return err
+			return rollback(err)
 		}
 		if err = client.UseDns(ssl.DnsType(dnsAccount.Type), dnsAccount.Authorization, *websiteSSL); err != nil {
-			return err
+			return rollback(err)
 		}
 	case constant.Http:
 		appInstall, err := getAppInstallByKey(constant.AppOpenresty)
 		if err != nil {
 			if gorm.IsRecordNotFoundError(err) {
-				return buserr.New("ErrOpenrestyNotFound")
+				return rollback(buserr.New("ErrOpenrestyNotFound"))
 			}
-			return err
+			return rollback(err)
 		}
 		if err := client.UseHTTP(path.Join(appInstall.GetPath(), "root")); err != nil {
-			return err
+			return rollback(err)
 		}
 	case constant.DnsManual:
 		if err := client.UseManualDns(); err != nil {
-			return err
+			return rollback(err)
 		}
 	}
 
@@ -331,12 +368,12 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 	if websiteSSL.PrivateKey == "" {
 		privateKey, err = certcrypto.GeneratePrivateKey(ssl.KeyType(websiteSSL.KeyType))
 		if err != nil {
-			return err
+			return rollback(err)
 		}
 	} else {
 		block, _ := pem.Decode([]byte(websiteSSL.PrivateKey))
 		if block == nil {
-			return buserr.New("invalid PEM block")
+			return rollback(buserr.New("invalid PEM block"))
 		}
 		var privKey crypto.PrivateKey
 		keyType := ssl.KeyType(websiteSSL.KeyType)
@@ -344,95 +381,124 @@ func (w WebsiteSSLService) ObtainSSL(apply request.WebsiteSSLApply) error {
 		case certcrypto.EC256, certcrypto.EC384:
 			privKey, err = x509.ParseECPrivateKey(block.Bytes)
 			if err != nil {
-				return nil
+				return rollback(err)
 			}
 		case certcrypto.RSA2048, certcrypto.RSA3072, certcrypto.RSA4096:
 			privKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err != nil {
-				return nil
+				return rollback(err)
 			}
 		}
 		privateKey = privKey
 	}
 
+	// The ACME exchange itself runs in a goroutine (it takes minutes and is
+	// guarded by sslApplyMu in obtainWithLegoLock).
+	go w.runApply(apply, websiteSSL, dnsAccount, client, domains, privateKey)
+	return nil
+}
+
+// runApply performs the actual certificate application for a record that
+// w.ObtainSSL has already reserved (status == applying). All failures here
+// are recorded through handleError, which transitions applying ->
+// applyError/error and persists the record, releasing the reservation.
+func (w WebsiteSSLService) runApply(apply request.WebsiteSSLApply, websiteSSL *model.WebsiteSSL, dnsAccount *model.WebsiteDnsAccount, client *ssl.AcmeClient, domains []string, privateKey crypto.PrivateKey) {
 	websiteSSL.Status = constant.SSLApply
-	err = websiteSSLRepo.Save(websiteSSL)
+	err := websiteSSLRepo.Save(websiteSSL)
 	if err != nil {
-		return err
+		global.LOG.Errorf("failed to mark ssl %d as applying, aborting application, err: %v", websiteSSL.ID, err)
+		w.releaseFailedApply(websiteSSL, fmt.Errorf("failed to save applying status: %v", err))
+		return
 	}
 
-	go func() {
-		logFile, logger, resource, ok := obtainWithLegoLock(websiteSSL, dnsAccount, apply, client, domains, privateKey)
-		if logFile != nil {
-			defer logFile.Close()
+	logFile, logger, resource, ok := obtainWithLegoLock(websiteSSL, dnsAccount, apply, client, domains, privateKey)
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	if !ok {
+		return
+	}
+	// sslApplyMu is NOT held from here on. Everything below only writes
+	// through the per-apply local logger — certificate parsing, DB saves,
+	// ExecShellWithTimeOut (up to 30 minutes), createPemFile, nginx reload
+	// and reloadSystemSSL never touch the lego global Logger — so a slow
+	// step here can no longer delay concurrent certificate applications
+	// waiting on sslApplyMu.
+	websiteSSL.PrivateKey = string(resource.PrivateKey)
+	websiteSSL.Pem = string(resource.Certificate)
+	websiteSSL.CertURL = resource.CertURL
+	certBlock, _ := pem.Decode(resource.Certificate)
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		handleError(websiteSSL, err, logger)
+		return
+	}
+	websiteSSL.ExpireDate = cert.NotAfter
+	websiteSSL.StartDate = cert.NotBefore
+	websiteSSL.Type = cert.Issuer.CommonName
+	websiteSSL.Organization = cert.Issuer.Organization[0]
+	websiteSSL.Status = constant.SSLReady
+	printSSLLog(logger, "ApplySSLSuccess", map[string]interface{}{"domain": strings.Join(domains, ",")}, apply.DisableLog)
+	saveCertificateFile(websiteSSL, logger)
+
+	if websiteSSL.ExecShell {
+		workDir := constant.DataDir
+		if websiteSSL.PushDir {
+			workDir = websiteSSL.Dir
 		}
-		if !ok {
-			return
+		printSSLLog(logger, "ExecShellStart", nil, apply.DisableLog)
+		if err = execSSLShell(websiteSSL.Shell, workDir, logger, 30*time.Minute, websiteSSL.ID, websiteSSL.PrimaryDomain); err != nil {
+			printSSLLog(logger, "ErrExecShell", map[string]interface{}{"err": err.Error()}, apply.DisableLog)
+		} else {
+			printSSLLog(logger, "ExecShellSuccess", nil, apply.DisableLog)
 		}
-		// sslApplyMu is NOT held from here on. Everything below only writes
-		// through the per-apply local logger — certificate parsing, DB saves,
-		// ExecShellWithTimeOut (up to 30 minutes), createPemFile, nginx reload
-		// and reloadSystemSSL never touch the lego global Logger — so a slow
-		// step here can no longer delay concurrent certificate applications
-		// waiting on sslApplyMu.
-		websiteSSL.PrivateKey = string(resource.PrivateKey)
-		websiteSSL.Pem = string(resource.Certificate)
-		websiteSSL.CertURL = resource.CertURL
-		certBlock, _ := pem.Decode(resource.Certificate)
-		cert, err := x509.ParseCertificate(certBlock.Bytes)
+	}
+
+	// Persist the obtained certificate (status ready). If even this final
+	// write fails the DB row is still applying — roll the status back through
+	// handleError (ready -> applyError) so the record can be retried instead
+	// of being stuck as applying until the next system restart.
+	err = websiteSSLRepo.Save(websiteSSL)
+	if err != nil {
+		handleError(websiteSSL, err, logger)
+		return
+	}
+
+	websites, _ := websiteRepo.GetBy(websiteRepo.WithWebsiteSSLID(websiteSSL.ID))
+	if len(websites) > 0 {
+		for _, website := range websites {
+			printSSLLog(logger, "ApplyWebSiteSSLLog", map[string]interface{}{"name": website.PrimaryDomain}, apply.DisableLog)
+			if err := createPemFile(website, *websiteSSL); err != nil {
+				printSSLLog(logger, "ErrUpdateWebsiteSSL", map[string]interface{}{"name": website.PrimaryDomain, "err": err.Error()}, apply.DisableLog)
+			}
+		}
+		nginxInstall, err := getAppInstallByKey(constant.AppOpenresty)
 		if err != nil {
-			handleError(websiteSSL, err, logger)
 			return
 		}
-		websiteSSL.ExpireDate = cert.NotAfter
-		websiteSSL.StartDate = cert.NotBefore
-		websiteSSL.Type = cert.Issuer.CommonName
-		websiteSSL.Organization = cert.Issuer.Organization[0]
-		websiteSSL.Status = constant.SSLReady
-		printSSLLog(logger, "ApplySSLSuccess", map[string]interface{}{"domain": strings.Join(domains, ",")}, apply.DisableLog)
-		saveCertificateFile(websiteSSL, logger)
-
-		if websiteSSL.ExecShell {
-			workDir := constant.DataDir
-			if websiteSSL.PushDir {
-				workDir = websiteSSL.Dir
-			}
-			printSSLLog(logger, "ExecShellStart", nil, apply.DisableLog)
-			if err = execSSLShell(websiteSSL.Shell, workDir, logger, 30*time.Minute, websiteSSL.ID, websiteSSL.PrimaryDomain); err != nil {
-				printSSLLog(logger, "ErrExecShell", map[string]interface{}{"err": err.Error()}, apply.DisableLog)
-			} else {
-				printSSLLog(logger, "ExecShellSuccess", nil, apply.DisableLog)
-			}
-		}
-
-		err = websiteSSLRepo.Save(websiteSSL)
-		if err != nil {
+		if err := opNginx(nginxInstall.ContainerName, constant.NginxReload); err != nil {
+			printSSLLog(logger, constant.ErrSSLApply, nil, apply.DisableLog)
 			return
 		}
+		printSSLLog(logger, "ApplyWebSiteSSLSuccess", nil, apply.DisableLog)
+	}
 
-		websites, _ := websiteRepo.GetBy(websiteRepo.WithWebsiteSSLID(websiteSSL.ID))
-		if len(websites) > 0 {
-			for _, website := range websites {
-				printSSLLog(logger, "ApplyWebSiteSSLLog", map[string]interface{}{"name": website.PrimaryDomain}, apply.DisableLog)
-				if err := createPemFile(website, *websiteSSL); err != nil {
-					printSSLLog(logger, "ErrUpdateWebsiteSSL", map[string]interface{}{"name": website.PrimaryDomain, "err": err.Error()}, apply.DisableLog)
-				}
-			}
-			nginxInstall, err := getAppInstallByKey(constant.AppOpenresty)
-			if err != nil {
-				return
-			}
-			if err := opNginx(nginxInstall.ContainerName, constant.NginxReload); err != nil {
-				printSSLLog(logger, constant.ErrSSLApply, nil, apply.DisableLog)
-				return
-			}
-			printSSLLog(logger, "ApplyWebSiteSSLSuccess", nil, apply.DisableLog)
-		}
+	reloadSystemSSL(websiteSSL, logger)
+}
 
-		reloadSystemSSL(websiteSSL, logger)
-	}()
-
-	return nil
+// releaseFailedApply is the synchronous-failure counterpart of the CAS claim
+// in ObtainSSL: a record that was atomically reserved (status applying) but
+// whose application can never reach the applying goroutine is moved to a
+// terminal failed state so it can be retried instead of staying applying
+// forever. handleError (used inside the goroutine for ACME and parsing
+// failures) applies the same mapping; keeping the same convention here means
+// init/error rows surface as "error" and ready/applyError rows as
+// "applyError".
+func (w WebsiteSSLService) releaseFailedApply(websiteSSL *model.WebsiteSSL, err error) {
+	if websiteSSL == nil {
+		return
+	}
+	handleError(websiteSSL, err, nil)
 }
 
 // obtainWithLegoLock runs the ONLY part of a certificate application that must

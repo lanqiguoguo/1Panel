@@ -108,6 +108,7 @@ ErrImageNotExist: "실행 환경 {{.name}} 이미지가 존재하지 않습니�
 ErrSSLCannotDelete: "인증서 {{ .name }}은(는) 웹사이트에서 사용 중이므로 삭제할 수 없습니다."
 ErrAccountCannotDelete: "계정과 연결된 인증서는 삭제할 수 없습니다."
 ErrSSLApply: "인증서가 성공적으로 서명되었지만 Openresty 다시 로드에 실패했습니다. 구성을 확인하세요!"
+ErrSSLApplying: "인증서가 신청 진행 중입니다. 중복 신청하지 마시고, 잠시 후 목록을 새로고침하여 최신 상태를 확인하세요"
 ErrEmailIsExist: "이메일이 이미 존재합니다."
 ErrSSLKeyNotFound: "개인 키 파일이 존재하지 않습니다."
 ErrSSLCertificateNotFound: "인증서 파일이 존재하지 않습니다."

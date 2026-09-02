@@ -108,6 +108,7 @@ ErrImageNotExist: "Running environment {{.name}} image does not exist, please re
 ErrSSLCannotDelete: "The certificate {{ .name }} is being used by the website and cannot be removed"
 ErrAccountCannotDelete: "The certificate associated with the account cannot be deleted"
 ErrSSLApply: "The certificate continues to be signed successfully, but openresty reload fails, please check the configuration!"
+ErrSSLApplying: "The certificate is being applied for. Please do not submit a duplicate application; refresh the list later to see the latest status"
 ErrEmailIsExist: 'Email is already exist'
 ErrSSLKeyNotFound: 'The private key file does not exist'
 ErrSSLCertificateNotFound: 'The certificate file does not exist'

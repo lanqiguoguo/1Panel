@@ -107,6 +107,7 @@ ErrImageNotExist: "実行中の環境{{.name}}画像は存在しません。実�
 ErrSSLCannotDelete: "証明書{{.Name}}はWebサイトで使用されており、削除できません"
 ErrAccountCannotDelete: "アカウントに関連付けられた証明書を削除することはできません"
 ErrSSLApply: "証明書は引き続き正常に署名されていますが、OpenRestyリロードが失敗します。構成を確認してください！"
+ErrSSLApplying: "証明書の申請が進行中のため、重複申請は行えません。後でリストを更新して最新の状態を確認してください"
 ErrEmailIsExist: 'メールはすでに存在しています'
 ErrSSLKeyNotFound: '秘密キーファイルは存在しません'
 ErrSSLCertificateNotFound: '証明書ファイルは存在しません'

@@ -107,6 +107,7 @@ ErrImageNotExist: "A imagem do ambiente de execução {{.name}} não existe, por
 ErrSSLCannotDelete: "O certificado {{ .name }} está sendo usado pelo site e não pode ser removido"
 ErrAccountCannotDelete: "O certificado associado à conta não pode ser excluído"
 ErrSSLApply: "O certificado foi assinado com sucesso, mas o recarregamento do OpenResty falhou, por favor, verifique a configuração!"
+ErrSSLApplying: "O certificado está sendo solicitado. Não envie uma solicitação duplicada; atualize a lista mais tarde para ver o status mais recente"
 ErrEmailIsExist: "O email já existe"
 ErrSSLKeyNotFound: "O arquivo da chave privada não existe"
 ErrSSLCertificateNotFound: "O arquivo do certificado não existe"

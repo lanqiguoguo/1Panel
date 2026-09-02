@@ -96,6 +96,7 @@ var (
 	ErrSSLApply                      = "ErrSSLApply"
 	ErrEmailIsExist                  = "ErrEmailIsExist"
 	ErrEabKidOrEabHmacKeyCannotBlank = "ErrEabKidOrEabHmacKeyCannotBlank"
+	ErrSSLApplying                   = "ErrSSLApplying"
 )
 
 // file

@@ -108,6 +108,7 @@ ErrImageNotExist: "執行環境 {{ .name }} 鏡像不存在，請重新編輯執
 ErrSSLCannotDelete: "{{ .name }} 證書正在被網站使用，無法刪除"
 ErrAccountCannotDelete: "帳號關聯證書，無法刪除"
 ErrSSLApply: "證書續簽成功，openresty reload失敗，請檢查配置！"
+ErrSSLApplying: "證書正在申請中，請勿重複申請，請稍後刷新查看最新狀態"
 ErrEmailIsExist: '信箱已存在'
 ErrSSLKeyNotFound: '私鑰檔案不存在'
 ErrSSLCertificateNotFound: '證書檔案不存在'
