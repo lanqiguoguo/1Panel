@@ -1,15 +1,17 @@
 package service
 
 import (
-	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/firewall"
 	"github.com/1Panel-dev/1Panel/backend/utils/toolbox"
 )
@@ -103,6 +105,100 @@ func (u *Fail2BanService) Operate(operation string) error {
 	return client.Operate(operation)
 }
 
+// writeFileAtomicWithBackup persists content to path with 0640 (keeping an
+// existing file's owner), returning the previous bytes so the caller can
+// restore them if the follow-up restart fails. A missing file is a valid old
+// state: it yields a nil oldContent (and restore then removes the file
+// again), mirroring the historical O_CREAT|O_TRUNC semantics of the callers.
+func writeFileAtomicWithBackup(path string, content []byte) (oldContent []byte, err error) {
+	oldContent, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read %s failed before update, err: %v", path, readErr)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".jail.local-*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err = tmp.Chmod(0640); err != nil {
+		return nil, err
+	}
+	// Copy the original owner (root-owned files keep root after an atomic
+	// rename; root is also the only user allowed to write this file).
+	if info, statErr := os.Stat(path); statErr == nil {
+		if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+			_ = tmp.Chown(int(sys.Uid), int(sys.Gid))
+		}
+	}
+	if _, err = tmp.Write(content); err != nil {
+		return nil, err
+	}
+	if err = tmp.Sync(); err != nil {
+		return nil, err
+	}
+	if err = tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err = os.Rename(tmpName, path); err != nil {
+		return nil, err
+	}
+	return oldContent, nil
+}
+
+// restoreFileContent puts the previous state of path back: writing oldContent
+// when it is non-nil, removing the file when it is nil (the file was created
+// by the failed update from a missing original).
+func restoreFileContent(path string, oldContent []byte) error {
+	if oldContent == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(path, oldContent, 0640)
+}
+
+// restoreFileAfterFailedRestart puts the previous state back after a restart
+// failure and makes one best-effort restart attempt with the restored
+// configuration. A single combined error is returned.
+func restoreFileAfterFailedRestart(path string, oldContent []byte, restartErr error) error {
+	var errs []string
+	if restartErr != nil {
+		errs = append(errs, restartErr.Error())
+	}
+	if err := restoreFileContent(path, oldContent); err != nil {
+		errs = append(errs, fmt.Sprintf("restore original file failed: %v", err))
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	client, err := toolbox.NewFail2Ban()
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("reload fail2ban after restore failed: %v", err))
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	if err := client.Operate("restart"); err != nil {
+		errs = append(errs, fmt.Sprintf("restart fail2ban after restoring original file failed: %v", err))
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// testFail2BanConf runs `fail2ban-client -t` against the already-written file
+// (which is jail.local itself, included by jail.conf) so a syntactically
+// broken config is rejected before any restart is attempted.
+func testFail2BanConf() error {
+	stdout, err := cmd.Exec("fail2ban-client -t")
+	if err != nil {
+		return fmt.Errorf("fail2ban config test failed: %v, output: %s", err, stdout)
+	}
+	return nil
+}
+
 func (u *Fail2BanService) UpdateConf(req dto.Fail2BanUpdate) error {
 	// A newline or '#' in Value could inject extra ini directives into the
 	// [sshd] jail; reject them up front for every key. The remaining shape
@@ -181,41 +277,48 @@ func (u *Fail2BanService) UpdateConf(req dto.Fail2BanUpdate) error {
 			newFile += "\n"
 		}
 	}
-	file, err := os.OpenFile(defaultFail2BanPath, os.O_WRONLY|os.O_TRUNC, 0640)
+	// Persist the merged config atomically (keeping the previous content in
+	// memory for rollback), then let fail2ban validate it before the restart.
+	// If the restart still fails, the original file is restored and fail2ban
+	// is restarted again with the old configuration, so a bad write never
+	// leaves the host with an invalid jail.local.
+	oldContent, err := writeFileAtomicWithBackup(defaultFail2BanPath, []byte(newFile))
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	write := bufio.NewWriter(file)
-	_, _ = write.WriteString(newFile)
-	write.Flush()
-
 	client, err := toolbox.NewFail2Ban()
 	if err != nil {
+		_ = os.WriteFile(defaultFail2BanPath, oldContent, 0640)
 		return err
 	}
+	if err := testFail2BanConf(); err != nil {
+		return restoreFileAfterFailedRestart(defaultFail2BanPath, oldContent, err)
+	}
 	if err := client.Operate("restart"); err != nil {
-		return err
+		return restoreFileAfterFailedRestart(defaultFail2BanPath, oldContent, err)
 	}
 	return nil
 }
 
 func (u *Fail2BanService) UpdateConfByFile(req dto.UpdateByFile) error {
-	file, err := os.OpenFile(defaultFail2BanPath, os.O_WRONLY|os.O_TRUNC, 0640)
+	// Same rollback discipline as UpdateConf: persist atomically (keeping the
+	// previous content), run `fail2ban-client -t` against the written file,
+	// and on any failure restore the previous file plus a best-effort
+	// restart, so a bad write never leaves an unloadable jail.local behind.
+	oldContent, err := writeFileAtomicWithBackup(defaultFail2BanPath, []byte(req.File))
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	write := bufio.NewWriter(file)
-	_, _ = write.WriteString(req.File)
-	write.Flush()
-
 	client, err := toolbox.NewFail2Ban()
 	if err != nil {
+		_ = os.WriteFile(defaultFail2BanPath, oldContent, 0640)
 		return err
 	}
+	if err := testFail2BanConf(); err != nil {
+		return restoreFileAfterFailedRestart(defaultFail2BanPath, oldContent, err)
+	}
 	if err := client.Operate("restart"); err != nil {
-		return err
+		return restoreFileAfterFailedRestart(defaultFail2BanPath, oldContent, err)
 	}
 	return nil
 }

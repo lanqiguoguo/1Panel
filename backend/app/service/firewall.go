@@ -24,6 +24,12 @@ import (
 
 const confPath = "/etc/sysctl.conf"
 
+// newFirewallClientFn is an indirection over firewall.NewFirewallClient for
+// tests only: unit tests run on hosts without firewalld/ufw, so the update /
+// batch decision logic is exercised against a stub client through this seam.
+// Production code must always see the real constructor through this default.
+var newFirewallClientFn = firewall.NewFirewallClient
+
 type FirewallService struct{}
 
 type IFirewallService interface {
@@ -48,7 +54,7 @@ func (u *FirewallService) LoadBaseInfo() (dto.FirewallBaseInfo, error) {
 	baseInfo.Status = "not running"
 	baseInfo.Version = "-"
 	baseInfo.Name = "-"
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return baseInfo, err
 	}
@@ -78,7 +84,7 @@ func (u *FirewallService) SearchWithPage(req dto.RuleSearch) (int64, interface{}
 		backDatas []fireClient.FireInfo
 	)
 
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return 0, nil, err
 	}
@@ -177,7 +183,7 @@ func (u *FirewallService) SearchWithPage(req dto.RuleSearch) (int64, interface{}
 }
 
 func (u *FirewallService) OperateFirewall(operation string) error {
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
@@ -218,7 +224,7 @@ func (u *FirewallService) OperateFirewall(operation string) error {
 }
 
 func (u *FirewallService) OperatePortRule(req dto.PortRuleOperate, reload bool) error {
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
@@ -312,7 +318,7 @@ func (u *FirewallService) OperateForwardRule(req dto.ForwardRuleOperate) error {
 		return err
 	}
 
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
@@ -461,7 +467,7 @@ func validateForwardTargetIP(s string) error {
 }
 
 func (u *FirewallService) OperateAddressRule(req dto.AddrRuleOperate, reload bool) error {
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
@@ -491,32 +497,208 @@ func (u *FirewallService) OperateAddressRule(req dto.AddrRuleOperate, reload boo
 	return nil
 }
 
-func (u *FirewallService) UpdatePortRule(req dto.PortRuleUpdate) error {
-	client, err := firewall.NewFirewallClient()
+func (u *FirewallService) BatchOperateRule(req dto.BatchRuleOperate) error {
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
-	if err := u.OperatePortRule(req.OldRule, false); err != nil {
+	var failures = make(buserr.MultiErr)
+	if req.Type == "port" {
+		for _, rule := range req.Rules {
+			if err := u.OperatePortRule(rule, false); err != nil {
+				global.LOG.Errorf("batch %s firewall rule (%s %s/%s %s) failed, err: %v", rule.Operation, rule.Port, rule.Protocol, rule.Address, rule.Strategy, err)
+				failures[fmt.Sprintf("%s %s/%s %s (%s)", rule.Operation, rule.Port, rule.Protocol, rule.Address, rule.Strategy)] = err
+			}
+		}
+	} else {
+		for _, rule := range req.Rules {
+			itemRule := dto.AddrRuleOperate{Operation: rule.Operation, Address: rule.Address, Strategy: rule.Strategy}
+			if err := u.OperateAddressRule(itemRule, false); err != nil {
+				global.LOG.Errorf("batch %s firewall rule (%s %s) failed, err: %v", rule.Operation, rule.Address, rule.Strategy, err)
+				failures[fmt.Sprintf("%s %s (%s)", rule.Operation, rule.Address, rule.Strategy)] = err
+			}
+		}
+	}
+	if len(failures) != 0 {
+		return fmt.Errorf("batch operate firewall rules partially failed, %d/%d rules not applied: %s", len(failures), len(req.Rules), failures.Error())
+	}
+	return client.Reload()
+}
+
+func (u *FirewallService) UpdatePortRule(req dto.PortRuleUpdate) error {
+	client, err := newFirewallClientFn()
+	if err != nil {
 		return err
 	}
+	oldPresent := !oldPortRuleIsNoopRemove(req.OldRule)
+	// The old rule is removed before the new one is added, matching the
+	// historical order and the frontend semantics: update can carry the very
+	// same key as the old rule (e.g. a description-only edit), and firewalld
+	// rejects adding an already-enabled port/rich rule (ALREADY_ENABLED), so
+	// an add-first scheme would fail exactly on those updates. The
+	// vulnerability this closes is the missing rollback: if adding the new
+	// rule fails after the old one was removed (which, for a same-key update,
+	// would otherwise leave e.g. the panel/SSH port unguarded), the old rule
+	// is restored before the error is returned.
+	if oldPresent {
+		if err := u.OperatePortRule(req.OldRule, false); err != nil {
+			return err
+		}
+	}
 	if err := u.OperatePortRule(req.NewRule, false); err != nil {
+		if oldPresent {
+			rollbackErr := addNewRuleIfNotPresent(u, client, req.OldRule)
+			return combinedRuleError(err, rollbackErr)
+		}
 		return err
 	}
 	return client.Reload()
 }
 
 func (u *FirewallService) UpdateAddrRule(req dto.AddrRuleUpdate) error {
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}
-	if err := u.OperateAddressRule(req.OldRule, false); err != nil {
-		return err
+	oldPresent := !addrRuleIsNoopRemove(req.OldRule)
+	// Same delete-first + restore-on-failure scheme as UpdatePortRule:
+	// address rules with the same address cannot coexist, so the old rule
+	// must be removed before the new one is added, and a failed add rolls the
+	// old rule back.
+	if oldPresent {
+		if err := u.OperateAddressRule(req.OldRule, false); err != nil {
+			return err
+		}
 	}
 	if err := u.OperateAddressRule(req.NewRule, false); err != nil {
+		if oldPresent {
+			rollbackErr := addNewAddrRuleIfNotPresent(u, client, req.OldRule)
+			return combinedRuleError(err, rollbackErr)
+		}
 		return err
 	}
 	return client.Reload()
+}
+
+// oldPortRuleIsNoopRemove reports whether an OldRule payload is an empty
+// remove (no port, no address and no strategy: nothing identifies a rule to
+// delete, whatever the protocol field says), i.e. there is no old rule to
+// delete. Update then degenerates to a plain add of the new rule.
+func oldPortRuleIsNoopRemove(old dto.PortRuleOperate) bool {
+	return old.Operation == "remove" && old.Port == "" && old.Strategy == "" &&
+		(old.Address == "" || strings.EqualFold(old.Address, "Anywhere"))
+}
+
+func addrRuleIsNoopRemove(old dto.AddrRuleOperate) bool {
+	return old.Operation == "remove" && old.Address == "" && old.Strategy == ""
+}
+
+// addNewRuleIfNotPresent re-adds an OldRule (Operation add) that was removed
+// as part of a failed update. Key-sharing rules are skipped when the rule is
+// already in effect, since the failed add of the replacement already got the
+// kernel-side key back and an extra add would fail on firewalld
+// (ALREADY_ENABLED) while doing nothing useful.
+func addNewRuleIfNotPresent(u *FirewallService, client firewall.FirewallClient, old dto.PortRuleOperate) error {
+	old.Operation = "add"
+	if portRuleAlreadyInEffect(client, old) {
+		return nil
+	}
+	if err := u.OperatePortRule(old, false); err != nil {
+		return fmt.Errorf("restore old rule (%s %s/%s %s) failed, err: %v", old.Port, old.Protocol, old.Address, old.Strategy, err)
+	}
+	return nil
+}
+
+func addNewAddrRuleIfNotPresent(u *FirewallService, client firewall.FirewallClient, old dto.AddrRuleOperate) error {
+	old.Operation = "add"
+	if addrRuleAlreadyInEffect(client, old) {
+		return nil
+	}
+	if err := u.OperateAddressRule(old, false); err != nil {
+		return fmt.Errorf("restore old rule (%s %s) failed, err: %v", old.Address, old.Strategy, err)
+	}
+	return nil
+}
+
+func combinedRuleError(primary error, rollbackErr error) error {
+	if rollbackErr == nil {
+		return primary
+	}
+	return fmt.Errorf("%v; rollback of the previous rule failed: %v", primary, rollbackErr)
+}
+
+// portRuleAlreadyInEffect reports whether the rule described by r is currently
+// listed by the firewall client. Non-fatal listing failures (e.g. an
+// unreachable firewalld) are treated as "not in effect" and bubble up as
+// errors from the follow-up operation attempt.
+func portRuleAlreadyInEffect(client firewall.FirewallClient, r dto.PortRuleOperate) bool {
+	var rules []fireClient.FireInfo
+	var err error
+	if len(r.Port) != 0 && len(r.Address) == 0 && r.Strategy != "drop" {
+		rules, err = client.ListPort()
+	} else {
+		rules, err = client.ListAddress()
+	}
+	if err != nil {
+		return false
+	}
+	for _, item := range rules {
+		if portRulesMatch(item, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func addrRuleAlreadyInEffect(client firewall.FirewallClient, r dto.AddrRuleOperate) bool {
+	rules, err := client.ListAddress()
+	if err != nil {
+		return false
+	}
+	for _, item := range rules {
+		if addrRulesMatch(item, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func portRulesMatch(item fireClient.FireInfo, r dto.PortRuleOperate) bool {
+	if r.Port != "" && item.Port != r.Port {
+		return false
+	}
+	if r.Address != "" && item.Address != r.Address {
+		return false
+	}
+	if r.Address == "" && item.Address != "" {
+		return false
+	}
+	if r.Strategy == "drop" && item.Strategy != "drop" {
+		return false
+	}
+	if r.Strategy == "accept" && (item.Strategy != "" && item.Strategy != "accept") {
+		return false
+	}
+	if len(item.Protocol) == 0 || item.Protocol == "tcp/udp" {
+		return true
+	}
+	if r.Protocol == "tcp/udp" {
+		return true
+	}
+	return item.Protocol == r.Protocol
+}
+
+func addrRulesMatch(item fireClient.FireInfo, r dto.AddrRuleOperate) bool {
+	if r.Address != "" && item.Address != r.Address {
+		return false
+	}
+	if r.Strategy == "drop" && item.Strategy != "drop" {
+		return false
+	}
+	if r.Strategy == "accept" && (item.Strategy != "" && item.Strategy != "accept") {
+		return false
+	}
+	return len(item.Port) == 0
 }
 
 func (u *FirewallService) UpdateDescription(req dto.UpdateFirewallDescription) error {
@@ -527,26 +709,8 @@ func (u *FirewallService) UpdateDescription(req dto.UpdateFirewallDescription) e
 	return hostRepo.SaveFirewallRecord(&firewall)
 }
 
-func (u *FirewallService) BatchOperateRule(req dto.BatchRuleOperate) error {
-	client, err := firewall.NewFirewallClient()
-	if err != nil {
-		return err
-	}
-	if req.Type == "port" {
-		for _, rule := range req.Rules {
-			_ = u.OperatePortRule(rule, false)
-		}
-		return client.Reload()
-	}
-	for _, rule := range req.Rules {
-		itemRule := dto.AddrRuleOperate{Operation: rule.Operation, Address: rule.Address, Strategy: rule.Strategy}
-		_ = u.OperateAddressRule(itemRule, false)
-	}
-	return client.Reload()
-}
-
 func OperateFirewallPort(oldPorts, newPorts []int) error {
-	client, err := firewall.NewFirewallClient()
+	client, err := newFirewallClientFn()
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -329,6 +330,33 @@ func validateClamParams(name, scanPath, strategy, infectedDir string) error {
 	return nil
 }
 
+// validateClamScanRow is the defensive re-validation HandleOnce applies to a
+// DB-stored row before the scan: Path is interpolated unquoted into the
+// `clamdscan ... %s` command (bash -c, see cmd.Execf) so it must pass the
+// same gate as Create/Update (validClamShellArg — cmd.CheckIllegal alone
+// would still let spaces word-split and backslashes escape into extra argv),
+// Name becomes the log directory and part of the same command line, and
+// InfectedDir is interpolated unquoted into `--move=`/`--copy=` when the
+// strategy needs it. This protects against pre-existing dirty rows.
+func validateClamScanRow(clam model.Clam) error {
+	if !validClamShellArg(clam.Path) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	if !validClamName(clam.Name) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	switch clam.InfectedStrategy {
+	case "none", "remove", "":
+	case "move", "copy":
+		if !validClamScanDir(clam.InfectedDir) {
+			return buserr.New(constant.ErrCmdIllegal)
+		}
+	default:
+		return buserr.New(constant.ErrTypeInvalidParams)
+	}
+	return nil
+}
+
 func (c *ClamService) Delete(req dto.ClamDelete) error {
 	for _, id := range req.Ids {
 		clam, _ := clamRepo.Get(commonRepo.WithByID(id))
@@ -379,24 +407,8 @@ func (c *ClamService) HandleOnce(req dto.OperateByID) error {
 	if clam.ID == 0 {
 		return constant.ErrRecordNotFound
 	}
-	if cmd.CheckIllegal(clam.Path) {
-		return buserr.New(constant.ErrCmdIllegal)
-	}
-	// Defensive re-validation of the DB-stored values: Name becomes the log
-	// directory and part of the unquoted clamdscan command, InfectedDir is
-	// interpolated unquoted into `--move=`/`--copy=` when the strategy
-	// needs it.
-	if !validClamName(clam.Name) {
-		return buserr.New(constant.ErrCmdIllegal)
-	}
-	switch clam.InfectedStrategy {
-	case "none", "remove", "":
-	case "move", "copy":
-		if !validClamScanDir(clam.InfectedDir) {
-			return buserr.New(constant.ErrCmdIllegal)
-		}
-	default:
-		return buserr.New(constant.ErrTypeInvalidParams)
+	if err := validateClamScanRow(clam); err != nil {
+		return err
 	}
 	timeNow := time.Now().Format(constant.DateTimeSlimLayout)
 	logFile := path.Join(global.CONF.System.DataDir, resultDir, clam.Name, timeNow)

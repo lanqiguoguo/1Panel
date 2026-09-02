@@ -306,3 +306,45 @@ func TestLoadRecordLogTraversal(t *testing.T) {
 		t.Fatalf("LoadRecordLog legal tail 0: got %q, want %q", content, "LOG CONTENT")
 	}
 }
+
+// TestValidateClamScanRow covers the M5 inconsistency: HandleOnce must apply
+// the same shell-arg gate to a DB-stored Path as Create/Update
+// (validClamShellArg). cmd.CheckIllegal alone would let spaces
+// (word-splitting) and backslashes (escape) smuggle extra argv entries into
+// the unquoted `bash -c "clamdscan ..."` interpolation, so rows carrying
+// them must be refused here too.
+func TestValidateClamScanRow(t *testing.T) {
+	legal := []model.Clam{
+		{Name: "scan-ok", Path: "/tmp/www", InfectedStrategy: "none"},
+		{Name: "scan-ok", Path: "/tmp/www", InfectedStrategy: "remove"},
+		{Name: "scan-ok", Path: "/tmp/www", InfectedStrategy: "move", InfectedDir: "/tmp/quarantine"},
+		{Name: "scan-ok", Path: "/tmp/www", InfectedStrategy: "copy", InfectedDir: "/tmp/quarantine"},
+		{Name: "scan-ok", Path: "/tmp/www"}, // legacy row: empty strategy
+	}
+	for _, c := range legal {
+		if err := validateClamScanRow(c); err != nil {
+			t.Errorf("validateClamScanRow(%+v) = %v, want nil", c, err)
+		}
+	}
+
+	dirty := []model.Clam{
+		{Name: "scan-dirty", Path: "/tmp/a b", InfectedStrategy: "none"},  // space: bash word-splitting
+		{Name: "scan-dirty", Path: "/tmp/a\\b", InfectedStrategy: "none"}, // backslash: bash escape
+		{Name: "scan-dirty", Path: "/tmp/a;b", InfectedStrategy: "none"},  // shell metacharacter
+		{Name: "scan-dirty", Path: "", InfectedStrategy: "none"},
+		{Name: "../..", Path: "/tmp/www", InfectedStrategy: "none"},
+		{Name: "x$(id)", Path: "/tmp/www", InfectedStrategy: "none"},
+		{Name: "scan-dirty", Path: "/tmp/www", InfectedStrategy: "move", InfectedDir: "../etc"},
+		{Name: "scan-dirty", Path: "/tmp/www", InfectedStrategy: "wipe"},
+	}
+	for _, c := range dirty {
+		err := validateClamScanRow(c)
+		if err == nil {
+			t.Errorf("validateClamScanRow(%+v): expected error, got nil", c)
+			continue
+		}
+		if !isClamErr(t, err, constant.ErrCmdIllegal) && !isClamErr(t, err, constant.ErrTypeInvalidParams) {
+			t.Errorf("validateClamScanRow(%+v): err = %v, want ErrCmdIllegal/ErrTypeInvalidParams", c, err)
+		}
+	}
+}
