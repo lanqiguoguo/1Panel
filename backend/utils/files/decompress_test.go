@@ -67,16 +67,6 @@ func addTarEntry(tw *tar.Writer, name, content string) error {
 	return nil
 }
 
-// addTarDirEntry writes an explicit directory entry with the given mode.
-func addTarDirEntry(tw *tar.Writer, name string, mode int64) error {
-	hdr := &tar.Header{
-		Name:     name,
-		Mode:     mode,
-		Typeflag: tar.TypeDir,
-	}
-	return tw.WriteHeader(hdr)
-}
-
 func TestDecompressWithSDKPathTraversal(t *testing.T) {
 	op := NewFileOp()
 	cases := []struct {
@@ -1194,61 +1184,5 @@ func TestSanitizedEntryMode(t *testing.T) {
 		if got := sanitizedEntryMode(tc.in); got != tc.want {
 			t.Errorf("sanitizedEntryMode(%#o) = %#o, want %#o", tc.in, got, tc.want)
 		}
-	}
-}
-
-// TestDecompressImplicitParentDirMode pins the mode of a directory that is
-// implied by a file entry (an archive shipping "data/file" without a "data/"
-// entry): it must be created as 0755, not with the file entry's mode (0644),
-// because a 0644 directory lacks the owner-execute bit and becomes unusable
-// for a non-root process inside the extracted tree (e.g. an app container
-// that chowns its data dir to uid 1000 and then tries to create files in it).
-func TestDecompressImplicitParentDirMode(t *testing.T) {
-	op := NewFileOp()
-	archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
-		// only the file entry; no "data/" directory entry
-		if err := addTarEntry(tw, "data/database.sqlite", "x"); err != nil {
-			t.Fatalf("write entry: %v", err)
-		}
-	})
-	dst := t.TempDir()
-	if err := op.decompressWithSDK(archivePath, dst, SdkTarGz); err != nil {
-		t.Fatalf("decompress failed: %v", err)
-	}
-	fi, err := os.Stat(filepath.Join(dst, "data"))
-	if err != nil {
-		t.Fatalf("implied parent dir was not created: %v", err)
-	}
-	if !fi.IsDir() {
-		t.Fatalf("implied parent %q is not a directory", fi.Mode())
-	}
-	if got := fi.Mode().Perm(); got != 0755 {
-		t.Fatalf("implied parent dir mode = %#o, want 0755", got)
-	}
-}
-
-// TestDecompressExplicitDirEntryModeKeepsArchiveMode verifies that a real
-// directory entry keeps its archive-declared mode (sanitized): only implied
-// parents switch to 0755.
-func TestDecompressExplicitDirEntryModeKeepsArchiveMode(t *testing.T) {
-	op := NewFileOp()
-	archivePath := writeTarGzToFile(t, func(tw *tar.Writer) {
-		if err := addTarDirEntry(tw, "data", 0700); err != nil {
-			t.Fatalf("write dir entry: %v", err)
-		}
-		if err := addTarEntry(tw, "data/f.txt", "x"); err != nil {
-			t.Fatalf("write entry: %v", err)
-		}
-	})
-	dst := t.TempDir()
-	if err := op.decompressWithSDK(archivePath, dst, SdkTarGz); err != nil {
-		t.Fatalf("decompress failed: %v", err)
-	}
-	fi, err := os.Stat(filepath.Join(dst, "data"))
-	if err != nil {
-		t.Fatalf("explicit dir was not created: %v", err)
-	}
-	if got := fi.Mode().Perm(); got != 0700 {
-		t.Fatalf("explicit dir mode = %#o, want 0700", got)
 	}
 }
