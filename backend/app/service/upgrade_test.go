@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/1Panel-dev/1Panel/backend/global"
 )
 
 // TestUpgradeVersionWhitelist pins the version charset gate of Upgrade:
@@ -239,5 +242,47 @@ func TestFileSHA256(t *testing.T) {
 	}
 	if _, err := fileSHA256(filepath.Join(dir, "missing.tar.gz")); err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+// TestLoadNotesVersionWhitelist pins that LoadNotes applies the same version
+// charset gate as Upgrade: req.Version is interpolated into the release-notes
+// URL, so a version such as "../../etc" must be rejected before any request
+// is made. Valid versions must still resolve through a real HTTP round trip,
+// with the notes URL assembled as RepoUrl/mode/version/release/...
+func TestLoadNotesVersionWhitelist(t *testing.T) {
+	const notesBody = "# v1.10.40-lts release notes"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, notesBody)
+	}))
+	defer srv.Close()
+
+	oldRepoURL := global.CONF.System.RepoUrl
+	oldMode := global.CONF.System.Mode
+	global.CONF.System.RepoUrl = srv.URL
+	global.CONF.System.Mode = "stable"
+	t.Cleanup(func() {
+		global.CONF.System.RepoUrl = oldRepoURL
+		global.CONF.System.Mode = oldMode
+	})
+
+	u := &UpgradeService{}
+	for _, version := range []string{"../x", "v1;x", "v1 v2", "v1/10", ""} {
+		notes, err := u.LoadNotes(dto.Upgrade{Version: version})
+		if err == nil || !strings.Contains(err.Error(), "invalid upgrade version") {
+			t.Errorf("LoadNotes(version=%q) error = %v, want invalid version rejection", version, err)
+		}
+		if notes != "" {
+			t.Errorf("LoadNotes(version=%q) returned notes %q on a rejected version", version, notes)
+		}
+	}
+
+	// a clean version must be requested from the configured repo and mode
+	notes, err := u.LoadNotes(dto.Upgrade{Version: "v1.10.40-lts"})
+	if err != nil {
+		t.Fatalf("LoadNotes(valid version) failed: %v", err)
+	}
+	if notes != notesBody {
+		t.Fatalf("LoadNotes notes = %q, want %q", notes, notesBody)
 	}
 }

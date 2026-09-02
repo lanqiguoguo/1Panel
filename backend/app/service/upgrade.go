@@ -151,7 +151,13 @@ func (u *UpgradeService) SearchUpgrade() (*dto.UpgradeInfo, error) {
 	return &upgrade, nil
 }
 
+// LoadNotes fetches the release notes of req.Version for display. req.Version
+// is interpolated into the release-notes URL, so it must pass the same
+// version-charset gate as Upgrade before any request is made.
 func (u *UpgradeService) LoadNotes(req dto.Upgrade) (string, error) {
+	if !validUpgradeVersionRegexp.MatchString(req.Version) {
+		return "", fmt.Errorf("invalid upgrade version: %s", req.Version)
+	}
 	mode := global.CONF.System.Mode
 	if strings.Contains(req.Version, "beta") {
 		mode = "beta"

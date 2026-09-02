@@ -566,6 +566,14 @@ func (a *AppInstallService) GetUpdateVersions(req request.AppUpdateVersion) ([]d
 			if req.UpdateVersion != "" && req.UpdateVersion == detail.Version && detail.DockerCompose == "" && !app.IsLocalApp() {
 				filename := filepath.Base(detail.DownloadUrl)
 				dockerComposeUrl := fmt.Sprintf("%s%s", strings.TrimSuffix(detail.DownloadUrl, filename), "docker-compose.yml")
+				// the derived compose URL must be a public URL: rejecting
+				// internal/host-network targets before the request also keeps an
+				// attacker-controlled response out of detail.DockerCompose, which
+				// the upgrade flow persists and later runs through `docker compose`
+				// (same guard as GetAppDetail)
+				if err := httpUtil.ValidatePublicURL(dockerComposeUrl); err != nil {
+					return versions, fmt.Errorf("compose download url for app detail %d is not allowed: %v", detail.ID, err)
+				}
 				statusCode, composeRes, err := httpUtil.HandleGet(dockerComposeUrl, http.MethodGet, constant.TimeOut20s)
 				if err != nil {
 					return versions, err
