@@ -199,6 +199,16 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 	_ = rebuildAllAppInstall()
 	restartCompose(path.Join(snapJson.BaseDir, "1panel/docker/compose"))
 
+	// Persist the terminal state BEFORE the process restart below. This is the
+	// only place that clears the recover/rollback status on the success path:
+	// without it the row keeps its "Waiting" marker and the init hook
+	// (handleSnapStatus) would stamp it as failed "interrupted due to the
+	// restart" although the recovery succeeded. updateRecoverStatus also resets
+	// the SystemStatus setting to Free, so a failing restart below can no
+	// longer leave the panel locked in "Recovering" (GlobalLoading middleware
+	// rejects every API while SystemStatus != Free).
+	updateRecoverStatus(snap.ID, isRecover, "", constant.StatusSuccess, "")
+
 	global.LOG.Info("recover successful")
 	if !isRecover {
 		oriPath := fmt.Sprintf("%s/1panel_original/original_%s", global.CONF.System.BaseDir, snap.Name)
