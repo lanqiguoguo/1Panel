@@ -169,7 +169,11 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 	}
 
 	if req.IsNew || snap.InterruptStep == "1PanelBackups" {
-		if err := u.handleUnTar(path.Join(snapFileDir, "/1panel/1panel_backup.tar.gz"), snapJson.BackupDataDir, ""); err != nil {
+		// Atomically staged restore (snapshot_stage.go): the payload is fully
+		// materialised and verified next to the target first, then swapped in
+		// member by member. A failure leaves the backup dir untouched instead
+		// of half-overwritten.
+		if err := applyStagedPayload(path.Join(snapFileDir, "/1panel/1panel_backup.tar.gz"), snapJson.BackupDataDir, ""); err != nil {
 			updateRecoverStatus(snap.ID, isRecover, "1PanelBackups", constant.StatusFailed, err.Error())
 			return
 		}
@@ -179,7 +183,14 @@ func (u *SnapshotService) HandleSnapshotRecover(snap model.Snapshot, isRecover b
 
 	if req.IsNew || snap.InterruptStep == "1PanelData" {
 		checkPointOfWal()
-		if err := u.handleUnTar(path.Join(snapFileDir, "/1panel/1panel_data.tar.gz"), path.Join(snapJson.BaseDir, "1panel"), ""); err != nil {
+		// Atomic staged restore of the live data directory (snapshot_stage.go):
+		// the payload is extracted and integrity-checked in a staging dir next
+		// to <BaseDir>/1panel, swapped in member by member, and the panel DB
+		// handle is reopened onto the restored file. On any failure the swap is
+		// rolled back (or never started) and the running process keeps its
+		// pre-recovery data directory — no mixed snapshot/leftover state.
+		dataDir := path.Join(snapJson.BaseDir, "1panel")
+		if err := applyStagedPanelData(path.Join(snapFileDir, "/1panel/1panel_data.tar.gz"), dataDir); err != nil {
 			updateRecoverStatus(snap.ID, isRecover, "1PanelData", constant.StatusFailed, err.Error())
 			return
 		}

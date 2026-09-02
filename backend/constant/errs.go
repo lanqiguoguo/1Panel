@@ -169,6 +169,15 @@ var (
 	ErrBashExecute = "ErrBashExecute"
 )
 
+// snapshot
+var (
+	// ErrSnapshotRecoverRunning is reported when a recover/rollback request
+	// loses the per-snapshot claim (SnapshotRepo.BeginRecover) or finds the
+	// row still Running/Deleted, i.e. another recover/rollback or delete is
+	// already in flight for the same snapshot.
+	ErrSnapshotRecoverRunning = "ErrSnapshotRecoverRunning"
+)
+
 var (
 	ErrNotExistUser = "ErrNotExistUser"
 )

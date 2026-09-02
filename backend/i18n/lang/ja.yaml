@@ -63,6 +63,7 @@ ErrImagePull: '{{.name}}画像プルFailed err {{.err}}'
 ErrVersionTooLow: '現在の1パネルバージョンが低すぎてApp Storeを更新できないので、バージョンをアップグレードしてください'
 ErrAppNameExist: 'アプリ名はすでに存在しています'
 ErrAppOperateRunning: "アプリのインストール・アップグレード・再構築が進行中のため、後でもう一度お試しください"
+ErrSnapshotRecoverRunning: "スナップショットの復元・ロールバック・削除が進行中のため、後でもう一度お試しください"
 AppStoreIsSyncing: 'App Storeが同期しています。後でもう一度やり直してください'
 ErrGetCompose: "docker-compose.ymlファイルを取得できませんでした！{{ 。詳細 }}"
 ErrAppWarn: "異常なステータス、ログを確認してください"

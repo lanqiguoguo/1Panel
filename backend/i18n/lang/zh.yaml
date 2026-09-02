@@ -64,6 +64,7 @@ ErrImagePull: '镜像拉取失败 {{ .err }}'
 ErrVersionTooLow: '当前 1Panel 版本过低，无法更新应用商店，请升级版本之后操作'
 ErrAppNameExist: '应用名称已存在'
 ErrAppOperateRunning: '应用正在安装、升级或重建中，请稍后再试'
+ErrSnapshotRecoverRunning: '快照正在进行恢复、回滚或删除操作，请稍后再试'
 AppStoreIsSyncing: '应用商店正在同步中，请稍后再试'
 ErrGetCompose: "docker-compose.yml 文件获取失败！{{ .detail }}"
 ErrAppWarn: "状态异常，请查看日志"

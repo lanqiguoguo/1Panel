@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/model"
@@ -19,7 +20,8 @@ import (
 // HandleSnapshotRecover.
 func setupRecoverStatusTest(t *testing.T) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"-rec?mode=memory&cache=shared"), &gorm.Config{})
+	dsn := fmt.Sprintf("file:%s-%d?mode=memory&cache=shared", t.Name(), snapshotTestDBSeq.Add(1))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open in-memory sqlite failed: %v", err)
 	}

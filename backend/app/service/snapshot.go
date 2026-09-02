@@ -16,6 +16,7 @@ import (
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/common"
@@ -337,6 +338,105 @@ func (u *SnapshotService) SnapshotCreate(req dto.SnapshotCreate) error {
 	return nil
 }
 
+// snapshotOpMu guards snapshotOpInFlight, the set of snapshot IDs that
+// currently have a mutating flow in flight inside this process: a recover,
+// a rollback, or a delete. The recover/rollback flows run fire-and-forget in
+// an async goroutine while their entry points return immediately, and Delete
+// removes the local package/scratch dirs those flows read, so without the
+// guard two requests can interleave (a recover racing a delete of the same
+// snapshot strands the restore mid-way with its package gone) or a snapshot
+// can be recovered twice concurrently. The guard is in-memory only: the DB
+// status written by the flows (recover_status Waiting while in flight,
+// terminal Success/Failed afterwards) is the source of truth across process
+// restarts — the init hook (handleSnapStatus) fails any row left Waiting by
+// a crashed run, so a stale marker can never block the next attempt.
+var (
+	snapshotOpMu       sync.Mutex
+	snapshotOpInFlight = map[uint]struct{}{}
+)
+
+// claimSnapshotOpLock marks snapID as owned by an in-flight recover/rollback
+// or delete inside this process. It returns nil when another flow already
+// owns the snapshot (the caller must fail with snapshotOpBusy and not touch
+// any resource) and otherwise an idempotent release function the owner calls
+// once its whole flow (including the terminal DB state) has finished.
+func claimSnapshotOpLock(snapID uint) (release func()) {
+	snapshotOpMu.Lock()
+	defer snapshotOpMu.Unlock()
+	if _, ok := snapshotOpInFlight[snapID]; ok {
+		return nil
+	}
+	snapshotOpInFlight[snapID] = struct{}{}
+	released := false
+	return func() {
+		snapshotOpMu.Lock()
+		defer snapshotOpMu.Unlock()
+		if !released {
+			delete(snapshotOpInFlight, snapID)
+			released = true
+		}
+	}
+}
+
+// snapshotOpBusy is the business error reported when a recover/rollback/delete
+// request loses the per-snapshot claim to a concurrent flow of the same
+// snapshot. The losing request must not run any cleanup: the package, scratch
+// dir and DB row belong to the winner.
+func snapshotOpBusy(snap model.Snapshot) error {
+	if snap.RecoverStatus == constant.StatusWaiting || snap.RollbackStatus == constant.StatusWaiting {
+		return fmt.Errorf("snapshot %s is being recovered or rolled back, please try again later", snap.Name)
+	}
+	// The plain text (not i18n) recovery-path message above needs no
+	// translation; this fallback covers the Delete/entry busy cases, which
+	// the API maps to a translated business error.
+	return buserr.New(constant.ErrSnapshotRecoverRunning)
+}
+
+// claimRecoverOp runs the recover entry gate: the row must exist and not
+// carry an in-flight marker (Waiting on either status column), the
+// in-process lock must be free, and the atomic DB CAS
+// (SnapshotRepo.BeginRecover: recover_status from any idle state to Waiting,
+// refusing rows where either column is Waiting/Running) must win. The CAS
+// closes the race between the in-process check and a concurrent flow of the
+// same snapshot, also across panel processes on the same data dir, and it
+// survives restarts: a row left Waiting by a crash is failed by the init
+// hook (handleSnapStatus) and can then be retried. The caller must pair a
+// successful claim with release() once its whole async flow finished.
+func claimRecoverOp(snapID uint) (release func(), err error) {
+	if release = claimSnapshotOpLock(snapID); release == nil {
+		return nil, snapshotOpBusy(model.Snapshot{})
+	}
+	claimed, err := snapshotRepo.BeginRecover(snapID)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if claimed == 0 {
+		release()
+		return nil, snapshotOpBusy(model.Snapshot{})
+	}
+	return release, nil
+}
+
+// claimRollbackOp mirrors claimRecoverOp on the rollback column
+// (SnapshotRepo.BeginRollback): recover and rollback both replace the same
+// live data directory, so they are mutually exclusive.
+func claimRollbackOp(snapID uint) (release func(), err error) {
+	if release = claimSnapshotOpLock(snapID); release == nil {
+		return nil, snapshotOpBusy(model.Snapshot{})
+	}
+	claimed, err := snapshotRepo.BeginRollback(snapID)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if claimed == 0 {
+		release()
+		return nil, snapshotOpBusy(model.Snapshot{})
+	}
+	return release, nil
+}
+
 func (u *SnapshotService) SnapshotRecover(req dto.SnapshotRecover) error {
 	global.LOG.Info("start to recover panel by snapshot now")
 	snap, err := snapshotRepo.Get(commonRepo.WithByID(req.ID))
@@ -349,19 +449,33 @@ func (u *SnapshotService) SnapshotRecover(req dto.SnapshotRecover) error {
 	if !req.IsNew && len(snap.InterruptStep) != 0 && len(snap.RollbackStatus) != 0 {
 		return fmt.Errorf("the snapshot has been rolled back and cannot be restored again")
 	}
+	if snap.RecoverStatus == constant.StatusWaiting || snap.RollbackStatus == constant.StatusWaiting {
+		return snapshotOpBusy(snap)
+	}
+
+	release, err := claimRecoverOp(snap.ID)
+	if err != nil {
+		return err
+	}
 
 	baseDir := path.Join(global.CONF.System.TmpDir, fmt.Sprintf("system/%s", snap.Name))
 	if _, err := os.Stat(baseDir); err != nil && os.IsNotExist(err) {
 		_ = os.MkdirAll(baseDir, os.ModePerm)
 	}
 
-	if err := snapshotRepo.Update(snap.ID, map[string]interface{}{"recover_status": constant.StatusWaiting}); err != nil {
-		global.LOG.Errorf("update snapshot recover status to waiting failed, err: %v", err)
-	}
 	if err := settingRepo.Update("SystemStatus", "Recovering"); err != nil {
 		global.LOG.Errorf("update system status to Recovering failed, err: %v", err)
 	}
-	go u.HandleSnapshotRecover(snap, true, req)
+	// The goroutine holds the in-process claim until the restore flow has
+	// fully finished (the release runs only after the worker returned, i.e.
+	// after the success-path data swap and terminal status update, or a
+	// failure-path terminal update). The row itself carries recover_status
+	// Waiting for the same window, so a delete or a second recover of this
+	// snapshot is rejected from the entry until the flow settled.
+	go func() {
+		defer release()
+		u.HandleSnapshotRecover(snap, true, req)
+	}()
 	return nil
 }
 
@@ -371,9 +485,24 @@ func (u *SnapshotService) SnapshotRollback(req dto.SnapshotRecover) error {
 	if err != nil {
 		return err
 	}
+	if snap.RecoverStatus == constant.StatusWaiting || snap.RollbackStatus == constant.StatusWaiting {
+		return snapshotOpBusy(snap)
+	}
+
+	release, err := claimRollbackOp(snap.ID)
+	if err != nil {
+		return err
+	}
 	req.IsNew = false
 	snap.InterruptStep = "Readjson"
-	go u.HandleSnapshotRecover(snap, false, req)
+	// Same claim lifetime as SnapshotRecover; the rollback column carries
+	// rollback_status Waiting while the flow runs and a terminal status once
+	// HandleSnapshotRecover persisted it (updateRecoverStatus with
+	// isRecover=false clears the row on success).
+	go func() {
+		defer release()
+		u.HandleSnapshotRecover(snap, false, req)
+	}()
 	return nil
 }
 
@@ -661,9 +790,27 @@ func (u *SnapshotService) Delete(req dto.SnapshotBatchDelete) error {
 		global.LOG.Errorf("load local backup dir for snapshot cleanup failed, err: %v", err)
 	}
 	for _, snap := range snaps {
+		// Deleting a snapshot while a recover/rollback of it is in flight
+		// would remove the package the restore is reading and the scratch dir
+		// it extracts into, stranding the restore half-way (the H6 mixed-data
+		// hazard). The row carries recover_status Waiting for the whole
+		// in-flight window (and the in-process claim below covers the race
+		// before that status is persisted), so a waiting row is rejected here
+		// and the whole batch aborts — retrying after the restore settles
+		// works.
+		if snap.RecoverStatus == constant.StatusWaiting || snap.RollbackStatus == constant.StatusWaiting {
+			return fmt.Errorf("snapshot %s is being recovered or rolled back, cannot delete it now", snap.Name)
+		}
+		release := claimSnapshotOpLock(snap.ID)
+		if release == nil {
+			// Another recover/rollback/delete of this snapshot is in flight
+			// in this process (its Waiting row may not be persisted yet).
+			return snapshotOpBusy(snap)
+		}
 		if req.DeleteWithFile {
 			targetAccounts, err := loadClientMap(snap.From)
 			if err != nil {
+				release()
 				return err
 			}
 			for _, item := range targetAccounts {
@@ -676,8 +823,10 @@ func (u *SnapshotService) Delete(req dto.SnapshotBatchDelete) error {
 
 		_ = snapshotRepo.DeleteStatus(snap.ID)
 		if err := snapshotRepo.Delete(commonRepo.WithByID(snap.ID)); err != nil {
+			release()
 			return err
 		}
+		release()
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package repo
 
 import (
 	"github.com/1Panel-dev/1Panel/backend/app/model"
+	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
 )
 
@@ -12,6 +13,24 @@ type ISnapshotRepo interface {
 	Update(id uint, vars map[string]interface{}) error
 	Page(limit, offset int, opts ...DBOption) (int64, []model.Snapshot, error)
 	Delete(opts ...DBOption) error
+
+	// BeginRecover atomically marks the snapshot row as having a recover in
+	// flight (recover_status -> Waiting) via a conditional UPDATE. Waiting is
+	// the status the recover flow itself persists and the UI/hook understand,
+	// so the claim doubles as the in-flight marker. The WHERE clause rejects
+	// any row whose recover_status or rollback_status is Waiting or Running:
+	// a recover may not start while a recover, a rollback or a delete (see
+	// Delete) owns the row. Returns how many rows the update touched: 1 means
+	// this caller won the claim (also across panel processes on the same data
+	// dir), 0 means another flow already owns the snapshot.
+	BeginRecover(id uint) (int64, error)
+
+	// BeginRollback atomically marks the snapshot row as having a rollback in
+	// flight (rollback_status -> Waiting), mirroring BeginRecover on the
+	// rollback column. Recover and rollback are mutually exclusive because
+	// both flows replace the same live data directory: each begin refuses to
+	// start while the other column (or its own) is Waiting/Running.
+	BeginRollback(id uint) (int64, error)
 
 	GetStatus(snapID uint) (model.SnapshotStatus, error)
 	GetStatusList(opts ...DBOption) ([]model.SnapshotStatus, error)
@@ -64,6 +83,37 @@ func (u *SnapshotRepo) Create(Snapshot *model.Snapshot) error {
 
 func (u *SnapshotRepo) Update(id uint, vars map[string]interface{}) error {
 	return global.DB.Model(&model.Snapshot{}).Where("id = ?", id).Updates(vars).Error
+}
+
+// recoverOpBlockedStatuses are the row states that block a new
+// recover/rollback: Waiting/Running on either the recover or the rollback
+// column means a flow owns the row (in this process or another). A row with
+// a terminal status (Success/Failed) or no history is free to be recovered;
+// a row that was rolled back successfully is cleared entirely and free again.
+var recoverOpBlockedStatuses = []string{constant.StatusWaiting, constant.StatusRunning}
+
+// BeginRecover implements ISnapshotRepo.BeginRecover. RowsAffected is
+// guaranteed by the WHERE clause on the primary key: a single UPDATE row on
+// success, none when another flow already owns the snapshot.
+func (u *SnapshotRepo) BeginRecover(id uint) (int64, error) {
+	result := global.DB.Model(&model.Snapshot{}).
+		Where("id = ?", id).
+		Where("recover_status NOT IN (?) OR recover_status IS NULL", recoverOpBlockedStatuses).
+		Where("rollback_status NOT IN (?) OR rollback_status IS NULL", recoverOpBlockedStatuses).
+		Update("recover_status", constant.StatusWaiting)
+	return result.RowsAffected, result.Error
+}
+
+// BeginRollback implements ISnapshotRepo.BeginRollback: the rollback flow
+// owns the rollback_status column and refuses to start while a recover (or
+// another rollback) is in flight on either column.
+func (u *SnapshotRepo) BeginRollback(id uint) (int64, error) {
+	result := global.DB.Model(&model.Snapshot{}).
+		Where("id = ?", id).
+		Where("recover_status NOT IN (?) OR recover_status IS NULL", recoverOpBlockedStatuses).
+		Where("rollback_status NOT IN (?) OR rollback_status IS NULL", recoverOpBlockedStatuses).
+		Update("rollback_status", constant.StatusWaiting)
+	return result.RowsAffected, result.Error
 }
 
 func (u *SnapshotRepo) Delete(opts ...DBOption) error {
