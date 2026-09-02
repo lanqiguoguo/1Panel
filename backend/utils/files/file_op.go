@@ -1086,7 +1086,18 @@ func (f FileOp) decompressWithSDKWithLimits(srcFile string, dst string, cType Co
 		} else {
 			parentDir := path.Dir(filePath)
 			if !f.Stat(parentDir) {
-				if err := f.Fs.MkdirAll(parentDir, mode); err != nil {
+				// The parent directory is not an archive entry of its own
+				// (e.g. an archive that ships "data/file" without a "data/"
+				// entry): it is implied by a file entry, so it must be created
+				// with a directory-appropriate mode. Using the file entry's
+				// mode (typically 0644) would leave the directory without the
+				// owner-execute bit, making it unusable for any process that
+				// runs under a non-root uid inside the extracted tree (e.g. an
+				// app container writing to its data dir) - and this same
+				// handler extracts app-store packages whose containers then
+				// chown the tree to uid 1000. 0755 keeps the owner able to
+				// enter and write while staying group/other readable.
+				if err := f.Fs.MkdirAll(parentDir, 0755); err != nil {
 					return err
 				}
 			}
