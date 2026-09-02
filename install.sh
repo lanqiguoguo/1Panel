@@ -13,11 +13,14 @@
 #                                    (survives sudo, unlike environment variables)
 #   bash install.sh --pkg ./1panel-v1.10.35-lts-linux-amd64.tar.gz
 #                                    install from a local package, no download
+#   bash install.sh --docker         answer "yes" to the docker prompt
+#   bash install.sh --skip-docker    answer "no" to the docker prompt
 #   bash install.sh -u               uninstall the panel
 #
 # Non-interactive install: pre-set PANEL_BASE_DIR, PANEL_PORT, PANEL_USERNAME,
 # PANEL_PASSWORD, PANEL_ENTRANCE, PANEL_LANG or PANEL_PROXY to skip the
-# matching prompt/option.
+# matching prompt/option.  PANEL_INSTALL_DOCKER=y|n answers the docker prompt
+# non-interactively (--docker/--skip-docker do the same on the command line).
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,6 +45,7 @@ LOCAL_IP=""
 PUBLIC_IP=""
 PROXY_URL="${PANEL_PROXY:-}"
 LOCAL_PKG=""
+INSTALL_DOCKER_OPT=""
 
 # Keep an environment-supplied bootstrap password in the shell only.  Child
 # commands must not inherit it where it could be inspected through /proc.
@@ -64,6 +68,8 @@ function usage() {
     echo "  --proxy URL      route downloads through an explicit proxy, e.g. http://127.0.0.1:7890"
     echo "                   (PANEL_PROXY env does the same; survives sudo unlike exported vars)"
     echo "  --pkg FILE       install from a local package tar.gz instead of downloading"
+    echo "  --docker         yes to the docker install prompt (docker is optional)"
+    echo "  --skip-docker    no to the docker install prompt (default)"
     echo "  -u, --uninstall  uninstall the panel"
     echo "  -h, --help       show this help"
 }
@@ -467,15 +473,44 @@ function clear_install_password() {
     unset PANEL_PASSWORD
 }
 
+# ask_docker_install — decide whether docker should be installed now.
+# Non-interactive runs (stdin is not a tty) must not silently skip the only
+# install-time choice: answer from PANEL_INSTALL_DOCKER / --docker /
+# --skip-docker first, fall back to the controlling terminal like
+# set_password does, and only then to a "no" default.  No terminal at all
+# (no tty and no preset) means the operator is not present: skip without
+# prompting and let them enable the app store later.
+function ask_docker_install() {
+    local tty_fd answer
+    if [[ -n "$INSTALL_DOCKER_OPT" ]]; then
+        [[ "$INSTALL_DOCKER_OPT" == "y" ]]
+        return
+    fi
+    if [[ "${PANEL_INSTALL_DOCKER:-}" == "y" || "${PANEL_INSTALL_DOCKER:-}" == "n" ]]; then
+        [[ "$PANEL_INSTALL_DOCKER" == "y" ]]
+        return
+    fi
+    if ! exec {tty_fd}<>/dev/tty 2>/dev/null; then
+        log_warn "no terminal to ask about docker; install it manually and rerun app-store features afterwards"
+        return 1
+    fi
+    printf '%s' "docker not found, install it now? [y/N]: " >&"$tty_fd"
+    if ! IFS= read -r answer <&"$tty_fd"; then
+        printf '\n' >&"$tty_fd"
+        exec {tty_fd}>&-
+        log_warn "no terminal to ask about docker; install it manually and rerun app-store features afterwards"
+        return 1
+    fi
+    printf '\n' >&"$tty_fd"
+    exec {tty_fd}>&-
+    [[ "$answer" == "y" || "$answer" == "Y" ]]
+}
+
 function install_docker() {
     if command -v docker >/dev/null 2>&1; then
         log_info "docker detected: $(docker --version 2>/dev/null)"
     else
-        local answer=""
-        if [[ -t 0 ]]; then
-            read -r -p "docker not found, install it now? [y/N]: " answer
-        fi
-        if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
+        if ask_docker_install; then
             log_info "installing docker via get.docker.com ..."
             local proxy_args=()
             local docker_script
@@ -759,6 +794,14 @@ function main() {
                 fi
                 LOCAL_PKG="$2"
                 shift 2
+                ;;
+            --docker)
+                INSTALL_DOCKER_OPT="y"
+                shift
+                ;;
+            --skip-docker)
+                INSTALL_DOCKER_OPT="n"
+                shift
                 ;;
             -*)
                 echo "unknown option: $1"
