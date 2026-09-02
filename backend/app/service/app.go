@@ -323,6 +323,29 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 		err = buserr.New(constant.ErrCmdIllegal)
 		return
 	}
+	// Reserve the install name for the whole task — including the async
+	// goroutine that writes the install directory (AppInstallDir/<appKey>/<name>)
+	// and runs docker compose up on it. Without the reservation two concurrent
+	// same-name installs both pass the DB name check below (it is check-then-
+	// act), the second Create then loses the UNIQUE(name) race, and its deferred
+	// handleAppInstallErr would compose-down and delete the very directory the
+	// first install is still building — the path is derived from the name alone
+	// and identical for both requests. A losing request must return the
+	// duplicate-name error WITHOUT running any cleanup, so it never touches the
+	// winner's resources. The task claim is released when the async install
+	// goroutine finishes (see the goroutine below); any synchronous failure
+	// before that releases it here.
+	if !tryClaimAppTask(req.Name) {
+		err = buserr.New(constant.ErrAppNameExist)
+		return
+	}
+	taskClaimed := true
+	defer func() {
+		if taskClaimed {
+			releaseAppInstallTask(req.Name)
+		}
+	}()
+
 	if err = docker.CreateDefaultDockerNetwork(); err != nil {
 		err = buserr.WithDetail(constant.Err1PanelNetworkFailed, err.Error(), nil)
 		return
@@ -477,7 +500,7 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 
 	defer func() {
 		if err != nil {
-			hErr := handleAppInstallErr(ctx, appInstall)
+			hErr := handleAppInstallErr(ctx, appInstall, true)
 			if hErr != nil {
 				global.LOG.Errorf("delete app dir error %s", hErr.Error())
 			}
@@ -507,6 +530,13 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 	if err = createLink(ctx, app, appInstall, req.Params); err != nil {
 		return
 	}
+	// The per-name task claim taken at the top of Install is transferred to the
+	// async goroutine (synchronously, before it starts): it must stay held until
+	// the install task has finished writing the install directory and running
+	// the containers, so a concurrent same-name install/upgrade/rebuild/delete
+	// is rejected for the whole duration. Install's own deferred release (defer
+	// at the top of Install) is disarmed by the transfer.
+	taskClaimed = false
 	go func() {
 		// gErr is the goroutine's own error. It must never touch the named
 		// return value err: Install returns while this goroutine may still be
@@ -517,6 +547,7 @@ func (a AppService) Install(ctx context.Context, req request.AppInstallCreate) (
 		// this goroutine's own defer: status UpErr + message persisted and the
 		// in-memory port claims released, without deleting the install dir.
 		var gErr error
+		defer releaseAppInstallTask(appInstall.Name)
 		defer func() {
 			if gErr != nil {
 				appInstall.Status = constant.UpErr

@@ -236,30 +236,46 @@ func (a *AppInstallService) Operate(req request.AppInstalledOperate) error {
 	if !req.ForceDelete && !files.NewFileOp().Stat(install.GetPath()) {
 		return buserr.New(constant.ErrInstallDirNotFound)
 	}
-	dockerComposePath := install.GetComposePath()
+	// The per-name task claim is acquired by every branch that mutates the
+	// install directory / compose file or flips a task status (rebuild, delete,
+	// upgrade) and — for start/stop/restart — by branches whose docker compose
+	// invocation could hit a compose file that an in-flight install/upgrade/
+	// rebuild is still bouncing: a Stop racing an upgrade's compose down would
+	// otherwise fail and persist a stale UpErr over the row's Upgrading status
+	// (handleErr saves the whole row). The claim is released when the whole
+	// task — including the async goroutines' error handling — has finished; the
+	// light-weight read branches (sync) only derive the row status from the
+	// containers and never mutate the install resources, so they do not need it.
 	switch req.Operate {
 	case constant.Rebuild:
-		return rebuildApp(install)
-	case constant.Start:
-		out, err := compose.Start(dockerComposePath)
+		return rebuildApp(install, false)
+	case constant.Start, constant.Stop, constant.Restart:
+		if !tryClaimAppTask(install.Name) {
+			return appTaskBusy()
+		}
+		var out string
+		switch req.Operate {
+		case constant.Start:
+			out, err = compose.Start(install.GetComposePath())
+		case constant.Stop:
+			out, err = compose.Stop(install.GetComposePath())
+		case constant.Restart:
+			out, err = compose.Restart(install.GetComposePath())
+		}
 		if err != nil {
+			releaseAppInstallTask(install.Name)
 			return handleErr(install, err, out)
 		}
-		return syncAppInstallStatus(&install, false)
-	case constant.Stop:
-		out, err := compose.Stop(dockerComposePath)
-		if err != nil {
-			return handleErr(install, err, out)
-		}
-		return syncAppInstallStatus(&install, false)
-	case constant.Restart:
-		out, err := compose.Restart(dockerComposePath)
-		if err != nil {
-			return handleErr(install, err, out)
-		}
-		return syncAppInstallStatus(&install, false)
+		syncErr := syncAppInstallStatus(&install, false)
+		releaseAppInstallTask(install.Name)
+		return syncErr
 	case constant.Delete:
-		if err := deleteAppInstall(install, req.DeleteBackup, req.ForceDelete, req.DeleteDB); err != nil && !req.ForceDelete {
+		if !tryClaimAppTask(install.Name) {
+			return appTaskBusy()
+		}
+		err := deleteAppInstall(install, req.DeleteBackup, req.ForceDelete, req.DeleteDB)
+		releaseAppInstallTask(install.Name)
+		if err != nil && !req.ForceDelete {
 			return err
 		}
 		return nil
@@ -286,6 +302,24 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 	if err != nil {
 		return err
 	}
+	// The config update rewrites the install's .env and docker-compose.yml and
+	// then bounces the app (rebuildApp); the per-name task claim must be held
+	// across the file writes AND the async rebuild so a concurrent
+	// install/upgrade/rebuild/delete of the same app cannot interleave with
+	// them. On an error return the claim is released here; on success it is
+	// handed to the rebuild goroutine (rebuildApp with alreadyClaimed=true),
+	// which releases it when the bounce has finished. A request that loses the
+	// claim is rejected without touching any file.
+	if !tryClaimAppTask(installed.Name) {
+		return appTaskBusy()
+	}
+	rebuildStarted := false
+	defer func() {
+		if err != nil && !rebuildStarted {
+			releaseAppInstallTask(installed.Name)
+		}
+	}()
+
 	oldHttpPort, oldHttpsPort := installed.HttpPort, installed.HttpsPort
 	var claimedHttp, claimedHttps int
 	var claimedHttpToken, claimedHttpsToken uint64
@@ -397,11 +431,14 @@ func (a *AppInstallService) Update(req request.AppInstalledUpdate) (err error) {
 	}
 	fileOp := files.NewFileOp()
 	_ = fileOp.WriteFile(installed.GetComposePath(), strings.NewReader(installed.DockerCompose), 0755)
-	if err := rebuildApp(installed); err != nil {
+	if err := rebuildApp(installed, true); err != nil {
 		_ = env.Write(backupEnvMaps, envPath)
 		_ = fileOp.WriteFile(installed.GetComposePath(), strings.NewReader(backupDockerCompose), 0755)
 		return err
 	}
+	// The rebuild goroutine took over the per-name task claim and releases it
+	// when the bounce has finished; this request must not release it again.
+	rebuildStarted = true
 	// The old ports are released while this install's DB row still holds them:
 	// until the Save below commits the new ports, checkPort's DB lookup rejects
 	// any concurrent claimant of the old ports, so a claim on them (if any) can
@@ -842,6 +879,15 @@ func updateInstallInfoInDB(appKey, appName, param string, value interface{}) err
 	if err != nil {
 		return nil
 	}
+	// The change rewrites the install's .env and then restarts it (compose
+	// down/up); claim the install name for the whole mutation so it cannot
+	// interleave with a concurrent upgrade/rebuild/delete of the same install.
+	// A losing request is rejected with the task-busy error before it touches
+	// any file.
+	if !tryClaimAppTask(appInstall.Name) {
+		return appTaskBusy()
+	}
+	defer releaseAppInstallTask(appInstall.Name)
 	envPath := fmt.Sprintf("%s/%s/.env", appInstall.AppPath, appInstall.Name)
 	lineBytes, err := os.ReadFile(envPath)
 	if err != nil {

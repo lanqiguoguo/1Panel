@@ -31,6 +31,7 @@ type IAppInstallRepo interface {
 	Create(ctx context.Context, install *model.AppInstall) error
 	Save(ctx context.Context, install *model.AppInstall) error
 	UpdateStatusByID(id uint, oldStatus, newStatus string) (int64, error)
+	TryBeginOperate(id uint, allowedStatuses []string, newStatus string) (int64, error)
 	UpdateFieldsByID(id uint, fields map[string]interface{}) (int64, error)
 	DeleteBy(opts ...DBOption) error
 	Delete(ctx context.Context, install model.AppInstall) error
@@ -141,6 +142,24 @@ func (a *AppInstallRepo) Save(ctx context.Context, install *model.AppInstall) er
 func (a *AppInstallRepo) UpdateStatusByID(id uint, oldStatus, newStatus string) (int64, error) {
 	db := getDb().Model(&model.AppInstall{})
 	result := db.Where("id = ? AND status = ?", id, oldStatus).Update("status", newStatus)
+	return result.RowsAffected, result.Error
+}
+
+// TryBeginOperate atomically moves the install row with the given id from any of
+// the allowed statuses into newStatus via a conditional UPDATE ... WHERE status
+// IN (...). It returns how many rows the update touched (1 = this caller won the
+// race and now owns the only mutating operation on the install; 0 = another
+// install/upgrade/rebuild/delete is already in flight, or the row sits in a
+// state no mutating operation may start from). RowsAffected is guaranteed by the
+// WHERE clause on the primary key. The same pattern guards the SSL apply flow
+// (WebsiteSSLRepo.TryBeginApply); the install/upgrade/rebuild/delete flows are
+// additionally serialized per install name in-process so that the loser of the
+// CAS can never mistake the winner's directory for its own during cleanup.
+func (a *AppInstallRepo) TryBeginOperate(id uint, allowedStatuses []string, newStatus string) (int64, error) {
+	result := getDb().Model(&model.AppInstall{}).
+		Where("id = ?", id).
+		Where("status IN (?)", allowedStatuses).
+		Update("status", newStatus)
 	return result.RowsAffected, result.Error
 }
 

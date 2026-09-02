@@ -63,6 +63,7 @@ ErrAppBackup: '{{ .name }} application backup failed err {{.err}}'
 ErrImagePull: '{{ .name }} image pull failed err {{.err}}'
 ErrVersionTooLow: 'The current 1Panel version is too low for updating the app store, please upgrade the version'
 ErrAppNameExist: 'App name is already exist'
+ErrAppOperateRunning: "The app is installing, upgrading or rebuilding. Please try again later"
 AppStoreIsSyncing: 'The App Store is syncing, please try again later'
 ErrGetCompose: "Failed to obtain docker-compose.yml file! {{ .detail }}"
 ErrAppWarn: "Abnormal status, please check the log"

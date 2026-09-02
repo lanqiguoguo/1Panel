@@ -72,6 +72,7 @@ var (
 	ErrInstallDirNotFound  = "ErrInstallDirNotFound"
 	ErrContainerName       = "ErrContainerName"
 	ErrAppNameExist        = "ErrAppNameExist"
+	ErrAppOperateRunning   = "ErrAppOperateRunning"
 	ErrFileNotFound        = "ErrFileNotFound"
 	ErrFileParseApp        = "ErrFileParseApp"
 	ErrAppParamKey         = "ErrAppParamKey"

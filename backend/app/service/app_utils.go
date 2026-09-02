@@ -103,6 +103,100 @@ func forceReleaseAppPort(port int) {
 	registeredPorts.Delete(port)
 }
 
+// appInstallTaskBusy tracks which install names currently have a mutating
+// app-install flow in flight: install (the row does not exist yet), upgrade,
+// rebuild, port reload (updateInstallInfoInDB) and delete. All of them act on
+// the same on-disk install directory (AppInstallDir/<appKey>/<name>, its
+// docker-compose.yml and .env) and flip the same DB row between
+// Installing/Upgrading/Rebuilding, and they are otherwise check-then-act and
+// fire-and-forget:
+//
+//   - Install checks the name against the DB (app.go) and an async goroutine
+//     writes the install directory afterwards;
+//   - upgradeInstall and rebuildApp persist the Upgrading/Rebuilding status and
+//     let an async goroutine compose down/up the shared compose file;
+//   - deleteAppInstall removes the directory while upgrade/rebuild may still be
+//     backing up / rolling back inside it;
+//
+// so without a per-name claim two concurrent requests can interleave down/up of
+// the same compose file, backup/unpack/rollback overwriting each other, or the
+// loser's error cleanup can delete the winner's still-in-use directory
+// (Install's deferred handleAppInstallErr cleans the path derived from the
+// name — identical for both requests).
+//
+// The claim is the in-process equivalent of the DB status CAS
+// (TryBeginOperate): presence in the map means a task owns the name. A second
+// request for the same name is rejected up front with a "task in progress"
+// business error and must NOT run any resource cleanup, because the directory,
+// compose file and DB row belong to the winner. The map is in-memory only; a
+// panel restart clears it and SyncAll(systemInit=true) at startup resets any
+// row left Installing/Upgrading/Rebuilding by a task killed in the restart.
+var (
+	appInstallTaskMu   sync.Mutex
+	appInstallTaskBusy = map[string]bool{}
+)
+
+// appInstallTaskKey normalizes an install name to its task-claim key. The DB
+// install-name check is case-insensitive (WithByLowerName), so the in-process
+// claim must treat "Foo" and "foo" as the same install too; the on-disk
+// directories differ by case, but a concurrent install of a name that only
+// differs in case from a row that is about to be created would otherwise slip
+// past the LOWER(name) check exactly like the duplicate-name race this guard
+// closes.
+func appInstallTaskKey(name string) string {
+	return strings.ToLower(name)
+}
+
+// tryClaimAppTask attempts to become the only in-flight task owner for the
+// install with the given name. It never blocks: when another install/upgrade/
+// rebuild/delete is already running under the name the claim fails and the
+// caller must return appTaskBusy() without touching any resource. The caller
+// must pair a successful claim with a deferred releaseAppInstallTask(name).
+func tryClaimAppTask(name string) bool {
+	key := appInstallTaskKey(name)
+	appInstallTaskMu.Lock()
+	defer appInstallTaskMu.Unlock()
+	if appInstallTaskBusy[key] {
+		return false
+	}
+	appInstallTaskBusy[key] = true
+	return true
+}
+
+// releaseAppInstallTask ends the task ownership claimed by tryClaimAppTask.
+// It is called by the task owner when the whole async flow (including its
+// error handling and rollback) has finished, so the next request for the same
+// name can start only against a settled install directory and row.
+func releaseAppInstallTask(name string) {
+	appInstallTaskMu.Lock()
+	defer appInstallTaskMu.Unlock()
+	delete(appInstallTaskBusy, appInstallTaskKey(name))
+}
+
+// appTaskBusy is the business error reported when a mutating app-install flow
+// loses the per-name task claim or the DB status CAS to a concurrent
+// install/upgrade/rebuild/delete. The losing request must not run any resource
+// cleanup: the directory, compose file and DB row belong to the winner.
+func appTaskBusy() error {
+	return buserr.New(constant.ErrAppOperateRunning)
+}
+
+// appTaskIdleStatuses are the install row states an upgrade/rebuild may start
+// from: the row is not currently being installed, upgraded or rebuilt by any
+// task. Every status the async install/upgrade/rebuild flows persist while
+// they own the row (Installing, Upgrading, Rebuilding) is deliberately absent,
+// so TryBeginOperate can never hand the row to a second mutator.
+var appTaskIdleStatuses = []string{
+	constant.Running,
+	constant.Stopped,
+	constant.Error,
+	constant.UpErr,
+	constant.UpgradeErr,
+	constant.UnHealthy,
+	constant.Paused,
+	constant.DownloadErr,
+}
+
 // resetAppPortClaims drops every port claim at once. Only for snapshot
 // recover/rollback completion: those flows replace the whole app_installs
 // table with the snapshot's rows and restart the panel into the recovered
@@ -378,14 +472,27 @@ func createLink(ctx context.Context, app model.App, appInstall *model.AppInstall
 	return nil
 }
 
-func handleAppInstallErr(ctx context.Context, install *model.AppInstall) error {
-	op := files.NewFileOp()
-	appDir := install.GetPath()
-	dir, _ := os.Stat(appDir)
-	if dir != nil {
-		_, _ = compose.Down(install.GetComposePath())
-		if err := op.DeleteDir(appDir); err != nil {
-			return err
+// handleAppInstallErr cleans up the resources of an install request that
+// failed on the synchronous path of Install. cleanupOwned is the precise
+// ownership guard for concurrent same-name installs: only the request that
+// actually created the app_installs row (install.ID > 0) may touch the install
+// directory and run compose down on it, because that path is derived from the
+// install name alone and is identical for every request with that name. A
+// request whose Create lost the race against a concurrent install (no row, no
+// ID) owns nothing: the directory and any containers under the name belong to
+// the winner, so it must return the duplicate-name business error instead of
+// deleting them. deleteLink is safe to run in both cases — with no row no
+// resources were linked.
+func handleAppInstallErr(ctx context.Context, install *model.AppInstall, cleanupOwned bool) error {
+	if cleanupOwned && install.ID > 0 {
+		op := files.NewFileOp()
+		appDir := install.GetPath()
+		dir, _ := os.Stat(appDir)
+		if dir != nil {
+			_, _ = compose.Down(install.GetComposePath())
+			if err := op.DeleteDir(appDir); err != nil {
+				return err
+			}
 		}
 	}
 	if err := deleteLink(ctx, install, true, true, true); err != nil {
@@ -394,6 +501,15 @@ func handleAppInstallErr(ctx context.Context, install *model.AppInstall) error {
 	return nil
 }
 
+// deleteAppInstall removes an install: compose down, uninstall script, DB row,
+// linked resources, backups and the install directory. The whole flow runs
+// under the per-name task claim, so it cannot interleave with a concurrent
+// upgrade/rebuild/port reload of the same install (which compose down/up the
+// same compose file and write the same directory). The caller decides whether
+// the claim was already acquired (install + port-reload paths) or must be
+// acquired here (delete paths); the deferred release must be paired with the
+// acquisition, not with this function, so it always releases the claim the
+// request actually owns.
 func deleteAppInstall(install model.AppInstall, deleteBackup bool, forceDelete bool, deleteDB bool) error {
 	op := files.NewFileOp()
 	appDir := install.GetPath()
@@ -620,9 +736,36 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 	if install.Version == detail.Version {
 		return errors.New("two version is same")
 	}
+	// Claim the install name for the whole upgrade task, including the async
+	// goroutine that composes down/up the shared docker-compose file, backs the
+	// app up and rolls it back inside the install directory. A concurrent
+	// install/upgrade/rebuild/delete of the same install is rejected up front,
+	// so two upgrade/rebuild goroutines can never interleave down/up of the
+	// same compose file or overwrite each other's backups.
+	if !tryClaimAppTask(install.Name) {
+		return appTaskBusy()
+	}
+	// Atomically reserve the upgrade right on the DB row: only a row that is
+	// not already installing/upgrading/rebuilding may move to Upgrading. A
+	// failed claim (rows == 0) means another task is already in flight or the
+	// row sits in a state an upgrade may not start from — release the name
+	// claim and report the clear business error, leaving the row untouched.
+	claimed, err := appInstallRepo.TryBeginOperate(req.InstallID, appTaskIdleStatuses, constant.Upgrading)
+	if err != nil {
+		releaseAppInstallTask(install.Name)
+		return err
+	}
+	if claimed == 0 {
+		releaseAppInstallTask(install.Name)
+		return appTaskBusy()
+	}
 	install.Status = constant.Upgrading
 
 	go func() {
+		// The name claim is owned by this goroutine from here on: it must stay
+		// held until the upgrade task — including its deferred rollback — has
+		// finished with the install directory and compose file.
+		defer releaseAppInstallTask(install.Name)
 		var (
 			upErr      error
 			backupFile string
@@ -659,7 +802,10 @@ func upgradeInstall(req request.AppInstallUpgrade) error {
 				global.LOG.Infof(i18n.GetMsgWithName("ErrAppUpgrade", install.Name, upErr))
 				if req.Backup && backupFile != "" {
 					global.LOG.Infof(i18n.GetMsgWithName("AppRecover", install.Name, nil))
-					if err := NewIBackupService().AppRecover(dto.CommonRecover{Name: install.App.Key, DetailName: install.Name, Type: "app", Source: constant.ResourceLocal, File: backupFile}); err != nil {
+					// The rollback runs inside this goroutine, which already
+					// owns the per-name task claim; recoverAppInstallUnclaimed
+					// skips the re-claim that AppRecover would otherwise take.
+					if err := recoverAppInstallUnclaimed(&install, dto.CommonRecover{Name: install.App.Key, DetailName: install.Name, Type: "app", Source: constant.ResourceLocal, File: backupFile}); err != nil {
 						global.LOG.Errorf("recover app [%s] [%s] failed %v", install.App.Key, install.Name, err)
 						if out, upErr := compose.Up(install.GetComposePath()); upErr != nil {
 							if out != "" {
@@ -1227,10 +1373,42 @@ func persistInstallResult(appInstall *model.AppInstall, upErr error, containerNa
 	}
 }
 
-func rebuildApp(appInstall model.AppInstall) error {
+// rebuildApp bounces an install: it reserves the right to rebuild on the DB row
+// (status CAS into Rebuilding) and lets an async goroutine compose down/up the
+// shared docker-compose file. The goroutine owns the per-name task claim until
+// the whole rebuild — including its error handling — has finished, so a
+// concurrent upgrade/rebuild/delete of the same install is rejected for the
+// entire bounce and the row can never be handed to two mutators.
+//
+// Callers that do not hold the per-name task claim (Operate/rebuild) pass
+// alreadyClaimed=false and rebuildApp claims (and, on success, transfers) it.
+// Callers that already hold the claim because they mutate the same install
+// directory before bouncing it (the config Update flow writes .env and
+// docker-compose.yml) pass alreadyClaimed=true: on an error return the claim
+// stays with the caller, on success it moves to the spawned goroutine.
+func rebuildApp(appInstall model.AppInstall, alreadyClaimed bool) error {
+	if !alreadyClaimed {
+		if !tryClaimAppTask(appInstall.Name) {
+			return appTaskBusy()
+		}
+	}
+	claimed, err := appInstallRepo.TryBeginOperate(appInstall.ID, appTaskIdleStatuses, constant.Rebuilding)
+	if err != nil {
+		if !alreadyClaimed {
+			releaseAppInstallTask(appInstall.Name)
+		}
+		return err
+	}
+	if claimed == 0 {
+		if !alreadyClaimed {
+			releaseAppInstallTask(appInstall.Name)
+		}
+		return appTaskBusy()
+	}
 	appInstall.Status = constant.Rebuilding
 	_ = appInstallRepo.Save(context.Background(), &appInstall)
 	go func() {
+		defer releaseAppInstallTask(appInstall.Name)
 		writeBack := func(status, message string) {
 			if _, err := appInstallRepo.UpdateStatusByID(appInstall.ID, constant.Rebuilding, status); err != nil {
 				global.LOG.Errorf("update app [%s] status failed %v", appInstall.Name, err)
@@ -1267,7 +1445,6 @@ func rebuildApp(appInstall model.AppInstall) error {
 	}()
 	return nil
 }
-
 func getAppDetails(details []model.AppDetail, versions []dto.AppConfigVersion) map[string]model.AppDetail {
 	appDetails := make(map[string]model.AppDetail, len(details))
 	for _, old := range details {
@@ -1860,6 +2037,15 @@ func updateToolApp(installed *model.AppInstall) {
 	if reflect.DeepEqual(toolInstall, model.AppInstall{}) {
 		return
 	}
+	// The tool install's .env is rewritten and the tool app bounced (compose
+	// down/up); claim the tool's name for the whole mutation so a concurrent
+	// delete/upgrade/rebuild of the tool cannot interleave with it. A losing
+	// claim is skipped (the tool app will pick the change up on its next
+	// restart) instead of racing the owner.
+	if !tryClaimAppTask(toolInstall.Name) {
+		return
+	}
+	defer releaseAppInstallTask(toolInstall.Name)
 	paramMap := make(map[string]string)
 	_ = json.Unmarshal([]byte(installed.Param), &paramMap)
 	envMap := make(map[string]interface{})

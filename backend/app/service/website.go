@@ -504,7 +504,15 @@ func (w WebsiteService) DeleteWebsite(req request.WebsiteDelete) error {
 	if checkIsLinkApp(website) && req.DeleteApp {
 		appInstall, _ := appInstallRepo.GetFirst(commonRepo.WithByID(website.AppInstallID))
 		if appInstall.ID > 0 {
-			if err = deleteAppInstall(appInstall, true, req.ForceDelete, true); err != nil && !req.ForceDelete {
+			// Claim the install name for the delete so it cannot race a
+			// concurrent upgrade/rebuild/port-reload of the same install; the
+			// claim is released right after the synchronous delete finishes.
+			if !tryClaimAppTask(appInstall.Name) {
+				return appTaskBusy()
+			}
+			err = deleteAppInstall(appInstall, true, req.ForceDelete, true)
+			releaseAppInstallTask(appInstall.Name)
+			if err != nil && !req.ForceDelete {
 				return err
 			}
 		}
@@ -1429,6 +1437,14 @@ func (w WebsiteService) ChangePHPVersion(req request.WebsitePHPVersionReq) error
 	if err != nil {
 		return err
 	}
+	// The version switch rewrites the runtime install's .env, conf and compose
+	// file and bounces it (compose down/up); claim the install name for the
+	// whole switch so it cannot interleave with a concurrent
+	// install/upgrade/rebuild/delete of the same runtime install.
+	if !tryClaimAppTask(appInstall.Name) {
+		return appTaskBusy()
+	}
+	defer releaseAppInstallTask(appInstall.Name)
 	appDetail, err := appDetailRepo.GetFirst(commonRepo.WithByID(runtime.AppDetailID))
 	if err != nil {
 		return err

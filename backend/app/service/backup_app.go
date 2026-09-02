@@ -73,6 +73,12 @@ func (u *BackupService) AppBackup(req dto.CommonBackup) (*model.BackupRecord, er
 	return record, nil
 }
 
+// AppRecover restores an app install from a backup file. The restore rewrites
+// the install directory, its .env/docker-compose.yml and bounces the app
+// (compose down/up), so it runs under the per-name task claim: a concurrent
+// install/upgrade/rebuild/delete of the same install is rejected up front. The
+// upgrade flow's automatic rollback calls recoverAppInstallUnclaimed instead —
+// it runs inside the upgrade goroutine that already owns the claim.
 func (u *BackupService) AppRecover(req dto.CommonRecover) error {
 	app, err := appRepo.GetFirst(appRepo.WithKey(req.Name))
 	if err != nil {
@@ -82,7 +88,17 @@ func (u *BackupService) AppRecover(req dto.CommonRecover) error {
 	if err != nil {
 		return err
 	}
+	if !tryClaimAppTask(install.Name) {
+		return appTaskBusy()
+	}
+	defer releaseAppInstallTask(install.Name)
+	return recoverAppInstallUnclaimed(&install, req)
+}
 
+// recoverAppInstallUnclaimed is the claim-free core of AppRecover. It must
+// only be called by flows that already own the per-name task claim of install
+// (the upgrade rollback inside the upgrade goroutine).
+func recoverAppInstallUnclaimed(install *model.AppInstall, req dto.CommonRecover) error {
 	fileOp := files.NewFileOp()
 	if !fileOp.Stat(req.File) {
 		return buserr.WithName("ErrFileNotFound", req.File)
@@ -90,7 +106,7 @@ func (u *BackupService) AppRecover(req dto.CommonRecover) error {
 	if _, err := compose.Down(install.GetComposePath()); err != nil {
 		return err
 	}
-	if err := handleAppRecover(&install, req.File, false, req.Secret); err != nil {
+	if err := handleAppRecover(install, req.File, false, req.Secret); err != nil {
 		return err
 	}
 	return nil
