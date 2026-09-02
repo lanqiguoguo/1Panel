@@ -201,7 +201,17 @@ func snapPanelData(snap snapHelper, localDir, targetDir string) {
 	}
 	status := constant.StatusDone
 	dataDir := path.Join(global.CONF.System.BaseDir, "1panel")
-	exclusionRules := "./tmp;./log;./cache;./db/1Panel.db-*;"
+	// The password-envelope RSA private key (secret/password_rsa) is packed
+	// with the live data directory by tar below and would otherwise end up
+	// inside the snapshot payload — a full copy of the current login-envelope
+	// key in every backup. It is excluded because the restore path must not
+	// carry this key: the panel database shipped in the same payload holds the
+	// EncryptKey-wrapped row (password_rsa_store.go), and the startup
+	// convergence re-derives the file from that row after a restore, keeping
+	// the served PASSWORD_PUBLIC_KEY paired with the private key. Excluding
+	// the file also keeps historical in-transit password envelopes of a stolen
+	// snapshot undecryptable offline.
+	exclusionRules := "./tmp;./log;./cache;./db/1Panel.db-*;./secret/password_rsa;"
 	if strings.Contains(localDir, dataDir) {
 		exclusionRules += ("." + strings.ReplaceAll(localDir, dataDir, "") + ";")
 	}

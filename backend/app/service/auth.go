@@ -228,9 +228,7 @@ func (u *AuthService) IsLogin(c *gin.Context) bool {
 }
 
 func checkPassword(password string) error {
-	priKey, _ := settingRepo.Get(settingRepo.WithByKey("PASSWORD_PRIVATE_KEY"))
-
-	privateKey, err := encrypt.ParseRSAPrivateKey(priKey.Value)
+	privateKey, err := LoadPasswordPrivateKey()
 	if err != nil {
 		return err
 	}

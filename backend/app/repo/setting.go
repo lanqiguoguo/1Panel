@@ -15,6 +15,7 @@ type ISettingRepo interface {
 	Get(opts ...DBOption) (model.Setting, error)
 	Create(key, value string) error
 	Update(key, value string) error
+	Delete(key string) error
 	WithByKey(key string) DBOption
 	UpdateOrCreate(key, value string) error
 
@@ -66,6 +67,10 @@ func (c *SettingRepo) WithByKey(key string) DBOption {
 
 func (u *SettingRepo) Update(key, value string) error {
 	return global.DB.Model(&model.Setting{}).Where("key = ?", key).Updates(map[string]interface{}{"value": value}).Error
+}
+
+func (u *SettingRepo) Delete(key string) error {
+	return global.DB.Where("key = ?", key).Delete(&model.Setting{}).Error
 }
 
 func (u *SettingRepo) CreateMonitorBase(model model.MonitorBase) error {

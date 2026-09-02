@@ -2,7 +2,6 @@ package service
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -543,13 +542,12 @@ func (u *SettingService) LoadFromCert() (*dto.SSLInfo, error) {
 // decryptEnvelope decrypts an RSA/AES password envelope produced by the
 // frontend encryptPassword() helper (format: "RSA(aesKey):iv:aesCiphertext"),
 // mirroring the login flow in auth.go checkPassword: it loads the RSA private
-// key from the PASSWORD_PRIVATE_KEY setting and fails closed when the key is
-// missing or unparseable (the raw parse/decrypt error is returned, the same
-// error login returns), so plaintext passwords are never accepted.
+// key through the password key store (file-first, settings row fallback, see
+// password_rsa.go) and fails closed when no key is usable (the raw parse error
+// is returned, the same error login returns), so plaintext passwords are
+// never accepted.
 func decryptEnvelope(envelope string) (string, error) {
-	priKey, _ := settingRepo.Get(settingRepo.WithByKey("PASSWORD_PRIVATE_KEY"))
-
-	privateKey, err := encrypt.ParseRSAPrivateKey(priKey.Value)
+	privateKey, err := LoadPasswordPrivateKey()
 	if err != nil {
 		return "", err
 	}
@@ -784,25 +782,15 @@ func exportPublicKeyToPEM(publicKey *rsa.PublicKey) (string, error) {
 	return string(publicKeyPEM), nil
 }
 
+// GenerateRSAKey ensures the password-envelope RSA keypair exists. It is the
+// startup convergence point (business.Init calls it before the router starts
+// serving): ensurePasswordRSAKey (password_rsa_store.go) detects an existing
+// usable key across the key file and the settings row, upgrades legacy
+// plaintext rows to the EncryptKey-wrapped form, materialises the 0600 key
+// file from the row when the file is missing (restore/rollback case), and
+// only generates a fresh keypair when nothing usable exists. GenerateRSAKey
+// returns nil both when a key already exists and after a fresh generation,
+// matching the historical idempotent contract.
 func (u *SettingService) GenerateRSAKey() error {
-	priKey, _ := settingRepo.Get(settingRepo.WithByKey("PASSWORD_PRIVATE_KEY"))
-	pubKey, _ := settingRepo.Get(settingRepo.WithByKey("PASSWORD_PUBLIC_KEY"))
-	if priKey.Value != "" && pubKey.Value != "" {
-		return nil
-	}
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return err
-	}
-	privateKeyPEM := exportPrivateKeyToPEM(privateKey)
-	publicKeyPEM, _ := exportPublicKeyToPEM(&privateKey.PublicKey)
-	err = settingRepo.UpdateOrCreate("PASSWORD_PRIVATE_KEY", privateKeyPEM)
-	if err != nil {
-		return err
-	}
-	err = settingRepo.UpdateOrCreate("PASSWORD_PUBLIC_KEY", publicKeyPEM)
-	if err != nil {
-		return err
-	}
-	return nil
+	return ensurePasswordRSAKey()
 }
