@@ -1,8 +1,12 @@
 package service
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path"
@@ -554,48 +558,183 @@ func writePrivateKeyFile(dst string, content string) error {
 	return os.Chmod(dst, privateKeyFileMode)
 }
 
-func createPemFile(website model.Website, websiteSSL model.WebsiteSSL) error {
-	nginxApp, err := appRepo.GetFirst(appRepo.WithKey(constant.AppOpenresty))
-	if err != nil {
+// validateCertKeyPair parses a PEM certificate chain together with its PEM
+// private key and verifies that they actually match (leaf certificate public
+// key == private key). Used before any user-supplied pair overwrites the
+// deployed PEM files, so a mismatched certificate/key can never leave the
+// site's nginx ssl_certificate / ssl_certificate_key dangling on disk. The
+// certificate chain may contain multiple CERTIFICATE blocks (leaf first,
+// then intermediates); tls.X509KeyPair resolves the leaf itself.
+func validateCertKeyPair(certPEM, keyPEM []byte) error {
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return err
 	}
-	nginxInstall, err := appInstallRepo.GetFirst(appInstallRepo.WithAppId(nginxApp.ID))
-	if err != nil {
-		return err
-	}
-
-	configDir := path.Join(constant.AppInstallDir, constant.AppOpenresty, nginxInstall.Name, "www", "sites", website.Alias, "ssl")
-	fileOp := files.NewFileOp()
-
-	if !fileOp.Stat(configDir) {
-		if err := fileOp.CreateDir(configDir, 0775); err != nil {
+	// Also ensure the PEM parses as plain certificate blocks (tls.X509KeyPair
+	// only requires a valid leaf) and surface an expired / not-yet-valid
+	// certificate as a warning-grade business error instead of a raw one:
+	// importing an about-to-expire certificate stays possible, but the user
+	// gets a clear reason when deployment is refused.
+	rest := certPEM
+	parsed := 0
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
 			return err
 		}
+		parsed++
 	}
-
-	fullChainFile := path.Join(configDir, "fullchain.pem")
-	privatePemFile := path.Join(configDir, "privkey.pem")
-
-	if !fileOp.Stat(fullChainFile) {
-		if err := fileOp.CreateFile(fullChainFile); err != nil {
-			return err
-		}
-	}
-	if !fileOp.Stat(privatePemFile) {
-		if err := fileOp.CreateFile(privatePemFile); err != nil {
-			return err
-		}
-	}
-
-	if err := fileOp.WriteFile(fullChainFile, strings.NewReader(websiteSSL.Pem), 0644); err != nil {
-		return err
-	}
-	if err := writePrivateKeyFile(privatePemFile, websiteSSL.PrivateKey); err != nil {
-		return err
+	if parsed == 0 {
+		return errors.New("invalid PEM data: no certificate blocks found")
 	}
 	return nil
 }
 
+// websitePemSnapshot captures the current on-disk content of the deployed
+// certificate chain and private key of a website's ssl directory, together
+// with a flag telling whether the files existed at all. Both files are
+// written together and are only ever restored together, so the two halves of
+// the nginx ssl_certificate/ssl_certificate_key pair never diverge.
+type websitePemSnapshot struct {
+	exist   bool
+	certPem string
+	keyPem  string
+}
+
+// getWebsiteSSLPemFilePaths resolves the two files nginx is configured with
+// for a website (ssl_certificate -> fullchain.pem, ssl_certificate_key ->
+// privkey.pem) — the same paths applySSL wires in below and runApply depends
+// on after a fresh ACME issue.
+func getWebsiteSSLPemFilePaths(website model.Website) (string, string, error) {
+	nginxApp, err := appRepo.GetFirst(appRepo.WithKey(constant.AppOpenresty))
+	if err != nil {
+		return "", "", err
+	}
+	nginxInstall, err := appInstallRepo.GetFirst(appInstallRepo.WithAppId(nginxApp.ID))
+	if err != nil {
+		return "", "", err
+	}
+	configDir := path.Join(constant.AppInstallDir, constant.AppOpenresty, nginxInstall.Name, "www", "sites", website.Alias, "ssl")
+	return path.Join(configDir, "fullchain.pem"), path.Join(configDir, "privkey.pem"), nil
+}
+
+// snapshotWebsitePemFiles returns the current content of the website's
+// deployed PEM pair (or the fact that it does not exist yet). Call it BEFORE
+// writing a new pair so a failed nginx -t/reload can restore the previous
+// good files; nginx validates cert+key together and only reloads when both
+// match, so if nginx rejects the config the on-disk pair must be rolled back
+// as a unit.
+func snapshotWebsitePemFiles(website model.Website) (websitePemSnapshot, error) {
+	var snap websitePemSnapshot
+	fullChainFile, privatePemFile, err := getWebsiteSSLPemFilePaths(website)
+	if err != nil {
+		return snap, err
+	}
+	fileOp := files.NewFileOp()
+	if !fileOp.Stat(fullChainFile) {
+		return snap, nil
+	}
+	chain, err := fileOp.GetContent(fullChainFile)
+	if err != nil {
+		return snap, err
+	}
+	key, err := fileOp.GetContent(privatePemFile)
+	if err != nil {
+		return snap, err
+	}
+	snap.exist = true
+	snap.certPem = string(chain)
+	snap.keyPem = string(key)
+	return snap, nil
+}
+
+// restoreWebsitePemFiles rewrites the website's PEM pair back to a snapshot.
+// The chain is written atomically (temp file + rename, so nginx never reads a
+// half-written certificate) and the key keeps privateKeyFileMode via
+// writePrivateKeyFile. Returns whether a snapshot existed at all, so callers
+// that only created new files (no previous deployment) do not mistake a
+// successful no-op for a real restore.
+func restoreWebsitePemFiles(website model.Website, snap websitePemSnapshot) (bool, error) {
+	if !snap.exist {
+		return false, nil
+	}
+	fullChainFile, privatePemFile, err := getWebsiteSSLPemFilePaths(website)
+	if err != nil {
+		return true, err
+	}
+	if err := writePemFileAtomic(fullChainFile, snap.certPem); err != nil {
+		return true, err
+	}
+	if err := writePrivateKeyFile(privatePemFile, snap.keyPem); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// writePemFileAtomic writes content to dst by writing a temporary file in the
+// same directory and renaming it over the destination, so a crash or a write
+// error can never leave a truncated/half-written PEM where nginx reads it.
+// fullchain.pem used to be written in place with O_TRUNC, which corrupted the
+// deployed certificate on any mid-write failure. The private key keeps its
+// own writer (writePrivateKeyFile) because it enforces privateKeyFileMode
+// even when the file already exists.
+func writePemFileAtomic(dst string, content string) error {
+	fileOp := files.NewFileOp()
+	if !fileOp.Stat(path.Dir(dst)) {
+		if err := fileOp.CreateDir(path.Dir(dst), 0775); err != nil {
+			return err
+		}
+	}
+	tmpFile, err := os.CreateTemp(path.Dir(dst), ".fullchain-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName) // no-op after the successful rename
+	if _, err := io.WriteString(tmpFile, content); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, dst)
+}
+
+// createPemFile atomically deploys websiteSSL.Pem / .PrivateKey to the
+// website's ssl directory (the files nginx's ssl_certificate and
+// ssl_certificate_key directives point at). The certificate chain is written
+// through a temp file + rename; the private key through writePrivateKeyFile,
+// which enforces privateKeyFileMode even on pre-existing files. This is the
+// write-only half of a deployment: callers that may replace an already
+// deployed pair (applySSL/UpdateSSLConfig) must capture
+// snapshotWebsitePemFiles first so a failed nginx check can restore the old
+// files. Fresh-issue paths (runApply after a successful ACME order) create
+// files that cannot be rolled back and need no snapshot.
+func createPemFile(website model.Website, websiteSSL model.WebsiteSSL) error {
+	fullChainFile, privatePemFile, err := getWebsiteSSLPemFilePaths(website)
+	if err != nil {
+		return err
+	}
+	if err := writePemFileAtomic(fullChainFile, websiteSSL.Pem); err != nil {
+		return err
+	}
+	return writePrivateKeyFile(privatePemFile, websiteSSL.PrivateKey)
+}
+
+// applySSL deploys websiteSSL to the site's nginx configuration: it wires the
+// https listen/ssl directives into the site conf, writes the PEM pair and
+// validates the whole config with nginx -t before reloading. The PEM pair is
+// replaced only after the nginx conf has been rewritten, and when the nginx
+// check/reload fails both the conf (updateNginxConfig restores OldContent)
+// and the previously deployed PEM files are restored, so the site can never
+// be left pointing a rolled-back config at a bad certificate.
 func applySSL(website model.Website, websiteSSL model.WebsiteSSL, req request.WebsiteHTTPSOp) error {
 	nginxFull, err := getNginxFull(&website)
 	if err != nil {
@@ -654,6 +793,15 @@ func applySSL(website model.Website, websiteSSL model.WebsiteSSL, req request.We
 	if err := nginx.WriteConfig(config, nginx.IndentedStyle); err != nil {
 		return err
 	}
+	// Deploy the PEM pair only after the conf rewrite, and keep the previous
+	// files around until nginx validated the new pair: nginx -t fails (and
+	// updateNginxConfig rolls the conf back to OldContent) when certificate
+	// and key do not match or the cert is broken, and in that case the site
+	// must go back to the certificate that was actually working.
+	pemSnap, err := snapshotWebsitePemFiles(website)
+	if err != nil {
+		return err
+	}
 	if err := createPemFile(website, websiteSSL); err != nil {
 		return err
 	}
@@ -686,6 +834,14 @@ func applySSL(website model.Website, websiteSSL model.WebsiteSSL, req request.We
 	}
 
 	if err := updateNginxConfig(constant.NginxScopeServer, nginxParams, &website); err != nil {
+		// The nginx conf was rolled back to OldContent by updateNginxConfig;
+		// put the previously deployed PEM pair back too, otherwise the
+		// reverted config would point at the certificate that just failed
+		// nginx -t and every later reload would fail the same way.
+		global.LOG.Errorf("apply ssl for website [%s] failed nginx check/reload, restoring previous certificate, err: %v", website.PrimaryDomain, err)
+		if _, restoreErr := restoreWebsitePemFiles(website, pemSnap); restoreErr != nil {
+			global.LOG.Errorf("restore previous certificate of website [%s] after apply failure failed, err: %v", website.PrimaryDomain, restoreErr)
+		}
 		return err
 	}
 	return nil
@@ -1057,16 +1213,36 @@ func GetSystemSSL() (bool, uint) {
 func UpdateSSLConfig(websiteSSL model.WebsiteSSL) error {
 	websites, _ := websiteRepo.GetBy(websiteRepo.WithWebsiteSSLID(websiteSSL.ID))
 	if len(websites) > 0 {
+		// Like applySSL: the new PEM pair must never strand a website between
+		// a rolled-back nginx config and a certificate nginx -t rejected, so
+		// capture the deployed files before overwriting them and restore them
+		// when the reload (which fails exactly when cert+key mismatch or the
+		// cert is broken) reports an error.
+		type pemBackup struct {
+			website model.Website
+			snap    websitePemSnapshot
+		}
+		var backups []pemBackup
 		for _, website := range websites {
+			snap, err := snapshotWebsitePemFiles(website)
+			if err != nil {
+				return err
+			}
 			if err := createPemFile(website, websiteSSL); err != nil {
 				return buserr.WithMap("ErrUpdateWebsiteSSL", map[string]interface{}{"name": website.PrimaryDomain, "err": err.Error()}, err)
 			}
+			backups = append(backups, pemBackup{website: website, snap: snap})
 		}
 		nginxInstall, err := getAppInstallByKey(constant.AppOpenresty)
 		if err != nil {
 			return err
 		}
 		if err := opNginx(nginxInstall.ContainerName, constant.NginxReload); err != nil {
+			for _, backup := range backups {
+				if _, restoreErr := restoreWebsitePemFiles(backup.website, backup.snap); restoreErr != nil {
+					global.LOG.Errorf("restore certificate of website [%s] after reload failure failed, err: %v", backup.website.PrimaryDomain, restoreErr)
+				}
+			}
 			return buserr.WithErr(constant.ErrSSLApply, err)
 		}
 	}

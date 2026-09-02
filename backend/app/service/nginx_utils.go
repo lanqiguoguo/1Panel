@@ -8,6 +8,7 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
+	"github.com/1Panel-dev/1Panel/backend/global"
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 	"github.com/1Panel-dev/1Panel/backend/utils/files"
 	"github.com/1Panel-dev/1Panel/backend/utils/nginx"
@@ -242,11 +243,17 @@ func opNginx(containerName, operate string) error {
 
 func nginxCheckAndReload(oldContent string, filePath string, containerName string) error {
 	if err := opNginx(containerName, constant.NginxCheck); err != nil {
-		_ = files.NewFileOp().WriteFile(filePath, strings.NewReader(oldContent), 0644)
+		if rollbackErr := files.NewFileOp().WriteFile(filePath, strings.NewReader(oldContent), 0644); rollbackErr != nil {
+			// The nginx error is the failure the caller must see; a failed
+			// rollback only makes things worse, so report it separately.
+			global.LOG.Errorf("rollback nginx config [%s] after nginx -t failure failed, err: %v", filePath, rollbackErr)
+		}
 		return err
 	}
 	if err := opNginx(containerName, constant.NginxReload); err != nil {
-		_ = files.NewFileOp().WriteFile(filePath, strings.NewReader(oldContent), 0644)
+		if rollbackErr := files.NewFileOp().WriteFile(filePath, strings.NewReader(oldContent), 0644); rollbackErr != nil {
+			global.LOG.Errorf("rollback nginx config [%s] after nginx reload failure failed, err: %v", filePath, rollbackErr)
+		}
 		return err
 	}
 	return nil

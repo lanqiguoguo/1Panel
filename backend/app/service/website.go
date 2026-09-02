@@ -896,6 +896,18 @@ func (w WebsiteService) OpWebsiteHTTPS(ctx context.Context, req request.WebsiteH
 		return nil, nil
 	}
 
+	// "auto" has no implementation branch below (the DTO oneof predates the
+	// UI, which only offers existed/manual, and no backend caller sends it).
+	// It must not reach applySSL: websiteSSL would still be zero-valued and
+	// createPemFile would then truncate the deployed fullchain.pem/privkey.pem
+	// to empty files — the exact files nginx's ssl_certificate directives
+	// point at, leaving the site unable to serve TLS until a real
+	// certificate is applied. Reject auto (and any other unknown type) up
+	// front instead.
+	if req.Type != constant.SSLExisted && req.Type != constant.SSLManual {
+		return nil, buserr.New("ErrSSLDeployTypeAuto")
+	}
+
 	if req.Type == constant.SSLExisted {
 		websiteModel, err := websiteSSLRepo.GetFirst(commonRepo.WithByID(req.WebsiteSSLID))
 		if err != nil {
@@ -943,9 +955,30 @@ func (w WebsiteService) OpWebsiteHTTPS(ctx context.Context, req request.WebsiteH
 		if certBlock == nil {
 			return nil, buserr.New("ErrSSLCertificateFormat")
 		}
+		// Reject a certificate whose PEM does not parse or whose private key
+		// does not match it BEFORE applySSL writes anything to disk: a manual
+		// pair is user-supplied and the site's ssl directory is where nginx's
+		// ssl_certificate/ssl_certificate_key point, so an unchecked pair
+		// would first corrupt the deployed files and only then fail nginx -t.
+		if err := validateCertKeyPair([]byte(certificate), []byte(privateKey)); err != nil {
+			return nil, buserr.WithMap("ErrSSLManualDeploy", map[string]interface{}{"err": err.Error()}, err)
+		}
 		cert, err := x509.ParseCertificate(certBlock.Bytes)
 		if err != nil {
 			return nil, err
+		}
+		if len(cert.DNSNames) > 0 {
+			// DNSNames[0] becomes PrimaryDomain (embedded into the SSL log
+			// path, the download dir and the nginx conf) and the rest are
+			// stored in Domains, so every SAN gets the same domain-format
+			// validation Upload applies — x509 dNSName entries are unrestricted
+			// IA5Strings, so a hostile CA could otherwise smuggle path
+			// traversal or shell metacharacters into those derived values.
+			if err := validateCertSANs(cert); err != nil {
+				return nil, err
+			}
+			websiteSSL.PrimaryDomain = cert.DNSNames[0]
+			websiteSSL.Domains = strings.Join(cert.DNSNames, ",")
 		}
 		websiteSSL.ExpireDate = cert.NotAfter
 		websiteSSL.StartDate = cert.NotBefore
@@ -954,10 +987,6 @@ func (w WebsiteService) OpWebsiteHTTPS(ctx context.Context, req request.WebsiteH
 			websiteSSL.Organization = cert.Issuer.Organization[0]
 		} else {
 			websiteSSL.Organization = cert.Issuer.CommonName
-		}
-		if len(cert.DNSNames) > 0 {
-			websiteSSL.PrimaryDomain = cert.DNSNames[0]
-			websiteSSL.Domains = strings.Join(cert.DNSNames, ",")
 		}
 		websiteSSL.Provider = constant.Manual
 		websiteSSL.PrivateKey = privateKey

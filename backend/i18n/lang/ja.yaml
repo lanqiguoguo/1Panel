@@ -108,10 +108,12 @@ ErrSSLCannotDelete: "証明書{{.Name}}はWebサイトで使用されており�
 ErrAccountCannotDelete: "アカウントに関連付けられた証明書を削除することはできません"
 ErrSSLApply: "証明書は引き続き正常に署名されていますが、OpenRestyリロードが失敗します。構成を確認してください！"
 ErrSSLApplying: "証明書の申請が進行中のため、重複申請は行えません。後でリストを更新して最新の状態を確認してください"
+ErrSSLDeployTypeAuto: "HTTPS 展開タイプはサポートされていません。既存の証明書を選択するか、証明書を手動でインポートしてください"
 ErrEmailIsExist: 'メールはすでに存在しています'
 ErrSSLKeyNotFound: '秘密キーファイルは存在しません'
 ErrSSLCertificateNotFound: '証明書ファイルは存在しません'
 ErrSSLKeyFormat: '秘密キーファイル検証エラー'
+ErrSSLManualDeploy: "証明書と秘密キーが一致しないか、形式が不正です: {{ .err }}"
 ErrSSLCertificateFormat: '証明書ファイル形式エラー、PEM形式を使用してください'
 ErrEabKidOrEabHmacKeyCannotBlank: 'eabkidまたはeabhmackeyは空にすることはできません'
 ErrOpenrestyNotFound: 'HTTPモードでは、最初にOpenRestyをインストールする必要があります'

@@ -109,10 +109,12 @@ ErrSSLCannotDelete: "The certificate {{ .name }} is being used by the website an
 ErrAccountCannotDelete: "The certificate associated with the account cannot be deleted"
 ErrSSLApply: "The certificate continues to be signed successfully, but openresty reload fails, please check the configuration!"
 ErrSSLApplying: "The certificate is being applied for. Please do not submit a duplicate application; refresh the list later to see the latest status"
+ErrSSLDeployTypeAuto: "The HTTPS deployment type is not supported, please select an existing certificate or import a certificate manually"
 ErrEmailIsExist: 'Email is already exist'
 ErrSSLKeyNotFound: 'The private key file does not exist'
 ErrSSLCertificateNotFound: 'The certificate file does not exist'
 ErrSSLKeyFormat: 'Private key file verification error'
+ErrSSLManualDeploy: "SSL certificate and private key do not match: {{ .err }}"
 ErrSSLCertificateFormat: 'Certificate file format error, please use pem format'
 ErrEabKidOrEabHmacKeyCannotBlank: 'EabKid or EabHmacKey cannot be empty'
 ErrOpenrestyNotFound: 'Http mode requires Openresty to be installed first'

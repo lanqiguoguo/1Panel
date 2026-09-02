@@ -70,6 +70,24 @@ var originalLegoLogger = legoLogger.Logger
 // executed. Enforced both at DTO validation and at execution time.
 const maxSSLShellLength = 512
 
+// validateCertSANs validates every DNS SAN of an (attacker-controlled)
+// certificate before its values are derived into PrimaryDomain, Domains and
+// later joined into the SSL log path, the download directory and the nginx
+// conf: x509 dNSName entries are unrestricted IA5Strings, so without this
+// check a hostile value like "../../evil" would become a path traversal or a
+// shell-metacharacter vector. Shared by Upload and the manual HTTPS deploy
+// path; IP SANs are exempt because net.IP keeps them canonical dotted
+// decimal. A certificate with no SAN at all is fine — the issuer CN is not
+// used as a domain anywhere in these paths.
+func validateCertSANs(cert *x509.Certificate) error {
+	for _, domain := range cert.DNSNames {
+		if !common.IsValidDomain(domain) {
+			return buserr.WithName("ErrDomainFormat", domain)
+		}
+	}
+	return nil
+}
+
 type WebsiteSSLService struct {
 }
 
@@ -796,10 +814,15 @@ func (w WebsiteSSLService) Upload(req request.WebsiteSSLUpload) error {
 	// (BaseDir/1panel/tmp/ssl/<primary>, see DownloadFile). Reject path
 	// traversal and shell metacharacters exactly like Create/Update do for
 	// their PrimaryDomain/OtherDomains inputs.
-	for _, domain := range cert.DNSNames {
-		if !common.IsValidDomain(domain) {
-			return buserr.WithName("ErrDomainFormat", domain)
-		}
+	if err := validateCertSANs(cert); err != nil {
+		return err
+	}
+	// Validate the key against the certificate BEFORE it overwrites any
+	// deployed PEM: with SSLID > 0 the pair is written straight to the ssl
+	// directory of every website using the certificate, so a mismatched pair
+	// must fail here instead of corrupting the deployed files first.
+	if err := validateCertKeyPair([]byte(websiteSSL.Pem), []byte(websiteSSL.PrivateKey)); err != nil {
+		return buserr.WithMap("ErrSSLManualDeploy", map[string]interface{}{"err": err.Error()}, err)
 	}
 	var domains []string
 	if len(cert.DNSNames) > 0 {

@@ -109,10 +109,12 @@ ErrSSLCannotDelete: "{{ .name }} 证书正在被网站使用，无法删除"
 ErrAccountCannotDelete: "账号关联证书，无法删除"
 ErrSSLApply: "证书续签成功，openresty reload失败，请检查配置！"
 ErrSSLApplying: "证书正在申请中，请勿重复申请，请稍后刷新查看最新状态"
+ErrSSLDeployTypeAuto: "HTTPS 开启类型不支持，请选择已有证书或手动导入证书"
 ErrEmailIsExist: '邮箱已存在'
 ErrSSLKeyNotFound: '私钥文件不存在'
 ErrSSLCertificateNotFound: '证书文件不存在'
 ErrSSLKeyFormat: '私钥文件校验失败'
+ErrSSLManualDeploy: "证书与私钥不匹配或格式错误: {{ .err }}"
 ErrSSLCertificateFormat: '证书文件格式错误，请使用 pem 格式'
 ErrEabKidOrEabHmacKeyCannotBlank: 'EabKid 或 EabHmacKey 不能为空'
 ErrOpenrestyNotFound: 'Http 模式需要首先安装 Openresty'
