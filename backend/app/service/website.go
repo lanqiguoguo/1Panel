@@ -1348,32 +1348,33 @@ func (w WebsiteService) UpdatePHPConfig(req request.WebsitePHPConfigUpdate) (err
 
 	content := string(contentBytes)
 	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, ";") {
-			continue
-		}
-		switch req.Scope {
-		case "params":
-			for key, value := range req.Params {
-				pattern := "^" + regexp.QuoteMeta(key) + "\\s*=\\s*.*$"
-				if matched, _ := regexp.MatchString(pattern, line); matched {
-					lines[i] = key + " = " + value
+	// The upload limit touches two coupled directives: PHP rejects uploads
+	// larger than upload_max_filesize only when post_max_size is at least as
+	// big, so both lines must carry the new value. setPHPLimitLines rewrites
+	// each key on its own line independently (a missing key is appended once
+	// after the scan); that cannot run inside the per-line switch below,
+	// which would append the missing key once per scanned line.
+	if req.Scope == "upload_max_filesize" {
+		lines = setPHPLimitLines(lines, req.UploadMaxSize)
+	} else {
+		for i, line := range lines {
+			if strings.HasPrefix(line, ";") {
+				continue
+			}
+			switch req.Scope {
+			case "params":
+				for key, value := range req.Params {
+					pattern := "^" + regexp.QuoteMeta(key) + "\\s*=\\s*.*$"
+					if matched, _ := regexp.MatchString(pattern, line); matched {
+						lines[i] = key + " = " + value
+					}
 				}
-			}
-		case "disable_functions":
-			pattern := "^" + regexp.QuoteMeta("disable_functions") + "\\s*=\\s*.*$"
-			if matched, _ := regexp.MatchString(pattern, line); matched {
-				lines[i] = "disable_functions" + " = " + strings.Join(req.DisableFunctions, ",")
-				break
-			}
-		case "upload_max_filesize":
-			pattern := "^" + regexp.QuoteMeta("post_max_size") + "\\s*=\\s*.*$"
-			if matched, _ := regexp.MatchString(pattern, line); matched {
-				lines[i] = "post_max_size" + " = " + req.UploadMaxSize
-			}
-			patternUpload := "^" + regexp.QuoteMeta("upload_max_filesize") + "\\s*=\\s*.*$"
-			if matched, _ := regexp.MatchString(patternUpload, line); matched {
-				lines[i] = "upload_max_filesize" + " = " + req.UploadMaxSize
+			case "disable_functions":
+				pattern := "^" + regexp.QuoteMeta("disable_functions") + "\\s*=\\s*.*$"
+				if matched, _ := regexp.MatchString(pattern, line); matched {
+					lines[i] = "disable_functions" + " = " + strings.Join(req.DisableFunctions, ",")
+					break
+				}
 			}
 		}
 	}
@@ -1392,6 +1393,41 @@ func (w WebsiteService) UpdatePHPConfig(req request.WebsitePHPConfigUpdate) (err
 	}
 
 	return nil
+}
+
+// phpUploadLimitKeys are the two php.ini directives a change of the PHP
+// upload limit must keep in sync: PHP enforces upload_max_filesize only when
+// post_max_size is at least as large, so both get the same value.
+var phpUploadLimitKeys = []string{"post_max_size", "upload_max_filesize"}
+
+// setPHPLimitLines rewrites the post_max_size and upload_max_filesize lines
+// of a php.ini (split into lines) to value. The two keys are handled
+// independently, each on its own line — the anchored patterns can only match
+// their own key, so a file that has only one of the two lines keeps the other
+// untouched. A key that is missing from the file entirely is appended once
+// after the last line; without that, saving an upload limit on a php.ini
+// lacking one of the directives would silently leave PHP's compiled-in
+// default (2M) in effect.
+func setPHPLimitLines(lines []string, value string) []string {
+	replaced := make(map[string]bool, len(phpUploadLimitKeys))
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), ";") {
+			continue
+		}
+		for _, key := range phpUploadLimitKeys {
+			pattern := "^" + regexp.QuoteMeta(key) + "\\s*=\\s*.*$"
+			if matched, _ := regexp.MatchString(pattern, line); matched {
+				lines[i] = key + " = " + value
+				replaced[key] = true
+			}
+		}
+	}
+	for _, key := range phpUploadLimitKeys {
+		if !replaced[key] {
+			lines = append(lines, key+" = "+value)
+		}
+	}
+	return lines
 }
 
 func (w WebsiteService) UpdatePHPConfigFile(req request.WebsitePHPFileUpdate) error {
@@ -1563,7 +1599,7 @@ func (w WebsiteService) UpdateRewriteConfig(req request.NginxRewriteUpdate) erro
 	if err != nil {
 		return err
 	}
-	includePath := fmt.Sprintf("/www/sites/%s/rewrite/%s.conf", website.Alias, website.PrimaryDomain)
+	includePath := rewriteIncludePath(&website)
 	absolutePath := path.Join(nginxFull.Install.GetPath(), includePath)
 	fileOp := files.NewFileOp()
 	var oldRewriteContent []byte

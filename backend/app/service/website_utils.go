@@ -923,6 +923,18 @@ func toMapStr(m map[string]interface{}) map[string]string {
 	return ret
 }
 
+// rewriteIncludePath returns the nginx include path of a website's rewrite
+// conf: /www/sites/<alias>/rewrite/<PrimaryDomain>.conf. UpdateRewriteConfig
+// writes the file and adds exactly this include directive to the site conf;
+// opWebsite removes (stop) and re-adds (start) the same directive. The file
+// name is the primary domain on purpose — it must never be derived from the
+// alias in one place and the primary domain in another, or a site whose
+// primary domain differs from its alias would silently lose its rewrite
+// config across a stop/start cycle.
+func rewriteIncludePath(website *model.Website) string {
+	return fmt.Sprintf("/www/sites/%s/rewrite/%s.conf", website.Alias, website.PrimaryDomain)
+}
+
 func opWebsite(website *model.Website, operate string) error {
 	nginxInstall, err := getNginxFull(website)
 	if err != nil {
@@ -937,7 +949,9 @@ func opWebsite(website *model.Website, operate string) error {
 	if operate == constant.StopWeb {
 		proxyInclude := fmt.Sprintf("/www/sites/%s/proxy/*.conf", website.Alias)
 		server.RemoveDirective("include", []string{proxyInclude})
-		rewriteInclude := fmt.Sprintf("/www/sites/%s/rewrite/%s.conf", website.Alias, website.Alias)
+		// The removal must name the same file UpdateRewriteConfig writes and
+		// includes; see rewriteIncludePath.
+		rewriteInclude := rewriteIncludePath(website)
 		server.RemoveDirective("include", []string{rewriteInclude})
 
 		switch website.Type {
@@ -964,7 +978,10 @@ func opWebsite(website *model.Website, operate string) error {
 			proxyInclude := fmt.Sprintf("/www/sites/%s/proxy/*.conf", website.Alias)
 			server.UpdateDirective("include", []string{proxyInclude})
 		}
-		rewriteInclude := fmt.Sprintf("/www/sites/%s/rewrite/%s.conf", website.Alias, website.Alias)
+		// UpdateRewriteConfig writes and includes rewrite/<PrimaryDomain>.conf
+		// (never the alias), so the restart probe must look for that same file
+		// before re-adding the include directive.
+		rewriteInclude := rewriteIncludePath(website)
 		absoluteRewritePath := path.Join(nginxInstall.Install.GetPath(), rewriteInclude)
 		if fileOp.Stat(absoluteRewritePath) {
 			server.UpdateDirective("include", []string{rewriteInclude})

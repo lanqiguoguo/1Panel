@@ -447,6 +447,15 @@ func (b *BaseApi) CheckFile(c *gin.Context) {
 		return
 	}
 	if req.WithInit {
+		// withInit creates the directory on the host when it does not exist
+		// yet. Like every other create/upload entry point, refuse to create
+		// directories inside protected paths (system dirs, panel data dir,
+		// recycle bin) instead of letting the check double as a way to
+		// MkdirAll an arbitrary location.
+		if service.IsProtectedPath(req.Path) {
+			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.New(constant.ErrPathNotDelete))
+			return
+		}
 		if err := fileOp.CreateDir(req.Path, 0644); err != nil {
 			helper.SuccessWithData(c, false)
 			return

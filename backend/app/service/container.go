@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
+	"github.com/1Panel-dev/1Panel/backend/app/model"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -898,6 +900,7 @@ func (u *ContainerService) LoadContainerLogs(req dto.OperationWithNameAndType) s
 		if err != nil {
 			return ""
 		}
+		composeItem, _ := composeRepo.GetRecord(commonRepo.WithByName(req.Name))
 		for _, container := range containers {
 			config := container.Labels[composeConfigLabel]
 			workdir := container.Labels[composeWorkdirLabel]
@@ -909,8 +912,15 @@ func (u *ContainerService) LoadContainerLogs(req dto.OperationWithNameAndType) s
 				break
 			}
 		}
+		if len(containers) != 0 && !u.composeDetailPathAllowed(filePath, composeItem) {
+			// The path came from container labels, which any project that can
+			// run docker compose on this host controls: they are not an
+			// authorization to read arbitrary host files. Refuse everything
+			// outside the recorded compose project directory (or the panel
+			// data dir for compose runs whose record is not written yet).
+			return ""
+		}
 		if len(containers) == 0 {
-			composeItem, _ := composeRepo.GetRecord(commonRepo.WithByName(req.Name))
 			filePath = composeItem.Path
 		}
 	}
@@ -922,6 +932,23 @@ func (u *ContainerService) LoadContainerLogs(req dto.OperationWithNameAndType) s
 		return ""
 	}
 	return string(content)
+}
+
+// composeDetailPathAllowed reports whether a compose file path derived from
+// container labels (com.docker.compose.project.config_files /
+// com.docker.compose.project.working_dir) may be read back by
+// LoadContainerLogs. The labels are attached by docker compose itself and can
+// be forged by any project running on the host, so a label value must never
+// become an arbitrary host path to read. The path is accepted only when it is
+// an absolute path inside the recorded 1Panel compose project directory
+// (model.Compose.Path, written by CreateCompose once `docker compose up`
+// succeeds) or, while no record exists yet (the async up is still running,
+// app-store installs), inside the panel data dir.
+func (u *ContainerService) composeDetailPathAllowed(filePath string, composeItem model.Compose) bool {
+	if composeItem.ID != 0 {
+		return pathInsideDir(filePath, path.Dir(composeItem.Path), true)
+	}
+	return pathInsideDir(filePath, constant.DataDir, true)
 }
 
 func stringsToMap(list []string) map[string]string {

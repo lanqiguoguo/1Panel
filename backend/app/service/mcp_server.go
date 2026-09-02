@@ -23,6 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"path"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -397,11 +398,27 @@ func (m McpServerService) UpdateBindDomain(req request.McpBindDomainUpdate) erro
 }
 
 func updateMcpConfig(websiteID uint) {
+	// updateMcpConfig is spawned as a bare goroutine (see UpdateBindDomain),
+	// so a panic here would terminate the whole panel process. Both this
+	// goroutine and the inner one it spawns are guarded the same way as the
+	// cronjob bodies (cronjob_helper.go runJobBody): log with a stack trace
+	// instead of crashing.
+	defer func() {
+		if r := recover(); r != nil {
+			global.LOG.Errorf("panic in updateMcpConfig, err: %v\n%s", r, debug.Stack())
+		}
+	}()
 	servers, _ := mcpServerRepo.List()
 	if len(servers) == 0 {
 		return
 	}
-	website, _ := websiteRepo.GetFirst(commonRepo.WithByID(websiteID))
+	website, err := websiteRepo.GetFirst(commonRepo.WithByID(websiteID))
+	if err != nil || len(website.Domains) == 0 {
+		// The base URL is built from the first bound domain; without one the
+		// servers must not be rewritten (and Domains[0] would panic).
+		global.LOG.Errorf("[mcp] update base url failed: website %d not found or has no domain", websiteID)
+		return
+	}
 	websiteDomain := website.Domains[0]
 	var baseUrl string
 	if website.Protocol == constant.ProtocolHTTP {
@@ -411,6 +428,11 @@ func updateMcpConfig(websiteID uint) {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				global.LOG.Errorf("panic in updateMcpConfig goroutine, err: %v\n%s", r, debug.Stack())
+			}
+		}()
 		for _, server := range servers {
 			if server.BaseURL != baseUrl {
 				server.BaseURL = baseUrl

@@ -223,7 +223,18 @@ func (m *MonitorService) saveIODataToDB(ctx context.Context, interval float64) {
 				if err := settingRepo.BatchCreateMonitorIO(ioList); err != nil {
 					global.LOG.Errorf("Insert io monitoring data failed, err: %v", err)
 				}
-				m.DiskIO <- ioStat2
+				// The second sample is written back as the first sample of the
+				// next differential round. The send must be interruptible by
+				// the teardown like every other send on this channel: once the
+				// monitor is stopped the context is cancelled and this
+				// goroutine is about to close(m.DiskIO) in its deferred
+				// cleanup, so a bare send outside a select could block forever
+				// or hit the closed channel.
+				select {
+				case m.DiskIO <- ioStat2:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
@@ -270,7 +281,14 @@ func (m *MonitorService) saveNetDataToDB(ctx context.Context, interval float64) 
 				if err := settingRepo.BatchCreateMonitorNet(netList); err != nil {
 					global.LOG.Errorf("Insert network monitoring data failed, err: %v", err)
 				}
-				m.NetIO <- netStat2
+				// Same write-back protection as saveIODataToDB: the second
+				// sample must not be sent on a channel this goroutine is about
+				// to close (or that no longer drains) after the monitor stops.
+				select {
+				case m.NetIO <- netStat2:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
