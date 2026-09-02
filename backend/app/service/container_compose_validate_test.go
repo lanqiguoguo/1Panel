@@ -133,3 +133,138 @@ func TestComposeLoadPathValidName(t *testing.T) {
 	}
 	_ = os.RemoveAll(filepath.Join(dataDir, "docker/compose/mycompose"))
 }
+
+// TestVerifyComposeOperationPathRecorded pins the ownership check against the
+// compose record persisted by CreateCompose: the operated path must match the
+// recorded project path (or stay inside the recorded project directory) and
+// nothing else.
+func TestVerifyComposeOperationPathRecorded(t *testing.T) {
+	_, dataDir, _ := setupComposeValidateTest(t)
+	svc := &ContainerService{}
+
+	recordedFile := filepath.Join(dataDir, "docker/compose/mycompose/docker-compose.yml")
+	if err := composeRepo.CreateRecord(&model.Compose{Name: "mycompose", Path: recordedFile}); err != nil {
+		t.Fatalf("seed record failed: %v", err)
+	}
+	projectDir := filepath.Dir(recordedFile)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("mkdir recorded project dir failed: %v", err)
+	}
+	if err := os.WriteFile(recordedFile, []byte("services: {}"), 0644); err != nil {
+		t.Fatalf("write recorded compose file failed: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		req  dto.ComposeOperation
+		want string
+		ok   bool
+	}{
+		{name: "exact recorded path", req: dto.ComposeOperation{Name: "mycompose", Path: recordedFile, Operation: "down"}, want: recordedFile, ok: true},
+		{name: "file inside recorded project dir", req: dto.ComposeOperation{Name: "mycompose", Path: filepath.Join(projectDir, "docker-compose.override.yml"), Operation: "up"}, want: filepath.Join(projectDir, "docker-compose.override.yml"), ok: true},
+		{name: "sibling project inside compose root rejected", req: dto.ComposeOperation{Name: "mycompose", Path: filepath.Join(dataDir, "docker/compose/other/docker-compose.yml"), Operation: "delete"}},
+		{name: "outside record dir rejected", req: dto.ComposeOperation{Name: "mycompose", Path: filepath.Join(dataDir, "websites/foo/docker-compose.yml"), Operation: "up"}},
+		{name: "recorded project dir itself as file path rejected", req: dto.ComposeOperation{Name: "mycompose", Path: projectDir, Operation: "down"}},
+		{name: "path traversal sibling rejected", req: dto.ComposeOperation{Name: "mycompose", Path: filepath.Join(projectDir, "..", "other", "docker-compose.yml"), Operation: "delete"}},
+	}
+	for _, tc := range cases {
+		got, err := svc.verifyComposeOperationPath(tc.req)
+		if tc.ok {
+			if err != nil || got != tc.want {
+				t.Errorf("verifyComposeOperationPath(%s) = (%q, %v), want (%q, nil)", tc.name, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("verifyComposeOperationPath(%s) = (%q, nil), want error", tc.name, got)
+		}
+	}
+}
+
+// TestVerifyComposeOperationPathNoRecord covers the pre-record window: the
+// delete request may land while CreateCompose's async `docker-compose up` has
+// not written the record yet, so the path must fall inside the conventional
+// project directory DataDir/docker/compose/<name>.
+func TestVerifyComposeOperationPathNoRecord(t *testing.T) {
+	_, dataDir, _ := setupComposeValidateTest(t)
+	svc := &ContainerService{}
+	composeRoot := filepath.Join(dataDir, "docker", "compose")
+
+	inside := filepath.Join(composeRoot, "brandnew/docker-compose.yml")
+	if err := os.MkdirAll(filepath.Dir(inside), 0755); err != nil {
+		t.Fatalf("mkdir compose dir failed: %v", err)
+	}
+	if err := os.WriteFile(inside, []byte("services: {}"), 0644); err != nil {
+		t.Fatalf("write compose file failed: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		req  dto.ComposeOperation
+		want string
+		ok   bool
+	}{
+		{name: "conventional dir no record yet", req: dto.ComposeOperation{Name: "brandnew", Path: inside, Operation: "delete"}, want: inside, ok: true},
+		{name: "different name dir no record", req: dto.ComposeOperation{Name: "brandnew", Path: filepath.Join(composeRoot, "someone-else/docker-compose.yml"), Operation: "down"}},
+		{name: "arbitrary host dir no record", req: dto.ComposeOperation{Name: "brandnew", Path: "/etc/foo/docker-compose.yml", Operation: "delete"}},
+		{name: "traversal out of compose root no record", req: dto.ComposeOperation{Name: "brandnew", Path: filepath.Join(dataDir, "apps/other/docker-compose.yml"), Operation: "down"}},
+	}
+	for _, tc := range cases {
+		got, err := svc.verifyComposeOperationPath(tc.req)
+		if tc.ok {
+			if err != nil || got != tc.want {
+				t.Errorf("verifyComposeOperationPath(%s) = (%q, %v), want (%q, nil)", tc.name, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("verifyComposeOperationPath(%s) = (%q, nil), want error", tc.name, got)
+		}
+	}
+}
+
+// TestVerifyComposeOperationPathEmptyPath pins the empty-path handling: for
+// delete it drops the record only (historical cleanup flow for projects whose
+// containers are already gone, see #6862), and it never touches any other
+// operation. It asserts through the public ComposeOperation entry (the
+// empty-path short-circuit lives there, before validation).
+func TestVerifyComposeOperationPathEmptyPath(t *testing.T) {
+	setupComposeValidateTest(t)
+	svc := &ContainerService{}
+
+	// empty path + delete with a record: record is removed, success returned
+	if err := composeRepo.CreateRecord(&model.Compose{Name: "ghost", Path: "/opt/1panel/docker/compose/ghost/docker-compose.yml"}); err != nil {
+		t.Fatalf("seed record failed: %v", err)
+	}
+	if err := svc.ComposeOperation(dto.ComposeOperation{Name: "ghost", Operation: "delete"}); err != nil {
+		t.Fatalf("delete with empty path returned error: %v", err)
+	}
+	if item, err := composeRepo.GetRecord(commonRepo.WithByName("ghost")); err == nil && item.ID != 0 {
+		t.Errorf("delete with empty path left the record behind")
+	}
+	// empty path + delete without a record: no error, record simply absent
+	if err := svc.ComposeOperation(dto.ComposeOperation{Name: "nope", Operation: "delete"}); err != nil {
+		t.Errorf("delete with empty path and no record returned error: %v", err)
+	}
+	// empty path on any other operation is rejected up front
+	if err := svc.ComposeOperation(dto.ComposeOperation{Name: "ghost", Operation: "up"}); err == nil {
+		t.Errorf("up with empty path did not return an error")
+	}
+	if err := svc.ComposeOperation(dto.ComposeOperation{Name: "ghost", Operation: "down"}); err == nil {
+		t.Errorf("down with empty path did not return an error")
+	}
+}
+
+// TestVerifyComposeOperationPathNameTraversal locks down the no-record branch
+// against a malicious compose name: the conventional-dir fallback must not
+// accept a name that escapes DataDir/docker/compose.
+func TestVerifyComposeOperationPathNameTraversal(t *testing.T) {
+	_, _, canaryDir := setupComposeValidateTest(t)
+	svc := &ContainerService{}
+
+	req := dto.ComposeOperation{Name: "../../pwned", Path: "/tmp/pwned/docker-compose.yml", Operation: "delete"}
+	if _, err := svc.verifyComposeOperationPath(req); err == nil {
+		t.Errorf("traversal name with arbitrary path did not return an error")
+	}
+	_ = os.RemoveAll(filepath.Join(canaryDir, "pwned"))
+}

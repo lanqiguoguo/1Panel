@@ -264,16 +264,25 @@ func (u *ContainerService) CreateCompose(req dto.ComposeCreate) (string, error) 
 }
 
 func (u *ContainerService) ComposeOperation(req dto.ComposeOperation) error {
+	// A delete with an empty path is the historical "drop only the DB record"
+	// cleanup flow (the project was already removed on the docker side, see
+	// #6862): handle it before any path validation so it keeps returning
+	// success instead of falling into the stat check with an empty path.
 	if len(req.Path) == 0 && req.Operation == "delete" {
 		_ = composeRepo.DeleteRecord(commonRepo.WithByName(req.Name))
 		return nil
 	}
-	if cmd.CheckIllegal(req.Path, req.Operation) {
+	pathItem, err := u.verifyComposeOperationPath(req)
+	if err != nil {
+		return err
+	}
+	if cmd.CheckIllegal(pathItem, req.Operation) {
 		return buserr.New(constant.ErrCmdIllegal)
 	}
-	if _, err := os.Stat(req.Path); err != nil {
-		return fmt.Errorf("load file with path %s failed, %v", req.Path, err)
+	if _, err := os.Stat(pathItem); err != nil {
+		return fmt.Errorf("load file with path %s failed, %v", pathItem, err)
 	}
+	req.Path = pathItem
 	if req.Operation == "delete" {
 		if stdout, err := compose.Operate(req.Path, "down"); err != nil {
 			return errors.New(string(stdout))
@@ -295,6 +304,68 @@ func (u *ContainerService) ComposeOperation(req dto.ComposeOperation) error {
 	}
 	global.LOG.Infof("docker-compose %s %s successful", req.Operation, req.Name)
 	return nil
+}
+
+// verifyComposeOperationPath resolves the compose file path a compose
+// operation (up/start/stop/down/delete) is allowed to touch. req.Path is
+// fully user controlled and used to run `docker compose -f <path> ...` and,
+// for delete with files, to RemoveAll the parent directory, so it must stay
+// inside the project the caller claims to operate on:
+//
+//  1. When the record of a compose project created through 1Panel exists
+//     (model.Compose.Path, written once `docker-compose up` succeeds in
+//     CreateCompose), req.Path has to match the recorded path exactly, or at
+//     least its parent directory has to stay inside the recorded project
+//     directory. This keeps apps and sites installed outside DataDir usable
+//     (apps also remove their own compose files via their own management
+//     flow) while blocking operations on any other directory.
+//  2. If no record exists yet - the delete request may arrive right after
+//     CreateCompose kicked off the async `docker-compose up` that will write
+//     the record - the path must live in the conventional compose root
+//     (DataDir/docker/compose/<name>/, the location loadPath materializes),
+//     i.e. its parent directory has to stay inside the project directory the
+//     requested name maps to.
+//  3. delete with an empty path keeps its historical meaning: drop only the
+//     record after the project has already been deleted (e.g. the container
+//     was removed from the docker side first, see #6862). It is handled by
+//     ComposeOperation before validation, so verify never sees an empty path.
+//
+// An empty path with any other operation is rejected here.
+func (u *ContainerService) verifyComposeOperationPath(req dto.ComposeOperation) (string, error) {
+	if len(req.Path) == 0 {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	composeItem, err := composeRepo.GetRecord(commonRepo.WithByName(req.Name))
+	if err == nil && composeItem.ID != 0 {
+		projectDir := path.Dir(composeItem.Path)
+		if composeItem.Path != req.Path && !insideDir(path.Dir(req.Path), projectDir) {
+			return "", fmt.Errorf("compose project %s path %s mismatch, can not operate it", req.Name, req.Path)
+		}
+		return req.Path, nil
+	}
+	if !insideDir(path.Dir(req.Path), path.Join(constant.DataDir, "docker/compose", req.Name)) {
+		return "", fmt.Errorf("compose project %s path %s mismatch, can not operate it", req.Name, req.Path)
+	}
+	return req.Path, nil
+}
+
+// insideDir reports whether dir is cleanDir itself or a strict descendant of
+// cleanDir. Only the directory of the operated compose file is checked this
+// way, so os.RemoveAll(path.Dir(req.Path)) on delete can never escape the
+// recorded (or convention-mapped) project directory. A symlink in a prefix is
+// not resolved: this only gates which filesystem area docker compose operates
+// on, while delete removes the project directory itself with the
+// non-following os.RemoveAll, and the directory names between the operated
+// dir and the checked root are owned by 1Panel.
+func insideDir(dir, cleanDir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(cleanDir), filepath.Clean(dir))
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func (u *ContainerService) ComposeUpdate(req dto.ComposeUpdate) error {
