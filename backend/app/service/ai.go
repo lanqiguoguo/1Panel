@@ -214,9 +214,17 @@ func (u *AIToolService) Delete(req dto.ForceDelete) error {
 	}
 	for _, item := range ollamaList {
 		if item.Status != constant.StatusDeleted {
-			stdout, err := cmd.Execf("docker exec %s ollama rm %s", containerName, item.Name)
-			if err != nil && !req.ForceDelete {
-				return fmt.Errorf("handle ollama rm %s failed, stdout: %s, err: %v", item.Name, stdout, err)
+			// validOllamaModelName is the same gate Create/Sync apply before
+			// a name reaches docker, covering legacy rows stored before that
+			// gate existed. The delete runs via argv (no shell), so a
+			// rejected value is skipped rather than failing the batch.
+			if !validOllamaModelName(item.Name) {
+				global.LOG.Errorf("skip ollama rm of model %q: invalid model name", item.Name)
+			} else {
+				stdout, err := cmd.ExecWithCheck("docker", "exec", containerName, "ollama", "rm", item.Name)
+				if err != nil && !req.ForceDelete {
+					return fmt.Errorf("handle ollama rm %s failed, stdout: %s, err: %v", item.Name, stdout, err)
+				}
 			}
 		}
 		_ = aiRepo.Delete(commonRepo.WithByID(item.ID))
@@ -235,18 +243,7 @@ func (u *AIToolService) Sync() ([]dto.OllamaModelDropList, error) {
 	if err != nil {
 		return nil, err
 	}
-	var list []model.OllamaModel
-	lines := strings.Split(stdout, "\n")
-	for _, line := range lines {
-		parts := strings.Fields(line)
-		if len(parts) < 5 {
-			continue
-		}
-		if parts[0] == "NAME" {
-			continue
-		}
-		list = append(list, model.OllamaModel{Name: parts[0], Size: parts[2] + " " + parts[3]})
-	}
+	list := parseOllamaModelList(stdout)
 	listInDB, _ := aiRepo.List()
 	var dropList []dto.OllamaModelDropList
 	for _, itemModel := range listInDB {
@@ -272,6 +269,30 @@ func (u *AIToolService) Sync() ([]dto.OllamaModelDropList, error) {
 	}
 
 	return dropList, nil
+}
+
+// parseOllamaModelList turns `ollama list` stdout into model rows, dropping
+// header/blank lines and any model name that fails validOllamaModelName:
+// only whitelisted names may be persisted, because Delete and loadModelSize
+// later hand the stored value to docker. A single odd entry is skipped (with
+// a log entry) instead of failing the whole sync.
+func parseOllamaModelList(stdout string) []model.OllamaModel {
+	var list []model.OllamaModel
+	for _, line := range strings.Split(stdout, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 5 {
+			continue
+		}
+		if parts[0] == "NAME" {
+			continue
+		}
+		if !validOllamaModelName(parts[0]) {
+			global.LOG.Errorf("skip ollama model %q from sync: invalid model name", parts[0])
+			continue
+		}
+		list = append(list, model.OllamaModel{Name: parts[0], Size: parts[2] + " " + parts[3]})
+	}
+	return list
 }
 
 func (u *AIToolService) BindDomain(req dto.OllamaBindDomain) error {
@@ -443,17 +464,36 @@ func pullOllamaModel(file *os.File, containerName string, info model.OllamaModel
 }
 
 func loadModelSize(name string, containerName string) (string, error) {
-	stdout, err := cmd.Execf("docker exec %s ollama list | grep %s", containerName, name)
+	// name comes from the DB row of a pull this panel started (Create/
+	// Recreate validate it before persisting), but the row may predate the
+	// whitelist, so re-check defensively before the value reaches docker.
+	if !validOllamaModelName(name) {
+		return "", buserr.New(constant.ErrCmdIllegal)
+	}
+	stdout, err := cmd.ExecWithCheck("docker", "exec", containerName, "ollama", "list")
 	if err != nil {
 		return "", err
 	}
-	lines := strings.Split(string(stdout), "\n")
-	for _, line := range lines {
+	size, err := matchModelSize(stdout, name)
+	if err != nil {
+		return "", err
+	}
+	return size, nil
+}
+
+// matchModelSize scans `ollama list` stdout for the row whose NAME column
+// equals name and returns its SIZE columns. The old `grep`-based lookup
+// matched any column and any prefix; matching the NAME column exactly keeps
+// loadModelSize honest.
+func matchModelSize(stdout, name string) (string, error) {
+	for _, line := range strings.Split(stdout, "\n") {
 		parts := strings.Fields(line)
 		if len(parts) < 5 {
 			continue
 		}
-		return parts[2] + " " + parts[3], nil
+		if parts[0] == name {
+			return parts[2] + " " + parts[3], nil
+		}
 	}
-	return "", fmt.Errorf("no such model %s in ollama list, std: %s", name, string(stdout))
+	return "", fmt.Errorf("no such model %s in ollama list, std: %s", name, stdout)
 }

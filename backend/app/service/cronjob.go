@@ -97,6 +97,25 @@ func (u *CronjobService) LoadRecordLog(req dto.OperateByID) string {
 }
 
 func (u *CronjobService) CleanRecord(req dto.CronjobClean) error {
+	// Phase 1 runs outside the run lock: it may delete remote backups or
+	// expire old logs, which can take a long time and must not stall the
+	// record insertion of every other running job.
+	if err := u.cleanRecordPreflight(req); err != nil {
+		return err
+	}
+	// Phase 2 serializes the record wipe against a job body starting right now
+	// (HandleJob inserts its record under the same lock) so the wipe below is
+	// atomic with respect to new record creation. A body already in flight is
+	// not interrupted: its EndRecords update simply matches zero rows once the
+	// record is gone.
+	cronjobRunMu.Lock()
+	defer cronjobRunMu.Unlock()
+	return u.cleanRecordWipe(req)
+}
+
+// cleanRecordPreflight executes the data-removal phase of CleanRecord
+// (remote backups / expired logs) without holding cronjobRunMu.
+func (u *CronjobService) cleanRecordPreflight(req dto.CronjobClean) error {
 	cronjob, err := cronjobRepo.Get(commonRepo.WithByID(req.CronjobID))
 	if err != nil {
 		return err
@@ -121,6 +140,19 @@ func (u *CronjobService) CleanRecord(req dto.CronjobClean) error {
 		} else {
 			u.removeExpiredLog(cronjob)
 		}
+	}
+	return nil
+}
+
+// cleanRecordWipe detaches backup records, deletes the log files of every
+// remaining JobRecords row and deletes the rows themselves. Callers must
+// hold cronjobRunMu (CleanRecord does; Delete holds it across this and the
+// cronjob row delete so no record can be created for the deleted job
+// afterwards).
+func (u *CronjobService) cleanRecordWipe(req dto.CronjobClean) error {
+	cronjob, err := cronjobRepo.Get(commonRepo.WithByID(req.CronjobID))
+	if err != nil {
+		return err
 	}
 	if req.IsDelete {
 		records, _ := backupRepo.ListRecord(backupRepo.WithByCronID(cronjob.ID))
@@ -182,8 +214,25 @@ func (u *CronjobService) HandleOnce(id uint) error {
 	// recover inside HandleJob still cover this goroutine: a trigger while the
 	// same job is already running is skipped with a log entry, and a panicking
 	// job body cannot take down the panel process.
-	go u.HandleJob(&cronjob)
+	// The job row is re-read inside the goroutine (handleOnceBackground): a
+	// concurrent Delete may remove the row after the check above but before
+	// the goroutine starts, and running a deleted job would recreate its
+	// task directory and logs (and orphan JobRecords) after the cleanup.
+	go u.handleOnceBackground(id)
 	return nil
+}
+
+// handleOnceBackground runs the manual-trigger body against a freshly loaded
+// cronjob row. If the job was deleted in the meantime the run is skipped with
+// a log entry, so a manual trigger can never race a Delete into recreating
+// the removed task artifacts.
+func (u *CronjobService) handleOnceBackground(id uint) {
+	cronjob, _ := cronjobRepo.Get(commonRepo.WithByID(id))
+	if cronjob.ID == 0 {
+		global.LOG.Infof("skip manual trigger of cronjob %d: the job has been deleted", id)
+		return
+	}
+	u.HandleJob(&cronjob)
 }
 
 // validCronjobName reports whether name is safe to embed into shell commands
@@ -359,12 +408,29 @@ func (u *CronjobService) Delete(req dto.CronjobBatchDelete) error {
 			global.Cron.Remove(cron.EntryID(idItem))
 		}
 		global.LOG.Infof("stop cronjob entryID: %s", cronjob.EntryIDs)
-		if err := u.CleanRecord(dto.CronjobClean{CronjobID: id, CleanData: req.CleanData, CleanRemoteData: req.CleanRemoteData, IsDelete: true}); err != nil {
+		// Data removal (remote backups / expired logs) runs before the run
+		// lock: it can be slow and must not stall the record insertion of
+		// every other running job.
+		if err := u.cleanRecordPreflight(dto.CronjobClean{CronjobID: id, CleanData: req.CleanData, CleanRemoteData: req.CleanRemoteData, IsDelete: true}); err != nil {
+			return err
+		}
+		// Serialize the record cleanup against a job body that may be
+		// starting right now (HandleJob inserts its record under this lock):
+		// the deletion order below (records first, then the cronjob row)
+		// guarantees that no record or log file of a deleted job can be
+		// created afterwards — a body that already holds the lock inserts
+		// its record before the wipe, and a body waiting for the lock
+		// re-loads the row, finds it gone and skips itself.
+		cronjobRunMu.Lock()
+		if err := u.cleanRecordWipe(dto.CronjobClean{CronjobID: id, CleanData: req.CleanData, CleanRemoteData: req.CleanRemoteData, IsDelete: true}); err != nil {
+			cronjobRunMu.Unlock()
 			return err
 		}
 		if err := cronjobRepo.Delete(commonRepo.WithByID(id)); err != nil {
+			cronjobRunMu.Unlock()
 			return err
 		}
+		cronjobRunMu.Unlock()
 	}
 
 	return nil
@@ -467,7 +533,18 @@ func (u *CronjobService) UpdateStatus(id uint, status string) error {
 
 func (u *CronjobService) AddCronJob(cronjob *model.Cronjob) (int, error) {
 	addFunc := func() {
-		u.HandleJob(cronjob)
+		// Re-load the row when the scheduler fires: Delete may have removed
+		// the cronjob and its records between the schedule tick and this
+		// callback (the scheduler hands every registered entry a goroutine
+		// the moment it fires). Running the stale row would recreate the
+		// task directory and log files the delete just removed. The reload
+		// also picks up the latest spec/script edits.
+		latest, err := cronjobRepo.Get(commonRepo.WithByID(cronjob.ID))
+		if err != nil {
+			global.LOG.Infof("skip run of cronjob %s(%d): the job has been deleted", cronjob.Name, cronjob.ID)
+			return
+		}
+		u.HandleJob(&latest)
 	}
 	global.LOG.Infof("add %s job %s successful", cronjob.Type, cronjob.Name)
 	entryID, err := global.Cron.AddFunc(cronjob.Spec, addFunc)
@@ -481,7 +558,9 @@ func (u *CronjobService) AddCronJob(cronjob *model.Cronjob) (int, error) {
 func mkdirAndWriteFile(cronjob *model.Cronjob, startTime time.Time, msg []byte) (string, error) {
 	dir := fmt.Sprintf("%s/task/%s/%s", constant.DataDir, cronjob.Type, cronjob.Name)
 	if _, err := os.Stat(dir); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(dir, os.ModePerm); err != nil {
+		// Task dirs hold job logs and script output; 0750 (owner rwx, group
+		// rx) instead of os.ModePerm keeps other local users out.
+		if err = os.MkdirAll(dir, 0750); err != nil {
 			return "", err
 		}
 	}

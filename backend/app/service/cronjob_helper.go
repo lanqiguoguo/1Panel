@@ -32,6 +32,17 @@ import (
 // windows.
 var runningJobs sync.Map
 
+// cronjobRunMu serializes the record-creation section of a job body
+// (HandleJob) against Delete's record cleanup of the same job. Delete wipes
+// every JobRecords row of the job and then the cronjob row itself; a body
+// starting between those two operations would insert an orphan record (and
+// later log files) for an already deleted job. Holding the mutex on both
+// sides makes the two orders deterministic: a body that waits for a Delete
+// re-loads the cronjob row afterwards, finds it gone and skips the run; a
+// body that wins inserts its record before Delete wipes it. The long-running
+// work itself runs unlocked.
+var cronjobRunMu sync.Mutex
+
 // runJobBody executes fn while holding the per-job running guard. If the same
 // job is still running, the invocation is skipped with a log entry instead of
 // running concurrently. A deferred recover keeps a panicking job body from
@@ -58,124 +69,159 @@ func runJobBody(jobID uint, jobName string, fn func()) {
 // overlap.
 func (u *CronjobService) HandleJob(cronjob *model.Cronjob) {
 	runJobBody(cronjob.ID, cronjob.Name, func() {
-		// Defense in depth: re-validate the name before any task/log/backup
-		// path is derived from it. This also covers legacy records that were
-		// stored before the Create/Update entry-point checks existed; such a
-		// job is skipped instead of writing outside its task directory.
-		if !validCronjobName(cronjob.Name) {
-			global.LOG.Errorf("cronjob %s name contains illegal characters, skip execution", cronjob.Name)
-			return
-		}
-		// Defense in depth: re-validate the docker-exec container name and
-		// in-container shell command for shell cronjobs before they are
-		// interpolated into `docker exec -i <container> <command>` run by the
-		// host shell. Covers legacy records stored before the entry-point
-		// checks existed; such a job is skipped instead of giving an attacker
-		// host root command execution.
-		if cronjob.Type == "shell" && !validCronjobContainerFields(cronjob.ContainerName, cronjob.Command) {
-			global.LOG.Errorf("cronjob %s container name or command contains illegal characters, skip execution", cronjob.Name)
-			return
-		}
-		// Defense in depth: re-validate the URL of a curl cronjob before it is
-		// interpolated into `curl '<url>'` run by the host shell. Covers legacy
-		// records and legacy rows written by a pre-fix Update that skipped the
-		// URL check via type confusion; such a job is skipped instead of giving
-		// an attacker host root command execution.
-		if cronjob.Type == "curl" && !validCronjobURL(cronjob.URL) {
-			global.LOG.Errorf("cronjob %s url contains illegal characters, skip execution", cronjob.Name)
-			return
-		}
-		var (
-			message []byte
-			err     error
-		)
-		record := cronjobRepo.StartRecords(cronjob.ID, cronjob.KeepLocal, "")
-		switch cronjob.Type {
-		case "shell":
-			if len(cronjob.Script) == 0 {
+		if global.DB != nil {
+			// A cronjob row can be deleted after the caller loaded it (cron
+			// tick callback, manual trigger) but before this body starts.
+			// Re-load the row and insert the record under cronjobRunMu, which
+			// Delete's record cleanup also holds: a run can never start
+			// against a job whose records were just wiped — StartRecords would
+			// insert an orphan record for the deleted job and the body would
+			// recreate its task directory and log files after the delete
+			// removed them.
+			cronjobRunMu.Lock()
+			latest, loadErr := cronjobRepo.Get(commonRepo.WithByID(cronjob.ID))
+			if loadErr != nil {
+				cronjobRunMu.Unlock()
+				global.LOG.Infof("skip run of cronjob %s(%d): the job has been deleted", cronjob.Name, cronjob.ID)
 				return
 			}
-			record.Records = u.generateLogsPath(*cronjob, record.StartTime)
-			_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
-			script := cronjob.Script
-			if len(cronjob.ContainerName) != 0 {
-				command := "sh"
-				if len(cronjob.Command) != 0 {
-					command = cronjob.Command
-				}
-				// Feed the script to the in-container shell over stdin
-				// (docker exec -i) instead of interpolating it into a
-				// `docker exec <c> <cmd> -c "..."` string: the old form let
-				// the HOST shell expand $(), backticks and $VAR before docker
-				// ever saw the script, so container scripts could run (partly)
-				// on the host.
-				err = u.handleShellWithStdin(cronjob.Type, cronjob.Name,
-					fmt.Sprintf("docker exec -i %s %s", cronjob.ContainerName, command),
-					cronjob.Script, record.Records)
-				u.removeExpiredLog(*cronjob)
-				break
-			}
-			err = u.handleShell(cronjob.Type, cronjob.Name, script, record.Records)
-			u.removeExpiredLog(*cronjob)
-		case "curl":
-			if len(cronjob.URL) == 0 {
+			if !cronjobValidForRun(&latest) {
+				cronjobRunMu.Unlock()
 				return
 			}
-			record.Records = u.generateLogsPath(*cronjob, record.StartTime)
-			_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
-			err = u.handleShell(cronjob.Type, cronjob.Name, fmt.Sprintf("curl '%s'", cronjob.URL), record.Records)
-			u.removeExpiredLog(*cronjob)
-		case "ntp":
-			err = u.handleNtpSync()
-			u.removeExpiredLog(*cronjob)
-		case "cutWebsiteLog":
-			var messageItem []string
-			messageItem, record.File, err = u.handleCutWebsiteLog(cronjob, record.StartTime)
-			message = []byte(strings.Join(messageItem, "\n"))
-		case "clean":
-			messageItem := ""
-			messageItem, err = u.handleSystemClean()
-			message = []byte(messageItem)
-			u.removeExpiredLog(*cronjob)
-		case "website":
-			err = u.handleWebsite(*cronjob, record.StartTime)
-		case "app":
-			err = u.handleApp(*cronjob, record.StartTime)
-		case "database":
-			err = u.handleDatabase(*cronjob, record.StartTime)
-		case "directory":
-			if len(cronjob.SourceDir) == 0 {
-				return
-			}
-			err = u.handleDirectory(*cronjob, record.StartTime)
-		case "log":
-			err = u.handleSystemLog(*cronjob, record.StartTime)
-		case "snapshot":
-			record.Records = u.generateLogsPath(*cronjob, record.StartTime)
-			_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
-			err = u.handleSnapshot(*cronjob, record.StartTime, record.Records)
-		}
-		if err != nil {
-			if len(message) != 0 {
-				record.Records, _ = mkdirAndWriteFile(cronjob, record.StartTime, message)
-			}
-			cronjobRepo.EndRecords(record, constant.StatusFailed, err.Error(), record.Records)
+			record := cronjobRepo.StartRecords(latest.ID, latest.KeepLocal, "")
+			cronjobRunMu.Unlock()
+			u.body(&latest, record)
 			return
 		}
-		if len(message) != 0 {
-			record.Records, err = mkdirAndWriteFile(cronjob, record.StartTime, message)
-			if err != nil {
-				global.LOG.Errorf("save file %s failed, err: %v", record.Records, err)
-			}
+		// No database (unit tests): run the guards on the passed-in row and
+		// execute with a zero record.
+		if !cronjobValidForRun(cronjob) {
+			return
 		}
-		cronjobRepo.EndRecords(record, constant.StatusSuccess, "", record.Records)
+		u.body(cronjob, model.JobRecords{})
 	})
+}
+
+// cronjobValidForRun re-checks the values that will be derived into task/log
+// paths or interpolated into shell commands right before a run starts.
+// Defense in depth behind the Create/Update entry-point checks: legacy rows
+// stored before those checks existed are skipped instead of writing outside
+// their task directory or handing the shell an injection payload.
+func cronjobValidForRun(cronjob *model.Cronjob) bool {
+	if !validCronjobName(cronjob.Name) {
+		global.LOG.Errorf("cronjob %s name contains illegal characters, skip execution", cronjob.Name)
+		return false
+	}
+	if cronjob.Type == "shell" && !validCronjobContainerFields(cronjob.ContainerName, cronjob.Command) {
+		global.LOG.Errorf("cronjob %s container name or command contains illegal characters, skip execution", cronjob.Name)
+		return false
+	}
+	if cronjob.Type == "curl" && !validCronjobURL(cronjob.URL) {
+		global.LOG.Errorf("cronjob %s url contains illegal characters, skip execution", cronjob.Name)
+		return false
+	}
+	return true
+}
+
+// body runs one job execution against the (freshly loaded) cronjob row and
+// its record. A zero record means no database-backed record exists (the no-DB
+// test path): StartTime is synthesized so log file paths still work.
+func (u *CronjobService) body(cronjob *model.Cronjob, record model.JobRecords) {
+	var (
+		message []byte
+		err     error
+	)
+	if record.ID == 0 {
+		record.StartTime = time.Now()
+	}
+	switch cronjob.Type {
+	case "shell":
+		if len(cronjob.Script) == 0 {
+			return
+		}
+		record.Records = u.generateLogsPath(*cronjob, record.StartTime)
+		_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
+		script := cronjob.Script
+		if len(cronjob.ContainerName) != 0 {
+			command := "sh"
+			if len(cronjob.Command) != 0 {
+				command = cronjob.Command
+			}
+			// Feed the script to the in-container shell over stdin
+			// (docker exec -i) instead of interpolating it into a
+			// `docker exec <c> <cmd> -c "..."` string: the old form let
+			// the HOST shell expand $(), backticks and $VAR before docker
+			// ever saw the script, so container scripts could run (partly)
+			// on the host.
+			err = u.handleShellWithStdin(cronjob.Type, cronjob.Name,
+				fmt.Sprintf("docker exec -i %s %s", cronjob.ContainerName, command),
+				cronjob.Script, record.Records)
+			u.removeExpiredLog(*cronjob)
+			break
+		}
+		err = u.handleShell(cronjob.Type, cronjob.Name, script, record.Records)
+		u.removeExpiredLog(*cronjob)
+	case "curl":
+		if len(cronjob.URL) == 0 {
+			return
+		}
+		record.Records = u.generateLogsPath(*cronjob, record.StartTime)
+		_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
+		err = u.handleShell(cronjob.Type, cronjob.Name, fmt.Sprintf("curl '%s'", cronjob.URL), record.Records)
+		u.removeExpiredLog(*cronjob)
+	case "ntp":
+		err = u.handleNtpSync()
+		u.removeExpiredLog(*cronjob)
+	case "cutWebsiteLog":
+		var messageItem []string
+		messageItem, record.File, err = u.handleCutWebsiteLog(cronjob, record.StartTime)
+		message = []byte(strings.Join(messageItem, "\n"))
+	case "clean":
+		messageItem := ""
+		messageItem, err = u.handleSystemClean()
+		message = []byte(messageItem)
+		u.removeExpiredLog(*cronjob)
+	case "website":
+		err = u.handleWebsite(*cronjob, record.StartTime)
+	case "app":
+		err = u.handleApp(*cronjob, record.StartTime)
+	case "database":
+		err = u.handleDatabase(*cronjob, record.StartTime)
+	case "directory":
+		if len(cronjob.SourceDir) == 0 {
+			return
+		}
+		err = u.handleDirectory(*cronjob, record.StartTime)
+	case "log":
+		err = u.handleSystemLog(*cronjob, record.StartTime)
+	case "snapshot":
+		record.Records = u.generateLogsPath(*cronjob, record.StartTime)
+		_ = cronjobRepo.UpdateRecords(record.ID, map[string]interface{}{"records": record.Records})
+		err = u.handleSnapshot(*cronjob, record.StartTime, record.Records)
+	}
+	if err != nil {
+		if len(message) != 0 {
+			record.Records, _ = mkdirAndWriteFile(cronjob, record.StartTime, message)
+		}
+		cronjobRepo.EndRecords(record, constant.StatusFailed, err.Error(), record.Records)
+		return
+	}
+	if len(message) != 0 {
+		record.Records, err = mkdirAndWriteFile(cronjob, record.StartTime, message)
+		if err != nil {
+			global.LOG.Errorf("save file %s failed, err: %v", record.Records, err)
+		}
+	}
+	cronjobRepo.EndRecords(record, constant.StatusSuccess, "", record.Records)
 }
 
 func (u *CronjobService) handleShell(cronType, cornName, script, logPath string) error {
 	handleDir := fmt.Sprintf("%s/task/%s/%s", constant.DataDir, cronType, cornName)
 	if _, err := os.Stat(handleDir); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(handleDir, os.ModePerm); err != nil {
+		// Task dirs hold job logs and script output; 0750 (owner rwx, group
+		// rx) instead of os.ModePerm keeps other local users out.
+		if err = os.MkdirAll(handleDir, 0750); err != nil {
 			return err
 		}
 	}
@@ -191,7 +237,9 @@ func (u *CronjobService) handleShell(cronType, cornName, script, logPath string)
 func (u *CronjobService) handleShellWithStdin(cronType, cornName, cmdStr, stdinContent, logPath string) error {
 	handleDir := fmt.Sprintf("%s/task/%s/%s", constant.DataDir, cronType, cornName)
 	if _, err := os.Stat(handleDir); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(handleDir, os.ModePerm); err != nil {
+		// Task dirs hold job logs and script output; 0750 (owner rwx, group
+		// rx) instead of os.ModePerm keeps other local users out.
+		if err = os.MkdirAll(handleDir, 0750); err != nil {
 			return err
 		}
 	}
@@ -519,7 +567,9 @@ func (u *CronjobService) removeExpiredLog(cronjob model.Cronjob) {
 func (u *CronjobService) generateLogsPath(cronjob model.Cronjob, startTime time.Time) string {
 	dir := fmt.Sprintf("%s/task/%s/%s", constant.DataDir, cronjob.Type, cronjob.Name)
 	if _, err := os.Stat(dir); err != nil && os.IsNotExist(err) {
-		_ = os.MkdirAll(dir, os.ModePerm)
+		// Task dirs hold job logs and script output; 0750 (owner rwx, group
+		// rx) instead of os.ModePerm keeps other local users out.
+		_ = os.MkdirAll(dir, 0750)
 	}
 
 	path := fmt.Sprintf("%s/%s.log", dir, startTime.Format(constant.DateTimeSlimLayout))

@@ -1,7 +1,9 @@
 package compose
 
 import (
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/utils/cmd"
 )
@@ -11,6 +13,20 @@ var (
 	composeCmdV2 bool
 	resolved     bool
 )
+
+// composeOpTimeout bounds every compose invocation. docker compose operations
+// (up in particular) can pull images and legitimately take minutes, so the
+// cap is deliberately generous — its purpose is to turn a wedged docker
+// daemon (engine lock, dead registry connection) into a bounded error
+// instead of an API request or async job that hangs forever. It is a package
+// variable so tests can shrink it.
+var composeOpTimeout = 30 * time.Minute
+
+// exec runs one compose command string under composeOpTimeout with the same
+// process-group cleanup as every other timed command helper.
+func exec(cmdStr string) (string, error) {
+	return cmd.ExecWithTimeOut(cmdStr, composeOpTimeout)
+}
 
 // resolve probes the host docker edition once per process and caches the
 // result: modern releases bundle the v2 plugin (`docker compose`), while
@@ -83,36 +99,29 @@ func CommandBase() string {
 }
 
 func Pull(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s pull", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s pull", Command(), filePath))
 }
 
 func Up(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s up -d", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s up -d", Command(), filePath))
 }
 
 func Down(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s down --remove-orphans", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s down --remove-orphans", Command(), filePath))
 }
 
 func Start(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s start", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s start", Command(), filePath))
 }
 
 func Stop(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s stop", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s stop", Command(), filePath))
 }
 
 func Restart(filePath string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s restart", Command(), filePath)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s restart", Command(), filePath))
 }
 
 func Operate(filePath, operation string) (string, error) {
-	stdout, err := cmd.Execf("%s -f %s %s", Command(), filePath, operation)
-	return stdout, err
+	return exec(fmt.Sprintf("%s -f %s %s", Command(), filePath, operation))
 }

@@ -151,6 +151,13 @@ var (
 // upgrade
 var (
 	ErrUpgradeVerifyFailed = "ErrUpgradeVerifyFailed"
+
+	// ErrUpgradeTaskBusy is reported when the upgrade entry cannot take
+	// ownership of the SystemStatus gate: another upgrade is already in
+	// progress, or the panel is busy with another exclusive flow (snapshot
+	// recover/rollback). The losing request must not start any download or
+	// file mutation.
+	ErrUpgradeTaskBusy = "ErrUpgradeTaskBusy"
 )
 
 var (

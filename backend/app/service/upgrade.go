@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
@@ -200,10 +201,18 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 	}
 	serviceHandle, _ := systemctl.DefaultHandler("1panel")
 	currentServiceName := serviceHandle.GetServiceName()
-	if err := settingRepo.Update("SystemStatus", "Upgrading"); err != nil {
-		return fmt.Errorf("update system status failed: %w", err)
+	// The GlobalLoading middleware only guards each request up to this point:
+	// two concurrent Upgrade calls can both pass it and reach here before
+	// either has written SystemStatus. Claim the status atomically below so
+	// only one upgrade ever mutates the binaries/rollback copies, including
+	// across panel processes on the same database. An upgrade request
+	// arriving while the panel is already busy (another upgrade, a snapshot
+	// recover/rollback or any other non-Free SystemStatus owner) is refused
+	// without side effects: claimUpgradeStatus also fails fast when
+	// SystemStatus is already non-Free.
+	if err := u.claimUpgradeStatus(); err != nil {
+		return err
 	}
-
 	go func() {
 		defer func() {
 			if err := settingRepo.Update("SystemStatus", "Free"); err != nil {
@@ -291,6 +300,50 @@ func (u *UpgradeService) Upgrade(req dto.Upgrade) error {
 		}
 	}()
 	return nil
+}
+
+// upgradeTaskMu serializes the SystemStatus claim inside this process.
+// settingRepo.CAS is the authoritative gate (it also covers concurrent panel
+// processes on the same database); the mutex additionally closes the window
+// between two in-process calls, where the second CAS would otherwise fail
+// only after the first goroutine had already started downloading.
+var upgradeTaskMu sync.Mutex
+
+// claimUpgradeStatus atomically takes ownership of the upgrade flow: it
+// flips SystemStatus Free -> Upgrading exactly once. A concurrent upgrade
+// (or any other flow that already holds SystemStatus non-Free, e.g. a
+// snapshot recover/rollback that never releases it) fails the CAS and the
+// request is refused with upgradeTaskBusy without any side effect: the
+// panel never runs two flows that both replace /usr/local/bin/1panel and
+// roll back each other's backup copies.
+func (u *UpgradeService) claimUpgradeStatus() error {
+	upgradeTaskMu.Lock()
+	defer upgradeTaskMu.Unlock()
+	// Fast path within this process: the status is already claimed by an
+	// upgrade running right now, no DB round-trip needed.
+	status, err := settingRepo.Get(settingRepo.WithByKey("SystemStatus"))
+	if err != nil {
+		return fmt.Errorf("load system status failed: %w", err)
+	}
+	if status.Value == "Upgrading" {
+		return upgradeTaskBusy()
+	}
+	claimed, err := settingRepo.CAS("SystemStatus", "Free", "Upgrading")
+	if err != nil {
+		return fmt.Errorf("claim upgrade status failed: %w", err)
+	}
+	if !claimed {
+		return upgradeTaskBusy()
+	}
+	return nil
+}
+
+// upgradeTaskBusy is the business error reported when the upgrade claim is
+// held by another flow: an upgrade already in progress, or the panel is
+// otherwise busy (SystemStatus non-Free, e.g. a snapshot recover/rollback).
+// The losing request must not start any download or file mutation.
+func upgradeTaskBusy() error {
+	return buserr.New(constant.ErrUpgradeTaskBusy)
 }
 
 // migrate1pctlParams rewrites the freshly installed 1pctl so local

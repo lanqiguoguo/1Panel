@@ -153,6 +153,12 @@ func (u *CronjobRepo) StartRecords(cronjobID uint, fromLocal bool, targetPath st
 	}
 	return record
 }
+
+// EndRecords writes the terminal status of a job run onto its record row.
+// The row may have been deleted in the meantime (the job was deleted or its
+// records cleaned while the run was still in flight), which makes the UPDATE
+// match zero rows: that is expected and not an error. Only a real database
+// failure is logged.
 func (u *CronjobRepo) EndRecords(record model.JobRecords, status, message, records string) {
 	errMap := make(map[string]interface{})
 	errMap["records"] = records
@@ -160,8 +166,13 @@ func (u *CronjobRepo) EndRecords(record model.JobRecords, status, message, recor
 	errMap["file"] = record.File
 	errMap["message"] = message
 	errMap["interval"] = time.Since(record.StartTime).Milliseconds()
-	if err := global.DB.Model(&model.JobRecords{}).Where("id = ?", record.ID).Updates(errMap).Error; err != nil {
-		global.LOG.Errorf("update record status failed, err: %v", err)
+	result := global.DB.Model(&model.JobRecords{}).Where("id = ?", record.ID).Updates(errMap)
+	if result.Error != nil {
+		global.LOG.Errorf("update record status failed, err: %v", result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		global.LOG.Debugf("update record status of record %d skipped: the record no longer exists", record.ID)
 	}
 }
 

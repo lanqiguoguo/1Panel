@@ -19,6 +19,14 @@ type ISettingRepo interface {
 	WithByKey(key string) DBOption
 	UpdateOrCreate(key, value string) error
 
+	// CAS atomically flips key from expect to value and reports whether the
+	// flip happened. It is the multi-process-safe equivalent of a mutex for
+	// flows that must be unique panel-wide (e.g. the self-upgrade): the
+	// WHERE clause on key+expect guarantees RowsAffected is 1 for the single
+	// winner and 0 for every loser, also across panel processes sharing the
+	// same database.
+	CAS(key, expect, value string) (bool, error)
+
 	CreateMonitorBase(model model.MonitorBase) error
 	BatchCreateMonitorIO(ioList []model.MonitorIO) error
 	BatchCreateMonitorNet(ioList []model.MonitorNetwork) error
@@ -94,4 +102,14 @@ func (u *SettingRepo) DelMonitorNet(timeForDelete time.Time) error {
 
 func (u *SettingRepo) UpdateOrCreate(key, value string) error {
 	return global.DB.Model(&model.Setting{}).Where("key = ?", key).Assign(model.Setting{Key: key, Value: value}).FirstOrCreate(&model.Setting{}).Error
+}
+
+// CAS implements ISettingRepo.CAS. The UPDATE targets the single row whose
+// key matches and whose value still equals expect; RowsAffected therefore is
+// 1 exactly for the flow that won the transition and 0 for everyone else.
+func (u *SettingRepo) CAS(key, expect, value string) (bool, error) {
+	result := global.DB.Model(&model.Setting{}).
+		Where("key = ? AND value = ?", key, expect).
+		Update("value", value)
+	return result.RowsAffected == 1, result.Error
 }

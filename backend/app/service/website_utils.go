@@ -296,12 +296,33 @@ func configDefaultNginx(website *model.Website, domains []model.WebsiteDomain, a
 		return err
 	}
 	if err := opNginx(nginxInstall.ContainerName, constant.NginxCheck); err != nil {
-		_ = deleteWebsiteFolder(nginxInstall, website)
+		_ = cleanupWebsiteResources(nginxInstall, website)
 		return err
 	}
 	if err := opNginx(nginxInstall.ContainerName, constant.NginxReload); err != nil {
-		_ = deleteWebsiteFolder(nginxInstall, website)
+		_ = cleanupWebsiteResources(nginxInstall, website)
 		return err
+	}
+	return nil
+}
+
+// cleanupWebsiteResources removes the on-disk artifacts a website creation
+// has produced so far: the site directory tree under
+// <nginx>/www/sites/<alias> and the nginx site config
+// conf/conf.d/<alias>.conf. The conf file name must match the creation path
+// (configDefaultNginx writes website.Alias+".conf"), never the primary
+// domain, which may differ from the alias and is not the file nginx loads.
+// Best-effort: cleanup errors are only logged by the caller.
+func cleanupWebsiteResources(nginxInstall model.AppInstall, website *model.Website) error {
+	nginxFolder := path.Join(constant.AppInstallDir, constant.AppOpenresty, nginxInstall.Name)
+	siteFolder := path.Join(nginxFolder, "www", "sites", website.Alias)
+	fileOp := files.NewFileOp()
+	if fileOp.Stat(siteFolder) {
+		_ = fileOp.DeleteDir(siteFolder)
+	}
+	nginxFilePath := path.Join(nginxFolder, "conf", "conf.d", website.Alias+".conf")
+	if fileOp.Stat(nginxFilePath) {
+		_ = fileOp.DeleteFile(nginxFilePath)
 	}
 	return nil
 }
@@ -900,20 +921,6 @@ func toMapStr(m map[string]interface{}) map[string]string {
 		ret[k] = fmt.Sprint(v)
 	}
 	return ret
-}
-
-func deleteWebsiteFolder(nginxInstall model.AppInstall, website *model.Website) error {
-	nginxFolder := path.Join(constant.AppInstallDir, constant.AppOpenresty, nginxInstall.Name)
-	siteFolder := path.Join(nginxFolder, "www", "sites", website.Alias)
-	fileOp := files.NewFileOp()
-	if fileOp.Stat(siteFolder) {
-		_ = fileOp.DeleteDir(siteFolder)
-	}
-	nginxFilePath := path.Join(nginxFolder, "conf", "conf.d", website.PrimaryDomain+".conf")
-	if fileOp.Stat(nginxFilePath) {
-		_ = fileOp.DeleteFile(nginxFilePath)
-	}
-	return nil
 }
 
 func opWebsite(website *model.Website, operate string) error {

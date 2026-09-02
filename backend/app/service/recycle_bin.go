@@ -170,6 +170,24 @@ func (r RecycleBinService) Reduce(reduce request.RecycleBinReduce) error {
 	if isProtectedPath(sourcePath) {
 		return buserr.New(constant.ErrPathNotDelete)
 	}
+	// Never restore (or pre-delete) a path inside the very recycle dir the
+	// entry lives in: that would RmRf the recycle dir itself with every other
+	// recycled entry still inside. (The root recycle dir is already rejected
+	// by isProtectedPath above; this covers per-mount clash dirs too.)
+	if sourcePath == reduce.From || strings.HasPrefix(sourcePath, strings.TrimSuffix(reduce.From, "/")+"/") {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
+	// The encoded SourcePath must lie on the same filesystem as the recycle
+	// dir the entry is being restored from. Create (getClashDir) moves every
+	// deleted path into the clash dir of its own mount, so a name encoding a
+	// path on another mount (or, for the root clash dir, a path under a
+	// dedicated mountpoint) was never produced by a real recycle: an attacker
+	// could otherwise plant one entry and have Reduce RmRf an arbitrary
+	// same-named directory on a foreign mount. Each mount's clash dirs are
+	// root-owned 0755, so planting requires breaking out of the file API.
+	if !sourcePathConsistentWithFrom(sourcePath, reduce.From, partitions) {
+		return buserr.New(constant.ErrCmdIllegal)
+	}
 	// sourcePath and filePath are interpolated into shell commands by
 	// RmRf/Mv, so reject shell metacharacters beforehand.
 	if !files.ValidShellArgs(sourcePath, filePath) {
@@ -236,6 +254,52 @@ func pathUnderMount(realPath, mountpoint string) bool {
 		return strings.HasPrefix(realPath, string(filepath.Separator))
 	}
 	return strings.HasPrefix(realPath, mountpoint+string(filepath.Separator))
+}
+
+// sourcePathConsistentWithFrom 校验还原条目编码的 SourcePath 与该条目所在
+// 回收站目录 (from) 的文件系统归属一致。getClashDir 总是把删除文件移入其
+// 所在挂载点的回收站（根挂载之外无匹配挂载点时才用根回收站），因此合法条目
+// 必须满足：SourcePath 位于 from 所在挂载点上；根回收站条目还必须不在任何
+// 独立挂载点之下（否则它本应进入该挂载点的回收站）。语义与 isValidRecycleFrom
+// 完全对称，partitions 由调用方传入以便测试。
+func sourcePathConsistentWithFrom(sourcePath, from string, partitions []disk.PartitionStat) bool {
+	cleaned := filepath.Clean(sourcePath)
+	if cleaned == constant.RecycleBinDir {
+		return false
+	}
+	// A source path inside any recycle dir is never legitimate (getClashDir
+	// never recycles a recycle dir; Create refuses protected paths anyway,
+	// and the root clash dir is protected).
+	for _, p := range partitions {
+		clashDir := filepath.Clean(path.Join(p.Mountpoint, ".1panel_clash"))
+		if cleaned == clashDir || pathUnderMount(cleaned, clashDir) {
+			return false
+		}
+	}
+	// Mirror getClashDir exactly: the first non-root mountpoint the source
+	// path lies under owns the entry; otherwise the root clash dir owns it.
+	fromMount := "/"
+	for _, p := range partitions {
+		if p.Mountpoint == "/" {
+			continue
+		}
+		if pathUnderMount(cleaned, p.Mountpoint) {
+			fromMount = p.Mountpoint
+			break
+		}
+	}
+	if filepath.Clean(from) == constant.RecycleBinDir {
+		return fromMount == "/"
+	}
+	for _, p := range partitions {
+		if p.Mountpoint == "/" {
+			continue
+		}
+		if filepath.Clean(from) == filepath.Clean(path.Join(p.Mountpoint, ".1panel_clash")) {
+			return fromMount == p.Mountpoint
+		}
+	}
+	return false
 }
 
 func getClashDir(realPath string) (string, error) {

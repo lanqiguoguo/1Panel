@@ -281,6 +281,25 @@ func (w WebsiteService) CreateWebsite(create request.WebsiteCreate) (err error) 
 					global.LOG.Errorf(err.Error())
 				}
 			}
+			// configDefaultNginx already wrote the site directory tree and
+			// conf.d/<alias>.conf before the DB transaction below started;
+			// neither the transaction nor the app-install cleanup touches
+			// those files, so a failure after that point would leave "ghost"
+			// nginx configs and directories behind. Remove them best-effort,
+			// mirroring the name configDefaultNginx created (alias-based).
+			// This defer is registered after the nginx lookup succeeded, so
+			// nginxInstall always carries a real install here.
+			if cleanupErr := cleanupWebsiteResources(nginxInstall, website); cleanupErr != nil {
+				global.LOG.Errorf("cleanup resources of failed website %s failed: %v", website.Alias, cleanupErr)
+			}
+			// createWafConfig removes its own per-site dir on failure but a
+			// failure after the sites.json append leaves the WAF entry (and
+			// monitor db dir) behind; delWafConfig removes both. force=true
+			// keeps the best-effort compensation from surfacing a reload
+			// error after the create already failed.
+			if wafErr := delWafConfig(*website, true); wafErr != nil {
+				global.LOG.Errorf("cleanup waf config of failed website %s failed: %v", website.Alias, wafErr)
+			}
 		}
 	}()
 	var proxy string

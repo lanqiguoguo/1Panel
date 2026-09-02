@@ -2,8 +2,31 @@ package compose
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
+
+// TestExecAppliesTimeout verifies that compose invocations are bounded: a
+// command that hangs past the (shrunk) timeout is killed and reported, so a
+// wedged docker daemon can never hang a panel API request forever.
+func TestExecAppliesTimeout(t *testing.T) {
+	old := composeOpTimeout
+	composeOpTimeout = 300 * time.Millisecond
+	defer func() { composeOpTimeout = old }()
+
+	start := time.Now()
+	_, err := exec("sleep 5")
+	if err == nil {
+		t.Fatal("exec of a hanging command should time out")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("timeout took %v, expected ~300ms", elapsed)
+	}
+	if !strings.Contains(err.Error(), "timeout") && !strings.Contains(strings.ToLower(err.Error()), "time") {
+		t.Logf("timeout error: %v", err)
+	}
+}
 
 func TestCommandCaching(t *testing.T) {
 	// simulate a host where the v2 plugin probe succeeded

@@ -85,6 +85,7 @@ ErrFileIsExist: "ファイルまたはディレクトリはすでに存在しま
 ErrFileUpload: "file {{.name}} {{.detail}}}のアップロードに失敗しました"
 ErrFileDownloadDir: "サポートされていないフォルダーをダウンロードします"
 ErrUpgradeVerifyFailed: "アップグレードパッケージの検証に失敗しました: {{ .detail }}"
+ErrUpgradeTaskBusy: "パネルはアップグレード中、または他の排他タスクでビジーです。後でもう一度お試しください"
 ErrCmdNotFound: "{{.name}}コマンドは存在しません。最初にホストにこのコマンドをインストールしてください"
 ErrSourcePathNotFound:  "ソースディレクトリは存在しません"
 ErrFavoriteExist: "このパスが収集されました"
