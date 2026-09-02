@@ -42,6 +42,10 @@ func Start() {
 	log.Init()
 	db.Init()
 	migration.Init()
+	// JWT session-version tracker: must exist before session.Init() wires it
+	// into SESSION.Clean (every clean bumps the JWT version). It only touches
+	// the database lazily through global.DB, which db.Init has set.
+	global.JWTVER = &global.JWTRefreshVersion{}
 	if err := viper.CleanupInitialPassword(global.CONF.System.BaseDir); err != nil {
 		global.LOG.Warnf("cleanup initial panel password failed: %v", err)
 	}

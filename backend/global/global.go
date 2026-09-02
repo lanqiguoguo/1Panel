@@ -31,6 +31,8 @@ var (
 
 	IPTracker *auth.IPTracker
 
+	JWTVER *JWTRefreshVersion
+
 	I18n       *i18n.Localizer
 	I18nForCmd *i18n.Localizer
 )

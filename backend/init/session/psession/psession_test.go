@@ -73,3 +73,50 @@ func TestPSessionGetMissing(t *testing.T) {
 		t.Fatal("Get() = nil error, want error for missing key")
 	}
 }
+
+// TestPSessionCleanRunsHook pins the Clean contract used for JWT
+// revocation: every call to Clean (and only Clean, not Delete) runs the
+// registered clean hook exactly once, so the JWT refresh version bump wired
+// through the hook fires on every session-clean call site automatically.
+func TestPSessionCleanRunsHook(t *testing.T) {
+	p := newTestSession(t)
+
+	calls := 0
+	p.SetCleanHook(func() { calls++ })
+
+	if err := p.Clean(); err != nil {
+		t.Fatalf("Clean failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls after one Clean = %d, want 1", calls)
+	}
+	if err := p.Clean(); err != nil {
+		t.Fatalf("second Clean failed: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("hook calls after two Cleans = %d, want 2", calls)
+	}
+	if err := p.Delete("whatever"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("hook calls after Delete = %d, want 2 (Delete must not run the hook)", calls)
+	}
+}
+
+// TestPSessionCleanWithoutHookStaysSafe: a session store with no hook (unit
+// tests, or an init order where the hook was never installed) must still
+// clean the store without panicking.
+func TestPSessionCleanWithoutHookStaysSafe(t *testing.T) {
+	p := newTestSession(t)
+	user := SessionUser{ID: 1, Name: "admin", LoggedIn: true}
+	if err := p.Set("sid-1", user, 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Clean(); err != nil {
+		t.Fatalf("Clean without hook failed: %v", err)
+	}
+	if _, err := p.Get("sid-1"); err == nil {
+		t.Fatal("session still present after Clean without hook")
+	}
+}

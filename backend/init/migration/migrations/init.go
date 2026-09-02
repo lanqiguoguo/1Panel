@@ -1,7 +1,9 @@
 package migrations
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +110,9 @@ var AddTableSetting = &gormigrate.Migration{
 			return err
 		}
 		if err := tx.Create(&model.Setting{Key: "JWTSigningKey", Value: common.RandStrSecure(16)}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&model.Setting{Key: constant.JWTVersionSettingKey, Value: "1"}).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&model.Setting{Key: "EncryptKey", Value: encryptKey}).Error; err != nil {
@@ -693,6 +698,27 @@ var DropDatabaseLocal = &gormigrate.Migration{
 	Migrate: func(tx *gorm.DB) error {
 		_ = tx.Where("name = ? AND address = ?", "local", "127.0.0.1").Delete(&model.Database{}).Error
 		return nil
+	},
+}
+
+// AddJWTRefreshVersion seeds the JWT session version for existing installs.
+// Upgrading from a release without JWT revocation: every JWT minted before
+// this migration has no SV claim (parses as 0), so once the row exists with
+// version 1 those tokens stop validating immediately — the safe direction.
+// The insert is idempotent: the settings table has no unique constraint on
+// key, and gormigrate only protects this migration while its ID stays
+// recorded in the migrations table, so a replayed migration must skip an
+// existing row instead of inserting a duplicate.
+var AddJWTRefreshVersion = &gormigrate.Migration{
+	ID: "20260902-add-jwt-refresh-version",
+	Migrate: func(tx *gorm.DB) error {
+		var existing model.Setting
+		if err := tx.Where("key = ?", constant.JWTVersionSettingKey).First(&existing).Error; err == nil {
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		return tx.Create(&model.Setting{Key: constant.JWTVersionSettingKey, Value: strconv.Itoa(constant.DefaultJWTRefreshVersion)}).Error
 	},
 }
 
