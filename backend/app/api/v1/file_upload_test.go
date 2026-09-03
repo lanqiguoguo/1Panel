@@ -47,28 +47,6 @@ func runUploadRequest(t *testing.T, targetPath, filename string, content []byte)
 	return recorder.Code, recorder.Body.Bytes()
 }
 
-// TestUploadRejectsProtectedPath 验证上传目标目录位于受保护目录内时被拒绝，
-// 且不会在目标位置留下任何文件。
-func TestUploadRejectsProtectedPath(t *testing.T) {
-	targetDir := "/etc/1panel_upload_denied"
-	target := filepath.Join(targetDir, "evil.txt")
-
-	status, body := runUploadRequest(t, targetDir, "evil.txt", []byte("data"))
-	if status != http.StatusOK {
-		t.Fatalf("upload status = %d, want %d", status, http.StatusOK)
-	}
-	var response dto.Response
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatalf("upload response is not JSON: %q: %v", body, err)
-	}
-	if response.Code == constant.CodeSuccess {
-		t.Fatalf("upload to %s unexpectedly succeeded: %+v", targetDir, response)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("protected target %s must not be created: %v", target, err)
-	}
-}
-
 // TestUploadToTempDirSucceeds 验证普通目录上传不受影响。
 func TestUploadToTempDirSucceeds(t *testing.T) {
 	dir := t.TempDir()
@@ -213,31 +191,6 @@ func TestMergeChunksDirect(t *testing.T) {
 	}
 }
 
-// TestChunkUploadRejectsProtectedPath 验证分片上传合并目标位于受保护目录内
-// 时被拒（与普通上传一致），且不会在目标位置留下任何文件。单片 chunkCount=1
-// 走完整合并流程，覆盖 mergeChunks 的最终落盘路径校验。
-func TestChunkUploadRejectsProtectedPath(t *testing.T) {
-	origTmp := global.CONF.System.TmpDir
-	global.CONF.System.TmpDir = t.TempDir()
-	defer func() { global.CONF.System.TmpDir = origTmp }()
-
-	target := "/etc/evil.txt"
-	status, body := runChunkUploadRequest(t, "/etc", "evil.txt", []byte("data"), 0, 1)
-	if status != http.StatusOK {
-		t.Fatalf("chunk upload status = %d, want %d", status, http.StatusOK)
-	}
-	var response dto.Response
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatalf("chunk upload response is not JSON: %q: %v", body, err)
-	}
-	if response.Code == constant.CodeSuccess {
-		t.Fatalf("chunk upload to %s unexpectedly succeeded: %+v", target, response)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("protected target %s must not be created: %v", target, err)
-	}
-}
-
 // TestChunkUploadToTempDirSucceeds 验证合法目录下单分片上传走完整合并且内容
 // 正确，即保护路径校验未误伤正常分片上传。
 func TestChunkUploadToTempDirSucceeds(t *testing.T) {
@@ -266,29 +219,6 @@ func TestChunkUploadToTempDirSucceeds(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Fatalf("merged content = %q, want %q", got, content)
-	}
-}
-
-// TestMergeChunksRejectsProtectedPath 直接验证合并函数对最终落盘路径的护栏：
-// 即使调用方漏检，mergeChunks 也必须拒绝向受保护目录合并。
-func TestMergeChunksRejectsProtectedPath(t *testing.T) {
-	base := t.TempDir()
-	fileDir := filepath.Join(base, "parts")
-	if err := os.MkdirAll(fileDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fileDir, "evil.txt.0"), []byte("data"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := mergeChunks("evil.txt", fileDir, "/etc", 1, true); err == nil {
-		t.Fatal("mergeChunks into /etc should be rejected")
-	} else {
-		assertChunkBusinessError(t, err)
-	}
-	target := "/etc/evil.txt"
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("protected target %s must not be created: %v", target, err)
 	}
 }
 

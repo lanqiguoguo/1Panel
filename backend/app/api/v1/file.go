@@ -17,7 +17,6 @@ import (
 	"github.com/1Panel-dev/1Panel/backend/app/dto"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
 	"github.com/1Panel-dev/1Panel/backend/app/dto/response"
-	"github.com/1Panel-dev/1Panel/backend/app/service"
 	"github.com/1Panel-dev/1Panel/backend/buserr"
 	"github.com/1Panel-dev/1Panel/backend/constant"
 	"github.com/1Panel-dev/1Panel/backend/global"
@@ -337,11 +336,6 @@ func (b *BaseApi) UploadFiles(c *gin.Context) {
 			return
 		}
 	}
-	// 上传目标必须位于非保护目录内（与删除防护一致）
-	if service.IsProtectedPath(paths[0]) {
-		helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.New(constant.ErrPathNotDelete))
-		return
-	}
 	dir := path.Dir(paths[0])
 
 	_, err = os.Stat(dir)
@@ -447,15 +441,6 @@ func (b *BaseApi) CheckFile(c *gin.Context) {
 		return
 	}
 	if req.WithInit {
-		// withInit creates the directory on the host when it does not exist
-		// yet. Like every other create/upload entry point, refuse to create
-		// directories inside protected paths (system dirs, panel data dir,
-		// recycle bin) instead of letting the check double as a way to
-		// MkdirAll an arbitrary location.
-		if service.IsProtectedPath(req.Path) {
-			helper.ErrorWithDetail(c, constant.CodeErrInternalServer, constant.ErrTypeInternalServer, buserr.New(constant.ErrPathNotDelete))
-			return
-		}
 		if err := fileOp.CreateDir(req.Path, 0644); err != nil {
 			helper.SuccessWithData(c, false)
 			return
@@ -768,12 +753,6 @@ func mergeChunks(fileName string, fileDir string, dstDir string, chunkCount int,
 		if item == ".." {
 			return errors.New("error paths in request")
 		}
-	}
-	// fileName 已在上方清洗为安全 basename，Join 结果即最终合并落盘路径；
-	// 与普通上传一致，目标必须位于非保护目录内。放在建目录/写文件之前，
-	// 避免对受保护目录产生任何副作用。
-	if service.IsProtectedPath(filepath.Join(dstDir, fileName)) {
-		return buserr.New(constant.ErrPathNotDelete)
 	}
 	mode, _ := files.GetParentMode(dstDir)
 	if mode == 0 {

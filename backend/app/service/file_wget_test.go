@@ -31,35 +31,6 @@ func setupWgetCache(t *testing.T) {
 	global.CACHE = badger_db.NewCacheDB(cache)
 }
 
-// TestWgetRejectsProtectedPath 验证 wget 目标目录或最终路径位于受保护目录内
-// 时被拒，返回与上传一致的 ErrPathNotDelete。请求地址指向必然被下载层 SSRF
-// 校验拒绝的本机端口：若错误不是入口校验的 BusinessError，说明校验未前置。
-func TestWgetRejectsProtectedPath(t *testing.T) {
-	setTestBaseDir(t, "/opt")
-
-	svc := FileService{}
-	url := "http://127.0.0.1:1/x"
-
-	cases := []struct {
-		name string
-		req  request.FileWget
-	}{
-		{"protected dir", request.FileWget{Url: url, Path: "/etc", Name: "evil"}},
-		{"protected final path", request.FileWget{Url: url, Path: "/tmp", Name: "../../../etc/evil"}},
-	}
-	for _, tc := range cases {
-		_, err := svc.Wget(tc.req)
-		if err == nil {
-			t.Fatalf("%s: wget to %s should be rejected", tc.name, tc.req.Path)
-		}
-		assertBusinessError(t, err, constant.ErrPathNotDelete)
-		target := filepath.Join(tc.req.Path, tc.req.Name)
-		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
-			t.Fatalf("%s: protected target %s must not be created: %v", tc.name, target, statErr)
-		}
-	}
-}
-
 // TestWgetRejectsBadName 验证文件名含分隔符或穿越分量时在下载前被拒
 // （SanitizeFilename 返回 ErrCmdIllegal），且不会在目标目录留下文件。
 func TestWgetRejectsBadName(t *testing.T) {

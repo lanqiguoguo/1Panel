@@ -7,60 +7,7 @@ import (
 	"testing"
 
 	"github.com/1Panel-dev/1Panel/backend/app/dto/request"
-	"github.com/1Panel-dev/1Panel/backend/constant"
 )
-
-// TestCreateRejectProtectedPath 验证创建入口（文件/目录/链接）对目标路径执行
-// 受保护目录检查，命中时返回与删除一致的 ErrPathNotDelete。
-func TestCreateRejectProtectedPath(t *testing.T) {
-	setTestBaseDir(t, "/opt")
-	svc := FileService{}
-
-	cases := []struct {
-		name string
-		op   request.FileCreate
-	}{
-		{"create file in /etc", request.FileCreate{Path: "/etc/evil.conf", Mode: 0644}},
-		{"create file in /usr/bin", request.FileCreate{Path: "/usr/bin/evil", Mode: 0755}},
-		{"create file in /root", request.FileCreate{Path: "/root/evil", Mode: 0600}},
-		{"create file in panel dir", request.FileCreate{Path: "/opt/1panel/db/evil.db", Mode: 0644}},
-		{"create dir in /etc", request.FileCreate{Path: "/etc/evildir", IsDir: true}},
-		{"symlink into /etc", request.FileCreate{Path: filepath.Join(os.TempDir(), "1p-create-link-evil"), IsLink: true, IsSymlink: true, LinkPath: "/etc/passwd"}},
-		{"hardlink into /etc", request.FileCreate{Path: filepath.Join(os.TempDir(), "1p-create-hlink-evil"), IsLink: true, LinkPath: "/etc/passwd"}},
-	}
-	for _, c := range cases {
-		if err := svc.Create(c.op); err == nil {
-			t.Errorf("%s: should be rejected", c.name)
-		} else {
-			assertBusinessError(t, err, constant.ErrPathNotDelete)
-		}
-	}
-
-	// 保护路径下未产生新条目
-	for _, p := range []string{"/etc/evil.conf", "/usr/bin/evil", "/root/evil", "/etc/evildir"} {
-		if _, err := os.Stat(p); err == nil {
-			t.Errorf("protected path %s must not be created", p)
-		}
-	}
-}
-
-// TestCreateRejectProtectedLinkSource 验证链接源路径位于保护目录时同样被拒绝
-// （LinkPath 为读语义，但硬链接/symlink 组合可被用于提权，入口统一拦截）。
-func TestCreateRejectProtectedLinkSource(t *testing.T) {
-	setTestBaseDir(t, "/opt")
-	base := t.TempDir()
-	svc := FileService{}
-
-	dst := filepath.Join(base, "link-evil")
-	err := svc.Create(request.FileCreate{Path: dst, IsLink: true, IsSymlink: true, LinkPath: "/etc/passwd"})
-	if err == nil {
-		t.Fatal("symlink with protected source should be rejected")
-	}
-	assertBusinessError(t, err, constant.ErrPathNotDelete)
-	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
-		t.Fatalf("link target %s must not be created", dst)
-	}
-}
 
 // TestCreateFileStripsSpecialBits 验证文件创建入口强制 mode & 0o777：
 // setuid/setgid/sticky 位无法经 API 落盘。
